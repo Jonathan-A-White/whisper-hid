@@ -83,6 +83,11 @@ while true; do
         if echo "$WHISPER_HELP" | grep -q -- '--no-timestamps'; then
             WHISPER_FLAGS="$WHISPER_FLAGS --no-timestamps"
         fi
+        # Disable flash attention — enabled by default since v1.8.0,
+        # causes SIGILL on some ARM CPUs (CPU-only, no kernel support)
+        if echo "$WHISPER_HELP" | grep -q -- '--no-flash-attn'; then
+            WHISPER_FLAGS="$WHISPER_FLAGS -nfa"
+        fi
         # -f must be last (takes the filename argument)
         WHISPER_FLAGS="$WHISPER_FLAGS -f"
         echo "  [whisper-flags] $WHISPER_FLAGS" >&2
