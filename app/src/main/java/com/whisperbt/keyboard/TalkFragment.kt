@@ -92,6 +92,7 @@ class TalkFragment : Fragment() {
 
     private fun setupPttButton() {
         pttButton.setOnClickListener {
+            haptic(longArrayOf(0, 30))
             if (!pttRecording) {
                 pttRecording = true
                 mainActivity?.socketService?.pttStart()
@@ -102,7 +103,6 @@ class TalkFragment : Fragment() {
             } else {
                 pttRecording = false
                 mainActivity?.socketService?.pttStop()
-                haptic(longArrayOf(0, 40, 80, 40))
                 pttButton.text = getString(R.string.hold_to_talk)
                 pttButton.setBackgroundResource(R.drawable.talk_button_idle)
                 pttButton.animate().scaleX(1.0f).scaleY(1.0f).setDuration(150).start()
