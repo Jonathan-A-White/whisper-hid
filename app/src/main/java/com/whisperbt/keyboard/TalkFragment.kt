@@ -102,7 +102,6 @@ class TalkFragment : Fragment() {
             } else {
                 pttRecording = false
                 mainActivity?.socketService?.pttStop()
-                toneGen?.startTone(ToneGenerator.TONE_PROP_BEEP2, 120)
                 haptic(longArrayOf(0, 40, 80, 40))
                 pttButton.text = getString(R.string.hold_to_talk)
                 pttButton.setBackgroundResource(R.drawable.talk_button_idle)
