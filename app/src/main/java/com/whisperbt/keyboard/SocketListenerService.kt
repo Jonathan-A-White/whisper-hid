@@ -86,7 +86,7 @@ class SocketListenerService : Service() {
                     Log.i(TAG, "Connected to localhost:$port")
 
                     val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
-                    var line: String?
+                    var line: String? = null
                     while (running.get() && reader.readLine().also { line = it } != null) {
                         handleLine(line!!)
                     }
