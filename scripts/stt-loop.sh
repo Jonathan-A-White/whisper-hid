@@ -71,17 +71,25 @@ while true; do
     echo "  [wav] size=${WAV_SIZE}B, running whisper..." >&2
 
     # Run whisper transcription
+    # Detect supported flags on first iteration (whisper-cli changed flags over time)
+    if [ -z "${WHISPER_FLAGS+x}" ]; then
+        WHISPER_HELP=$("$WHISPER_BIN" --help 2>&1 || true)
+        WHISPER_FLAGS="-m $MODEL -l en -f"
+        # --no-timestamps / -nt
+        if echo "$WHISPER_HELP" | grep -q '\-\-no-timestamps'; then
+            WHISPER_FLAGS="-m $MODEL -l en --no-timestamps -f"
+        elif echo "$WHISPER_HELP" | grep -q '\-nt'; then
+            WHISPER_FLAGS="-m $MODEL -l en -nt -f"
+        fi
+        echo "  [whisper-flags] $WHISPER_FLAGS" >&2
+    fi
     WHISPER_ERR="$AUDIO_DIR/whisper_stderr_$$.txt"
-    RAW_WHISPER=$("$WHISPER_BIN" \
-        --model "$MODEL" \
-        --language en \
-        --no-timestamps \
-        --no-context \
-        --file "$AUDIO_FILE" 2>"$WHISPER_ERR" || true)
+    # shellcheck disable=SC2086
+    RAW_WHISPER=$($WHISPER_BIN $WHISPER_FLAGS "$AUDIO_FILE" 2>"$WHISPER_ERR" || true)
     # Show whisper errors if any (model load failures, crashes, etc.)
     if [ -s "$WHISPER_ERR" ]; then
         # Show last few meaningful lines (skip progress bars)
-        WERR=$(grep -v '^\r' "$WHISPER_ERR" | tail -5)
+        WERR=$(grep -vE '^$' "$WHISPER_ERR" | tail -3)
         [ -n "$WERR" ] && echo "  [whisper-err] $WERR" >&2
     fi
     rm -f "$WHISPER_ERR"
