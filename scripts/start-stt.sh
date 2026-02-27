@@ -90,12 +90,13 @@ mkdir -p "$AUDIO_DIR"
 # --- Test audio pipeline at startup ---
 # Try AAC first (default encoder, most compatible), fall back to AMR-WB
 echo "Testing audio pipeline..."
-RECORD_ARGS=""
+RECORD_ARGS="-s 7"  # AudioSource.VOICE_COMMUNICATION — routes through Bluetooth headset mic when SCO is active
 RECORD_EXT="aac"
 
 TEST_RAW="$AUDIO_DIR/pipeline_test.aac"
 TEST_WAV="$AUDIO_DIR/pipeline_test.wav"
-termux-microphone-record -f "$TEST_RAW" -l 1 2>/dev/null
+# shellcheck disable=SC2086
+termux-microphone-record -f "$TEST_RAW" -l 1 $RECORD_ARGS 2>/dev/null
 sleep 2
 termux-microphone-record -q 2>/dev/null || true
 sleep 0.5
@@ -113,12 +114,13 @@ else
     # AAC conversion failed — try AMR-WB as fallback
     rm -f "$TEST_RAW" "$TEST_WAV"
     TEST_RAW="$AUDIO_DIR/pipeline_test.amr"
-    termux-microphone-record -f "$TEST_RAW" -l 1 -e amr_wb -b 23850 2>/dev/null
+    RECORD_ARGS="-s 7 -e amr_wb -b 23850"
+    # shellcheck disable=SC2086
+    termux-microphone-record -f "$TEST_RAW" -l 1 $RECORD_ARGS 2>/dev/null
     sleep 2
     termux-microphone-record -q 2>/dev/null || true
     sleep 0.5
     if [ -s "$TEST_RAW" ] && ffmpeg -y -i "$TEST_RAW" -ar 16000 -ac 1 -c:a pcm_s16le "$TEST_WAV" >/dev/null 2>&1; then
-        RECORD_ARGS="-e amr_wb -b 23850"
         RECORD_EXT="amr"
         echo "  Audio format: AMR-WB (fallback)"
     else
