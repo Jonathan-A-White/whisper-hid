@@ -79,9 +79,10 @@ while true; do
         if echo "$WHISPER_HELP" | grep -qE -- '-ng|--no-gpu'; then
             WHISPER_FLAGS="$WHISPER_FLAGS -ng"
         fi
-        # Disable flash attention — can use CPU instructions the phone lacks
+        # Disable flash attention — uses CPU instructions some phones lack
+        # -fa is a toggle (no argument); default is on in this build
         if echo "$WHISPER_HELP" | grep -qE -- '-fa|--flash-attn'; then
-            WHISPER_FLAGS="$WHISPER_FLAGS -fa 0"
+            WHISPER_FLAGS="$WHISPER_FLAGS -fa"
         fi
         # Disable timestamps for cleaner output
         if echo "$WHISPER_HELP" | grep -q -- '--no-timestamps'; then
