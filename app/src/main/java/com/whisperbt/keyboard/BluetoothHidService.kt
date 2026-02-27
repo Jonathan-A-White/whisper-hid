@@ -175,9 +175,24 @@ class BluetoothHidService : Service() {
     private val hidCallback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
             isRegistered = registered
-            Log.i(TAG, "HID app registered: $registered")
+            Log.i(TAG, "HID app registered: $registered, pluggedDevice: $pluggedDevice")
             connectionCallback?.onHidReady(registered)
-            updateNotification(if (registered) "Ready — waiting for connection" else "Registration failed")
+
+            if (registered) {
+                if (pluggedDevice != null) {
+                    // Virtual cable already established — treat as connected
+                    connectedDevice = pluggedDevice
+                    val name = try { pluggedDevice.name } catch (_: SecurityException) { "Unknown" }
+                    Log.i(TAG, "Already plugged to $name")
+                    connectionCallback?.onConnectionStateChanged(true, name)
+                    updateNotification("Connected to $name")
+                } else {
+                    updateNotification("Ready — connecting...")
+                    connectToHost()
+                }
+            } else {
+                updateNotification("Registration failed")
+            }
         }
 
         override fun onConnectionStateChanged(device: BluetoothDevice?, state: Int) {
@@ -254,6 +269,45 @@ class BluetoothHidService : Service() {
                 }
             }
         }
+    }
+
+    /**
+     * Attempt to connect to a bonded (paired) host device.
+     * The HID profile must be registered first. Returns true if a connection
+     * was initiated (result arrives via onConnectionStateChanged).
+     */
+    fun connectToHost(): Boolean {
+        val hid = hidDevice ?: return false
+        if (!isRegistered) return false
+
+        val adapter = btAdapter ?: return false
+        val bondedDevices = try {
+            adapter.bondedDevices
+        } catch (_: SecurityException) {
+            Log.e(TAG, "Missing permission to read bonded devices")
+            return false
+        }
+
+        if (bondedDevices.isNullOrEmpty()) {
+            Log.w(TAG, "No bonded devices found")
+            return false
+        }
+
+        for (device in bondedDevices) {
+            try {
+                val initiated = hid.connect(device)
+                val name = try { device.name } catch (_: SecurityException) { device.address }
+                if (initiated) {
+                    Log.i(TAG, "Initiating HID connection to $name")
+                    return true
+                } else {
+                    Log.d(TAG, "connect() returned false for $name")
+                }
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Missing permission for connect", e)
+            }
+        }
+        return false
     }
 
     fun isConnected(): Boolean = connectedDevice != null
