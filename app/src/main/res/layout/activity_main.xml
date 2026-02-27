@@ -42,14 +42,13 @@
                 android:text="@string/pair" />
         </LinearLayout>
 
-        <!-- Push to Talk button (hidden until PTT mode enabled) -->
+        <!-- Tap to Talk button -->
         <Button
             android:id="@+id/pttButton"
             android:layout_width="match_parent"
             android:layout_height="80dp"
             android:text="@string/hold_to_talk"
             android:textSize="20sp"
-            android:visibility="gone"
             android:layout_marginBottom="16dp" />
 
         <!-- Settings -->
@@ -117,13 +116,6 @@
             android:text="@string/space_option"
             android:checked="true"
             android:paddingBottom="4dp" />
-
-        <CheckBox
-            android:id="@+id/pttCheckbox"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="@string/ptt_option"
-            android:paddingBottom="16dp" />
 
         <!-- Log -->
         <TextView
