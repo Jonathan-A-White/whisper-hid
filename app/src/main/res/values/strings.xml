@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Whisper Keyboard</string>
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+    <string name="pair">Pair / Discoverable</string>
+    <string name="settings_header">Settings</string>
+    <string name="delay_label">Keystroke delay (ms):</string>
+    <string name="port_label">Socket port:</string>
+    <string name="newline_option">Add newline after each segment</string>
+    <string name="space_option">Add space between segments</string>
+    <string name="log_header">Log</string>
+    <string name="status_stopped">Stopped</string>
+    <string name="status_ready">Ready — waiting for connection</string>
+    <string name="status_disconnected">Disconnected</string>
+</resources>
