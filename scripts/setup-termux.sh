@@ -39,9 +39,23 @@ if [ -x "$WHISPER_BIN_CLI" ] || [ -x "$WHISPER_BIN_MAIN" ]; then
     echo "  whisper.cpp already built, skipping compile step."
     echo "  (Delete $INSTALL_DIR/whisper.cpp/build to force rebuild)"
 else
+    # Detect CPU features and pick optimal -march flags
+    ARM_MARCH="armv8-a"
+    CPU_FEATURES=$(cat /proc/cpuinfo 2>/dev/null | grep -i "Features" | head -1 || true)
+    if echo "$CPU_FEATURES" | grep -q "asimddp"; then
+        # CPU supports dot product — safe to use armv8.2-a+dotprod
+        if echo "$CPU_FEATURES" | grep -q "fphp"; then
+            ARM_MARCH="armv8.2-a+dotprod+fp16"
+        else
+            ARM_MARCH="armv8.2-a+dotprod"
+        fi
+    fi
+    echo "  CPU features detected, using: -march=$ARM_MARCH"
+
     cmake -B build \
-        -DCMAKE_C_FLAGS="-march=armv8.2-a+dotprod+fp16" \
-        -DCMAKE_CXX_FLAGS="-march=armv8.2-a+dotprod+fp16" \
+        -DCMAKE_C_FLAGS="-march=$ARM_MARCH" \
+        -DCMAKE_CXX_FLAGS="-march=$ARM_MARCH" \
+        -DGGML_FLASH_ATTN=OFF \
         -DWHISPER_NO_ACCELERATE=ON
     cmake --build build --config Release -j"$(nproc)"
 fi

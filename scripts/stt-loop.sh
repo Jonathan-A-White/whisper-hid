@@ -75,14 +75,9 @@ while true; do
     if [ -z "${WHISPER_FLAGS+x}" ]; then
         WHISPER_HELP=$("$WHISPER_BIN" --help 2>&1 || true)
         WHISPER_FLAGS="-m $MODEL -l en"
-        # Disable GPU — no CUDA/Metal in Termux, avoids unsupported code paths
-        if echo "$WHISPER_HELP" | grep -qE -- '-ng|--no-gpu'; then
+        # Disable GPU — no CUDA/Metal in Termux
+        if echo "$WHISPER_HELP" | grep -q -- '--no-gpu'; then
             WHISPER_FLAGS="$WHISPER_FLAGS -ng"
-        fi
-        # Disable flash attention — uses CPU instructions some phones lack
-        # -fa is a toggle (no argument); default is on in this build
-        if echo "$WHISPER_HELP" | grep -qE -- '-fa|--flash-attn'; then
-            WHISPER_FLAGS="$WHISPER_FLAGS -fa"
         fi
         # Disable timestamps for cleaner output
         if echo "$WHISPER_HELP" | grep -q -- '--no-timestamps'; then
