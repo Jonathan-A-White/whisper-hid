@@ -195,25 +195,49 @@ Tapping any sent entry in the transcript opens it for editing:
 
 #### Bluetooth disconnection
 
-When the Kotlin service reports BT is disconnected, the PWA shows a banner and queues text:
+When the Kotlin service reports BT is disconnected, the PWA shows a status banner driven by the `/status` response's `bluetooth` field. The banner adapts as the service moves through the state machine (see Resilience section):
+
+- **`reconnecting`**: Shows attempt counter and auto-retry progress. No user action needed yet
+- **`failed`**: Shows action buttons — "Restart HID" (`POST /restart`) and "View Debug Log"
+- **`connected`** (recovered): Banner clears, queued text flushes automatically
 
 ```
-┌──────────────────────────────────┐
-│  ⚠ Laptop disconnected          │
-│                                  │
-│  ● Recording                    │
-│                                  │
-│  │ hello world              ✓ │  │
-│  │ this is a test           ✓ │  │
-│  │ fix the bug in main      ⏳│  │
-│  │ and update the tests     ⏳│  │
-│  └────────────────────────────┘  │
-└──────────────────────────────────┘
+┌──────────────────────────────────────┐
+│  ⚠ Laptop disconnected              │
+│  Reconnecting... (attempt 3 of 10)  │
+│                                      │
+│  ● Recording                        │
+│                                      │
+│  │ hello world                  ✓ │  │
+│  │ this is a test               ✓ │  │
+│  │ fix the bug in main          ⏳│  │
+│  │ and update the tests         ⏳│  │
+│  └────────────────────────────────┘  │
+└──────────────────────────────────────┘
 ```
 
+If auto-reconnect fails:
+
+```
+┌──────────────────────────────────────┐
+│  ✖ Connection failed                │
+│  Auto-reconnect timed out           │
+│  ┌────────────────────────────────┐  │
+│  │ [Restart HID]  [View Debug Log]│  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  ● Recording                        │
+│                                      │
+│  │ fix the bug in main          ⏳│  │
+│  │ and update the tests         ⏳│  │
+│  └────────────────────────────────┘  │
+└──────────────────────────────────────┘
+```
+
+Throughout all disconnection states:
 - Mic capture and transcription continue working
 - Transcribed text queues with a pending indicator
-- When BT reconnects, the PWA flushes the queue to `/type` in order
+- When BT reconnects (by any means), the PWA flushes the queue to `/type` in order
 - No text is lost
 
 #### Connection status
@@ -448,11 +472,32 @@ Sends text as Bluetooth HID keystrokes to the connected laptop.
 
 The PWA uses the response to decide whether to queue text (BT disconnected) or show an error.
 
+#### `POST /restart`
+
+Soft-restarts the Bluetooth HID registration without killing the app. Unregisters and re-registers the HID device, re-entering the state machine at `IDLE` (see Resilience section).
+
+**Response (success):**
+```json
+{
+  "ok": true,
+  "message": "HID service restarting. Re-registering Bluetooth HID device."
+}
+```
+
+**Response (error):**
+```json
+{
+  "ok": false,
+  "error": "restart_failed",
+  "message": "Failed to unregister HID device. Try restarting the app."
+}
+```
+
 #### `GET /status`
 
 Reports service and Bluetooth connection state.
 
-**Response:**
+**Response (connected):**
 ```json
 {
   "service": "running",
@@ -462,7 +507,31 @@ Reports service and Bluetooth connection state.
 }
 ```
 
-Bluetooth states: `"connected"`, `"disconnected"`, `"pairing"`, `"reconnecting"`.
+**Response (reconnecting):**
+```json
+{
+  "service": "running",
+  "bluetooth": "reconnecting",
+  "device": "ThinkPad T480",
+  "uptime_seconds": 3842,
+  "reconnect_attempt": 3,
+  "reconnect_max": 10,
+  "next_retry_seconds": 8
+}
+```
+
+**Response (failed):**
+```json
+{
+  "service": "running",
+  "bluetooth": "failed",
+  "device": "ThinkPad T480",
+  "uptime_seconds": 3842,
+  "failure_reason": "Auto-reconnect timed out after 10 attempts"
+}
+```
+
+Bluetooth states: `"connected"`, `"registered"` (waiting for first connection), `"reconnecting"`, `"failed"`.
 
 #### `GET /logs`
 
@@ -584,6 +653,154 @@ The auth token mitigates the last case — even a direct localhost caller needs 
 
 ---
 
+## Resilience and Operability
+
+The most common failure mode is Bluetooth disconnecting (out of range, laptop sleep, Android power management) and the service not recovering without a manual restart. The SPEC-2 architecture addresses this at every layer.
+
+### BT Connection State Machine
+
+The Kotlin HID service tracks connection state as a well-defined state machine. Every transition is logged via `/logs` and reflected in `/status`.
+
+```
+         ┌─────────┐
+         │  IDLE    │ ← service started, HID not registered
+         └────┬────┘
+              │ registerApp() succeeds
+              ▼
+        ┌────────────┐
+        │ REGISTERED  │ ← HID registered, waiting for connection
+        └──────┬─────┘
+               │ onConnectionStateChanged(CONNECTED)
+               ▼
+        ┌────────────┐
+        │ CONNECTED   │ ← normal operating state
+        └──────┬─────┘
+               │ onConnectionStateChanged(DISCONNECTED)
+               ▼
+       ┌───────────────┐
+       │ RECONNECTING   │ ← auto-retry with exponential backoff
+       └───────┬───────┘
+              ╱ ╲
+    success  ╱   ╲  after max attempts
+            ▼     ▼
+    ┌────────────┐  ┌────────┐
+    │ CONNECTED   │  │ FAILED  │ ← needs manual intervention
+    └────────────┘  └────────┘
+                         │ POST /restart
+                         ▼
+                    ┌─────────┐
+                    │  IDLE    │ (re-enters state machine from top)
+                    └─────────┘
+```
+
+### Auto-Reconnect Behavior
+
+When `onConnectionStateChanged` fires with `DISCONNECTED`:
+
+1. Service enters `RECONNECTING` state
+2. Attempts to reconnect with exponential backoff: **2s, 4s, 8s, 16s, 30s**
+3. After 5 failures, backs off to **every 30 seconds** for up to 5 minutes
+4. After 5 minutes of failed reconnects, enters `FAILED` state and stops retrying
+5. If the device reconnects at any point (Android may reconnect autonomously), the `onConnectionStateChanged(CONNECTED)` callback fires and the service returns to `CONNECTED`
+
+The reconnect counter and timing are reported via `/status` so the PWA can show progress.
+
+### Service Recovery: `POST /restart`
+
+When auto-reconnect fails (HID registration stuck, Bluetooth stack in a bad state), the service supports a soft restart without killing the entire app:
+
+1. PWA sends `POST /restart` to the Kotlin service
+2. Service unregisters the HID device (`unregisterApp()`)
+3. Service re-registers (`registerApp()`) — re-enters state machine at `IDLE`
+4. Service attempts to reconnect to the last known device
+
+This handles the "walk away and come back" scenario where the Bluetooth stack gets into a bad state that auto-reconnect alone can't fix.
+
+If `POST /restart` also fails, the PWA shows a "Restart App" action that launches an Android intent to force-restart the Kotlin activity.
+
+### PWA Health Monitoring
+
+The PWA monitors both backend services and shows clear, actionable status:
+
+| Service state | What the user sees | Available actions |
+|---|---|---|
+| Kotlin service unreachable | "HID Service not running" (red) | "Open HID App" (launches Kotlin activity) |
+| BT `CONNECTED` | "Connected to ThinkPad T480" (green) | — |
+| BT `RECONNECTING` | "Reconnecting... (attempt 3)" (yellow) | — (auto-retry in progress) |
+| BT `FAILED` | "Connection failed" (red) | "Restart HID", "View Debug Log" |
+| Whisper server unreachable | "Whisper server offline" (red) | "View Debug Log" |
+| Whisper server ready | "Whisper ready (base.en)" (green) | — |
+
+The PWA polls `/status` on both services every 3 seconds. If a `/status` call fails (connection refused), the PWA treats the service as unreachable — distinct from "service running but BT disconnected."
+
+### PWA Disconnection UI
+
+When BT is disconnected but auto-reconnecting:
+
+```
+┌──────────────────────────────────────┐
+│  ⚠ Laptop disconnected              │
+│  Reconnecting... (attempt 3 of 10)  │
+│                                      │
+│  ● Recording                        │
+│                                      │
+│  │ hello world                  ✓ │  │
+│  │ this is a test               ✓ │  │
+│  │ fix the bug in main          ⏳│  │
+│  │ and update the tests         ⏳│  │
+│  └────────────────────────────────┘  │
+└──────────────────────────────────────┘
+```
+
+When auto-reconnect has failed:
+
+```
+┌──────────────────────────────────────┐
+│  ✖ Connection failed                │
+│  Auto-reconnect timed out           │
+│  ┌────────────────────────────────┐  │
+│  │ [Restart HID]  [View Debug Log]│  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  ● Recording                        │
+│                                      │
+│  │ fix the bug in main          ⏳│  │
+│  │ and update the tests         ⏳│  │
+│  └────────────────────────────────┘  │
+└──────────────────────────────────────┘
+```
+
+"Restart HID" calls `POST /restart`. Text continues to queue — nothing is lost. When the connection recovers (by any means), the PWA flushes the queue.
+
+### Debug Log: What to Look For
+
+The debug log is designed to answer the question **"why isn't it working?"** at a glance. State transitions are the most important entries:
+
+```
+12:05:45 [hid]  State: IDLE → REGISTERED
+12:05:46 [hid]  State: REGISTERED → CONNECTED (ThinkPad T480)
+12:12:03 [hid]  State: CONNECTED → RECONNECTING (reason: connection dropped)
+12:12:05 [hid]  Reconnect attempt 1 of 10...
+12:12:09 [hid]  Reconnect attempt 2 of 10...
+12:12:17 [hid]  State: RECONNECTING → CONNECTED (ThinkPad T480)
+12:12:17 [hid]  Flushing 2 queued messages
+```
+
+Versus a stuck service:
+
+```
+12:12:03 [hid]  State: CONNECTED → RECONNECTING
+12:12:05 [hid]  Reconnect attempt 1 of 10...
+...
+12:17:05 [hid]  Reconnect attempt 10 of 10... failed
+12:17:05 [hid]  State: RECONNECTING → FAILED
+12:17:05 [hid]  registerApp() returned false — BT stack may need restart
+```
+
+The second log immediately tells you: the HID registration itself is stuck, not just the connection. That's when "Restart HID" is the right action.
+
+---
+
 ## Repository Structure
 
 ```
@@ -696,17 +913,19 @@ Steps:
 
 ### Phase 3: Kotlin Service Refactor
 
-**Goal**: Strip the Kotlin app down to a headless BT HID service with HTTP API.
+**Goal**: Strip the Kotlin app down to a headless BT HID service with HTTP API, with built-in resilience.
 
 Steps:
 1. Remove `SocketListenerService`, simplify `MainActivity`
 2. Add HTTP server to `BluetoothHidService` (using `HttpServer` or `ServerSocket`)
-3. Implement `/type`, `/status`, `/logs` endpoints
-4. Implement auth token generation and validation
-5. Add Private Network Access header (`Access-Control-Allow-Private-Network: true`) to CORS preflight responses
-6. Add "Open PWA" button that passes token via GitHub Pages URL
+3. Implement `/type`, `/status`, `/logs`, `/restart` endpoints
+4. Implement BT connection state machine (IDLE → REGISTERED → CONNECTED → RECONNECTING → FAILED)
+5. Implement auto-reconnect with exponential backoff on BT disconnect
+6. Implement auth token generation and validation
+7. Add Private Network Access header (`Access-Control-Allow-Private-Network: true`) to CORS preflight responses
+8. Add "Open PWA" button that passes token via GitHub Pages URL
 
-**Success criteria**: `curl -X POST -H "Authorization: Bearer <token>" -d '{"text":"hello"}' http://localhost:9877/type` sends keystrokes to the paired laptop.
+**Success criteria**: `curl -X POST -H "Authorization: Bearer <token>" -d '{"text":"hello"}' http://localhost:9877/type` sends keystrokes to the paired laptop. Disconnecting BT triggers auto-reconnect visible via `/status`. `POST /restart` recovers from a stuck HID registration.
 
 ### Phase 4: Integration
 
@@ -736,11 +955,12 @@ Steps:
 
 **Goal**: Production readiness.
 
-- Auto-reconnect to Whisper server if Termux restarts
-- Graceful handling of service crashes
-- Battery optimization (release mic when not recording)
-- Error states and user-facing error messages
+- Auto-reconnect to Whisper server if Termux restarts (PWA detects unreachable, retries)
+- Battery optimization (release mic when not recording, reduce `/status` polling when app is backgrounded)
+- Edge case error states and user-facing error messages
 - Startup script that launches both on-device components (`whisper-server`, Kotlin service)
+
+Note: BT auto-reconnect, `POST /restart`, state machine, and the reconnect UI are part of Phases 3–4 (core design, not hardening).
 
 ---
 
