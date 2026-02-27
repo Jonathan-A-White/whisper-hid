@@ -50,6 +50,8 @@ while true; do
         rm -f "$RAW_FILE"
         continue
     fi
+    RAW_SIZE=$(stat -c%s "$RAW_FILE" 2>/dev/null || echo 0)
+    echo "  [rec] raw=${RAW_SIZE}B" >&2
 
     # Convert to 16kHz 16-bit mono WAV (required by whisper.cpp)
     if ! ffmpeg -y -i "$RAW_FILE" -ar 16000 -ac 1 -c:a pcm_s16le "$AUDIO_FILE" </dev/null >/dev/null 2>&1; then
@@ -62,17 +64,20 @@ while true; do
     # Skip if WAV file is too small (silence / no real audio)
     WAV_SIZE=$(stat -c%s "$AUDIO_FILE" 2>/dev/null || echo 0)
     if [ "$WAV_SIZE" -lt 1000 ]; then
+        echo "  [skip] WAV too small (${WAV_SIZE}B < 1000B)" >&2
         rm -f "$AUDIO_FILE"
         continue
     fi
+    echo "  [wav] size=${WAV_SIZE}B, running whisper..." >&2
 
     # Run whisper transcription
-    RESULT=$("$WHISPER_BIN" \
+    RAW_WHISPER=$("$WHISPER_BIN" \
         --model "$MODEL" \
         --language en \
         --no-timestamps \
         --no-context \
-        --file "$AUDIO_FILE" 2>/dev/null | \
+        --file "$AUDIO_FILE" 2>/dev/null || true)
+    RESULT=$(echo "$RAW_WHISPER" | \
         sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
         grep -vE "$SILENCE_PATTERNS" || true)
 
@@ -80,6 +85,8 @@ while true; do
     if [ -n "$RESULT" ]; then
         echo "$RESULT"
         echo "  >> $RESULT" >&2
+    else
+        echo "  [whisper] no speech (raw: $(echo "$RAW_WHISPER" | head -1 | cut -c1-60))" >&2
     fi
 
     rm -f "$AUDIO_FILE"
