@@ -35,6 +35,7 @@ class MainActivity : AppCompatActivity() {
         fun onConnectionStateChanged(connected: Boolean, deviceName: String?) {}
         fun onTranscription(text: String) {}
         fun onStatusChanged(status: String) {}
+        fun onMicReady() {}
     }
 
     var hidService: BluetoothHidService? = null
@@ -313,7 +314,9 @@ class MainActivity : AppCompatActivity() {
                         runOnUiThread { appendLog("[Socket] $status") }
                     }
 
-                    override fun onMicReady() {}
+                    override fun onMicReady() {
+                        runOnUiThread { serviceListener?.onMicReady() }
+                    }
                 }
         }
 
