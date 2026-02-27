@@ -84,15 +84,25 @@ while true; do
         echo "  [whisper-flags] $WHISPER_FLAGS" >&2
     fi
     WHISPER_ERR="$AUDIO_DIR/whisper_stderr_$$.txt"
+    WHISPER_OUT="$AUDIO_DIR/whisper_stdout_$$.txt"
     # shellcheck disable=SC2086
-    RAW_WHISPER=$($WHISPER_BIN $WHISPER_FLAGS "$AUDIO_FILE" 2>"$WHISPER_ERR" || true)
-    # Show whisper errors if any (model load failures, crashes, etc.)
-    if [ -s "$WHISPER_ERR" ]; then
-        # Show last few meaningful lines (skip progress bars)
-        WERR=$(grep -vE '^$' "$WHISPER_ERR" | tail -3)
-        [ -n "$WERR" ] && echo "  [whisper-err] $WERR" >&2
+    $WHISPER_BIN $WHISPER_FLAGS "$AUDIO_FILE" >"$WHISPER_OUT" 2>"$WHISPER_ERR"
+    WHISPER_RC=$?
+    RAW_WHISPER=$(cat "$WHISPER_OUT" 2>/dev/null || true)
+    # Show exit code and stderr on failure or empty output
+    if [ $WHISPER_RC -ne 0 ] || [ -z "$RAW_WHISPER" ]; then
+        echo "  [whisper-exit] rc=$WHISPER_RC" >&2
+        if [ -s "$WHISPER_ERR" ]; then
+            # Show full stderr (grep out empty lines only)
+            grep -vE '^$' "$WHISPER_ERR" | while IFS= read -r errline; do
+                echo "  [stderr] $errline" >&2
+            done
+        fi
+        if [ -s "$WHISPER_OUT" ]; then
+            echo "  [stdout] $(cat "$WHISPER_OUT")" >&2
+        fi
     fi
-    rm -f "$WHISPER_ERR"
+    rm -f "$WHISPER_ERR" "$WHISPER_OUT"
     RESULT=$(echo "$RAW_WHISPER" | \
         sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
         grep -vE "$SILENCE_PATTERNS" || true)
