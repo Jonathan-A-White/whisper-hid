@@ -74,13 +74,21 @@ while true; do
     # Detect supported flags on first iteration (whisper-cli changed flags over time)
     if [ -z "${WHISPER_FLAGS+x}" ]; then
         WHISPER_HELP=$("$WHISPER_BIN" --help 2>&1 || true)
-        WHISPER_FLAGS="-m $MODEL -l en -f"
-        # --no-timestamps / -nt
-        if echo "$WHISPER_HELP" | grep -q '\-\-no-timestamps'; then
-            WHISPER_FLAGS="-m $MODEL -l en --no-timestamps -f"
-        elif echo "$WHISPER_HELP" | grep -q '\-nt'; then
-            WHISPER_FLAGS="-m $MODEL -l en -nt -f"
+        WHISPER_FLAGS="-m $MODEL -l en"
+        # Disable GPU — no CUDA/Metal in Termux, avoids unsupported code paths
+        if echo "$WHISPER_HELP" | grep -qE -- '-ng|--no-gpu'; then
+            WHISPER_FLAGS="$WHISPER_FLAGS -ng"
         fi
+        # Disable flash attention — can use CPU instructions the phone lacks
+        if echo "$WHISPER_HELP" | grep -qE -- '-fa|--flash-attn'; then
+            WHISPER_FLAGS="$WHISPER_FLAGS -fa 0"
+        fi
+        # Disable timestamps for cleaner output
+        if echo "$WHISPER_HELP" | grep -q -- '--no-timestamps'; then
+            WHISPER_FLAGS="$WHISPER_FLAGS --no-timestamps"
+        fi
+        # -f must be last (takes the filename argument)
+        WHISPER_FLAGS="$WHISPER_FLAGS -f"
         echo "  [whisper-flags] $WHISPER_FLAGS" >&2
     fi
     WHISPER_ERR="$AUDIO_DIR/whisper_stderr_$$.txt"
