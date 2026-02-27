@@ -4,7 +4,11 @@
 set -euo pipefail
 
 INSTALL_DIR="$HOME/whisper-stt"
-WHISPER_BIN="$INSTALL_DIR/whisper.cpp/build/bin/main"
+# Try whisper-cli first (newer builds), fall back to main (older builds)
+WHISPER_BIN="$INSTALL_DIR/whisper.cpp/build/bin/whisper-cli"
+if [ ! -x "$WHISPER_BIN" ]; then
+    WHISPER_BIN="$INSTALL_DIR/whisper.cpp/build/bin/main"
+fi
 MODEL="${WHISPER_MODEL:-$INSTALL_DIR/models/ggml-base.en.bin}"
 PORT="${WHISPER_PORT:-9876}"
 CHUNK_SEC="${WHISPER_CHUNK_SEC:-5}"
@@ -44,6 +48,11 @@ if ! command -v socat &>/dev/null; then
     exit 1
 fi
 
+if ! command -v ffmpeg &>/dev/null; then
+    echo "Error: ffmpeg not installed. Run: pkg install ffmpeg"
+    exit 1
+fi
+
 if ! command -v termux-microphone-record &>/dev/null; then
     echo "Error: termux-api not installed. Run: pkg install termux-api"
     echo "Also install Termux:API app from F-Droid."
@@ -65,15 +74,26 @@ echo "Waiting for connection on localhost:$PORT..."
 # Main loop: accept TCP connections and stream transcription
 socat TCP-LISTEN:"$PORT",reuseaddr,fork SYSTEM:"
     echo 'Client connected' >&2
+    # Stop any stale recording from a previous connection
+    termux-microphone-record -q 2>/dev/null || true
     while true; do
+        RAW_FILE=\"$AUDIO_DIR/chunk_\$\$_raw.amr\"
         AUDIO_FILE=\"$AUDIO_DIR/chunk_\$\$.wav\"
 
-        # Record audio chunk
-        termux-microphone-record -f \"\$AUDIO_FILE\" -l $CHUNK_SEC -e amr_wb -b 23850 2>/dev/null
+        # Record audio chunk (AMR-WB format)
+        termux-microphone-record -f \"\$RAW_FILE\" -l $CHUNK_SEC -e amr_wb -b 23850 2>/dev/null
         sleep $CHUNK_SEC
 
         # Stop recording for this chunk
         termux-microphone-record -q 2>/dev/null || true
+
+        # Convert AMR to 16kHz 16-bit mono WAV (required by whisper.cpp)
+        if ! ffmpeg -y -i \"\$RAW_FILE\" -ar 16000 -ac 1 -c:a pcm_s16le \"\$AUDIO_FILE\" 2>/dev/null; then
+            echo 'Audio conversion failed' >&2
+            rm -f \"\$RAW_FILE\" \"\$AUDIO_FILE\"
+            continue
+        fi
+        rm -f \"\$RAW_FILE\"
 
         # Skip if file is too small (no audio)
         if [ ! -f \"\$AUDIO_FILE\" ] || [ \$(stat -c%s \"\$AUDIO_FILE\" 2>/dev/null || echo 0) -lt 1000 ]; then
@@ -86,7 +106,6 @@ socat TCP-LISTEN:"$PORT",reuseaddr,fork SYSTEM:"
             --model \"$MODEL\" \\
             --language en \\
             --no-timestamps \\
-            --print-special false \\
             --no-context \\
             --file \"\$AUDIO_FILE\" 2>/dev/null | \\
             sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \\
