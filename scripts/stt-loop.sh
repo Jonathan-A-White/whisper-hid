@@ -71,12 +71,42 @@ while true; do
     echo "  [wav] size=${WAV_SIZE}B, running whisper..." >&2
 
     # Run whisper transcription
-    RAW_WHISPER=$("$WHISPER_BIN" \
-        --model "$MODEL" \
-        --language en \
-        --no-timestamps \
-        --no-context \
-        --file "$AUDIO_FILE" 2>/dev/null || true)
+    # Detect supported flags on first iteration (whisper-cli changed flags over time)
+    if [ -z "${WHISPER_FLAGS+x}" ]; then
+        WHISPER_HELP=$("$WHISPER_BIN" --help 2>&1 || true)
+        WHISPER_FLAGS="-m $MODEL -l en"
+        # Disable GPU — no CUDA/Metal in Termux
+        if echo "$WHISPER_HELP" | grep -q -- '--no-gpu'; then
+            WHISPER_FLAGS="$WHISPER_FLAGS -ng"
+        fi
+        # Disable timestamps for cleaner output
+        if echo "$WHISPER_HELP" | grep -q -- '--no-timestamps'; then
+            WHISPER_FLAGS="$WHISPER_FLAGS --no-timestamps"
+        fi
+        # -f must be last (takes the filename argument)
+        WHISPER_FLAGS="$WHISPER_FLAGS -f"
+        echo "  [whisper-flags] $WHISPER_FLAGS" >&2
+    fi
+    WHISPER_ERR="$AUDIO_DIR/whisper_stderr_$$.txt"
+    WHISPER_OUT="$AUDIO_DIR/whisper_stdout_$$.txt"
+    # shellcheck disable=SC2086
+    $WHISPER_BIN $WHISPER_FLAGS "$AUDIO_FILE" >"$WHISPER_OUT" 2>"$WHISPER_ERR"
+    WHISPER_RC=$?
+    RAW_WHISPER=$(cat "$WHISPER_OUT" 2>/dev/null || true)
+    # Show exit code and stderr on failure or empty output
+    if [ $WHISPER_RC -ne 0 ] || [ -z "$RAW_WHISPER" ]; then
+        echo "  [whisper-exit] rc=$WHISPER_RC" >&2
+        if [ -s "$WHISPER_ERR" ]; then
+            # Show full stderr (grep out empty lines only)
+            grep -vE '^$' "$WHISPER_ERR" | while IFS= read -r errline; do
+                echo "  [stderr] $errline" >&2
+            done
+        fi
+        if [ -s "$WHISPER_OUT" ]; then
+            echo "  [stdout] $(cat "$WHISPER_OUT")" >&2
+        fi
+    fi
+    rm -f "$WHISPER_ERR" "$WHISPER_OUT"
     RESULT=$(echo "$RAW_WHISPER" | \
         sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
         grep -vE "$SILENCE_PATTERNS" || true)
