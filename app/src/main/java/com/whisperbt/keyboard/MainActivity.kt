@@ -4,6 +4,8 @@ import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.media.AudioManager
 import android.media.ToneGenerator
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -13,7 +15,6 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -33,7 +34,6 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_PORT = "socket_port"
         private const val KEY_NEWLINE = "append_newline"
         private const val KEY_SPACE = "append_space"
-        private const val KEY_PTT = "ptt_mode"
     }
 
     private lateinit var prefs: SharedPreferences
@@ -46,12 +46,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var portInput: EditText
     private lateinit var newlineCheckbox: CheckBox
     private lateinit var spaceCheckbox: CheckBox
-    private lateinit var pttCheckbox: CheckBox
     private lateinit var pttButton: Button
 
     private var hidService: BluetoothHidService? = null
     private var socketService: SocketListenerService? = null
     private var toneGen: ToneGenerator? = null
+    private var vibrator: Vibrator? = null
     private var hidBound = false
     private var socketBound = false
     private var servicesRunning = false
@@ -72,7 +72,6 @@ class MainActivity : AppCompatActivity() {
         portInput = findViewById(R.id.portInput)
         newlineCheckbox = findViewById(R.id.newlineCheckbox)
         spaceCheckbox = findViewById(R.id.spaceCheckbox)
-        pttCheckbox = findViewById(R.id.pttCheckbox)
         pttButton = findViewById(R.id.pttButton)
 
         // Load saved preferences
@@ -80,30 +79,19 @@ class MainActivity : AppCompatActivity() {
         portInput.setText(prefs.getInt(KEY_PORT, 9876).toString())
         newlineCheckbox.isChecked = prefs.getBoolean(KEY_NEWLINE, false)
         spaceCheckbox.isChecked = prefs.getBoolean(KEY_SPACE, true)
-        pttCheckbox.isChecked = prefs.getBoolean(KEY_PTT, false)
-        pttButton.visibility = if (pttCheckbox.isChecked) View.VISIBLE else View.GONE
 
         toggleButton.setOnClickListener { toggleServices() }
         pairButton.setOnClickListener { openBluetoothSettings() }
 
-        pttCheckbox.setOnCheckedChangeListener { _, isChecked ->
-            pttButton.visibility = if (isChecked) View.VISIBLE else View.GONE
-            socketService?.pttMode = isChecked
-            if (!isChecked) resetPttButton()
-            // Reconnect so the server enters the correct mode
-            if (servicesRunning) {
-                resetPttButton()
-                socketService?.reconnect()
-            }
-        }
-
         setupPttButton()
 
         try {
-            toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, ToneGenerator.MAX_VOLUME)
+            toneGen = ToneGenerator(AudioManager.STREAM_NOTIFICATION, ToneGenerator.MAX_VOLUME)
         } catch (_: RuntimeException) {
             // ToneGenerator unavailable (e.g. audio service not ready) — chime won't play
         }
+        @Suppress("DEPRECATION")
+        vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
 
         requestPermissions()
     }
@@ -280,7 +268,7 @@ class MainActivity : AppCompatActivity() {
             socketService?.setPort(portInput.text.toString().toIntOrNull() ?: 9876)
             socketService?.appendNewline = newlineCheckbox.isChecked
             socketService?.appendSpace = spaceCheckbox.isChecked
-            socketService?.pttMode = pttCheckbox.isChecked
+            socketService?.pttMode = true
 
             socketService?.transcriptionCallback = object : SocketListenerService.TranscriptionCallback {
                 override fun onTranscription(text: String) {
@@ -292,7 +280,7 @@ class MainActivity : AppCompatActivity() {
                 }
 
                 override fun onMicReady() {
-                    toneGen?.startTone(ToneGenerator.TONE_PROP_BEEP, 160)
+                    // Beep is played immediately on button press; no second chime needed
                 }
             }
         }
@@ -320,15 +308,23 @@ class MainActivity : AppCompatActivity() {
             if (!pttRecording) {
                 pttRecording = true
                 socketService?.pttStart()
+                toneGen?.startTone(ToneGenerator.TONE_PROP_BEEP, 160)
+                haptic(longArrayOf(0, 60))
                 pttButton.text = getString(R.string.recording)
                 appendLog("[PTT] Recording...")
             } else {
                 pttRecording = false
                 socketService?.pttStop()
+                toneGen?.startTone(ToneGenerator.TONE_PROP_BEEP2, 120)
+                haptic(longArrayOf(0, 40, 80, 40))
                 pttButton.text = getString(R.string.hold_to_talk)
                 appendLog("[PTT] Stopped — transcribing...")
             }
         }
+    }
+
+    private fun haptic(timings: LongArray) {
+        vibrator?.vibrate(VibrationEffect.createWaveform(timings, -1))
     }
 
     private fun resetPttButton() {
@@ -345,7 +341,6 @@ class MainActivity : AppCompatActivity() {
             putInt(KEY_PORT, portInput.text.toString().toIntOrNull() ?: 9876)
             putBoolean(KEY_NEWLINE, newlineCheckbox.isChecked)
             putBoolean(KEY_SPACE, spaceCheckbox.isChecked)
-            putBoolean(KEY_PTT, pttCheckbox.isChecked)
             apply()
         }
     }
