@@ -148,6 +148,13 @@ echo "Waiting for connection on localhost:$PORT..."
 while true; do
     socat TCP-LISTEN:"$PORT",reuseaddr SYSTEM:"bash '$STT_LOOP'" 2>&1 || true
     echo "Connection ended, listening again on port $PORT..." >&2
-    # Brief pause before accepting a new connection
+    # Kill any stt-loop.sh that survived socat's exit (can happen when socat
+    # exits on signal before cleanly waiting for the subprocess).  An orphaned
+    # continuous-mode instance will keep calling `termux-microphone-record -q`
+    # on a timer and prematurely stop PTT recordings in the next session.
+    pkill -TERM -f "stt-loop.sh" 2>/dev/null || true
+    sleep 0.3
+    pkill -9 -f "stt-loop.sh" 2>/dev/null || true
+    termux-microphone-record -q 2>/dev/null || true
     sleep 1
 done

@@ -138,6 +138,17 @@ transcribe_and_send() {
 continuous_loop() {
     echo "  [mode] Continuous (${CHUNK_SEC}s chunks)" >&2
     while true; do
+        # Exit early if socat has closed stdin (client disconnected).
+        # read -t 0 returns 0 when data is available on stdin — which includes
+        # the EOF condition that socat signals when the TCP connection closes.
+        # A real read that immediately returns non-zero confirms it is EOF.
+        if IFS= read -r -t 0 _eofcheck 2>/dev/null; then
+            if ! IFS= read -r _eofcheck 2>/dev/null; then
+                echo "  [continuous] Client disconnected, exiting" >&2
+                break
+            fi
+        fi
+
         RAW_FILE="$AUDIO_DIR/chunk_${$}_raw.$RECORD_EXT"
         AUDIO_FILE="$AUDIO_DIR/chunk_${$}.wav"
 
