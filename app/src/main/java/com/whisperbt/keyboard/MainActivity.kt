@@ -197,6 +197,8 @@ class MainActivity : AppCompatActivity() {
                         if (connected) {
                             statusText.text = "Connected to $deviceName"
                             appendLog("Bluetooth connected: $deviceName")
+                            // Flush any text that was buffered while waiting for BT
+                            socketService?.flushBuffer()
                         } else {
                             statusText.text = getString(R.string.status_disconnected)
                             appendLog("Bluetooth disconnected")
