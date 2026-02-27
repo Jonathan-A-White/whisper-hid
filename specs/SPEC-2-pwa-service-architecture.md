@@ -801,6 +801,136 @@ The second log immediately tells you: the HID registration itself is stuck, not 
 
 ---
 
+## Testing: BDD with Cucumber/Gherkin
+
+All three components use **Cucumber** (Gherkin `.feature` files) for BDD testing. Gherkin is the common spec format — the same syntax used by godog (Go), Cucumber-JVM (Kotlin), cucumber-js (TypeScript), and behave (Python).
+
+### Framework per Component
+
+| Component | Framework | Runner | Notes |
+|---|---|---|---|
+| Kotlin HID service | **Cucumber-JVM** (`io.cucumber:cucumber-android`) | Android instrumentation tests | Test-only dependency. Mocks `BluetoothHidDevice` callbacks |
+| PWA (TypeScript) | **Playwright** + **cucumber-js** | Node.js (CI + local dev) | Drives real Chrome. Also runs cross-component E2E tests |
+| Whisper server (Python) | **behave** | Python (CI + Termux) | Tests Flask API directly with real WAV files |
+
+### Shared Feature Files
+
+All `.feature` files live in a top-level `features/` directory, organized by concern rather than by component. Step definitions live in each component's test directory and implement the Gherkin steps for their layer.
+
+Some scenarios span components (e.g., text queuing involves the PWA and the Kotlin service). These run from the PWA E2E layer since Playwright can drive the browser while mocking or running the backend services.
+
+### Key Scenarios
+
+#### BT Connection Lifecycle (Kotlin)
+
+```gherkin
+Feature: Bluetooth HID connection lifecycle
+
+  Scenario: Auto-reconnect on disconnect
+    Given the HID service is connected to "ThinkPad T480"
+    When the Bluetooth connection drops
+    Then the service state should be "RECONNECTING"
+    And the service should retry with exponential backoff
+    When the device reconnects
+    Then the service state should be "CONNECTED"
+
+  Scenario: Failed reconnect leads to FAILED state
+    Given the HID service is reconnecting
+    When 10 reconnect attempts fail over 5 minutes
+    Then the service state should be "FAILED"
+    And GET /status should include "failure_reason"
+
+  Scenario: POST /restart recovers from FAILED
+    Given the HID service is in "FAILED" state
+    When the PWA sends POST /restart
+    Then the service should unregister the HID device
+    And the service should re-register the HID device
+    And the service state should be "IDLE"
+```
+
+#### Text Queuing During Disconnect (PWA E2E)
+
+```gherkin
+Feature: Text queuing during BT disconnect
+
+  Scenario: Text queues when disconnected and flushes on reconnect
+    Given the PWA is connected to the HID service
+    And Bluetooth is disconnected
+    When the user speaks "fix the bug"
+    And the user speaks "update the tests"
+    Then 2 messages should show pending indicators
+    When Bluetooth reconnects
+    Then the queued messages should flush to /type in order
+    And both messages should show sent indicators
+
+  Scenario: Recording continues during disconnect
+    Given Bluetooth is disconnected
+    When the user speaks "hello world"
+    Then the Whisper server should return a transcription
+    And the transcript list should show the text with a pending indicator
+```
+
+#### API Authentication (Kotlin)
+
+```gherkin
+Feature: API authentication
+
+  Scenario: Valid token accepted
+    Given the HID service generated token "abc123"
+    When POST /type is called with Authorization "Bearer abc123"
+    Then the response should be 200 with "ok": true
+
+  Scenario: Missing token rejected
+    When POST /type is called without an Authorization header
+    Then the response should be 403
+
+  Scenario: PWA receives token from URL
+    Given the Kotlin app opens the PWA with "?token=abc123"
+    Then the PWA should store the token in sessionStorage
+    And the URL bar should not contain the token
+```
+
+#### Whisper Transcription (Python)
+
+```gherkin
+Feature: Whisper transcription server
+
+  Scenario: Transcribe a valid audio file
+    Given the Whisper server is running with model "base.en"
+    When POST /transcribe receives a 16kHz mono PCM WAV file
+    Then the response should contain "text" with a non-empty string
+    And the response should contain "duration_ms" as a positive integer
+
+  Scenario: Empty audio returns no text
+    Given the Whisper server is running with model "base.en"
+    When POST /transcribe receives a silent audio segment
+    Then the response "text" should be empty or whitespace
+
+  Scenario: Server reports status
+    Given the Whisper server is running with model "base.en"
+    When GET /status is called
+    Then the response "status" should be "ready"
+    And the response "model" should be "base.en"
+```
+
+### What to Test Where
+
+| Layer | What to test | Speed |
+|---|---|---|
+| **Kotlin unit BDD** (Cucumber-JVM) | State machine transitions, HID keycode mapping, token validation, HTTP API responses. Mock `BluetoothHidDevice` callbacks | Fast (seconds) |
+| **Python API BDD** (behave) | Whisper server endpoints. Send real WAV files, verify JSON responses | Medium (depends on model inference time) |
+| **PWA E2E BDD** (Playwright + cucumber-js) | Full flows through the browser: polling `/status`, reacting to state changes, queuing text, flushing on reconnect. Mock or run real backends | Slow (browser startup + network) |
+
+### CI Integration
+
+BDD tests run in GitHub Actions alongside the existing build workflows:
+
+- **Kotlin BDD**: Runs with `./gradlew connectedAndroidTest` (requires Android emulator in CI) or `./gradlew test` for non-instrumentation Cucumber tests that mock the BT layer
+- **Python BDD**: Runs with `behave` in a Python job. Uses a pre-recorded test WAV file (no mic needed in CI). Whisper model downloaded and cached
+- **PWA E2E BDD**: Runs with `npx cucumber-js` + Playwright in a Node.js job. Backends can be mocked with MSW (Mock Service Worker) for isolated PWA testing, or started as real processes for full integration
+
+---
+
 ## Repository Structure
 
 ```
@@ -809,14 +939,27 @@ whisper-hid/
 │   ├── SPEC-1-termux-hid.md            # Original spec (Termux + Kotlin two-component)
 │   └── SPEC-2-pwa-service-architecture.md  # This spec (PWA + services three-component)
 │
+├── features/                            # Shared Gherkin .feature files (BDD)
+│   ├── bt-lifecycle.feature            # BT state machine transitions
+│   ├── text-queuing.feature            # Disconnect queuing + reconnect flush
+│   ├── auth.feature                    # API token auth flow
+│   └── transcription.feature           # Whisper transcription scenarios
+│
 ├── app/                                 # Android Kotlin app (BT HID service)
 │   ├── build.gradle.kts
-│   └── src/main/
-│       ├── AndroidManifest.xml
-│       └── java/com/whisperbt/keyboard/
-│           ├── MainActivity.kt          # Thin launcher Activity
-│           ├── BluetoothHidService.kt   # BT HID + HTTP API
-│           └── HidKeyMapper.kt          # Char → HID keycode mapping
+│   └── src/
+│       ├── main/
+│       │   ├── AndroidManifest.xml
+│       │   └── java/com/whisperbt/keyboard/
+│       │       ├── MainActivity.kt          # Thin launcher Activity
+│       │       ├── BluetoothHidService.kt   # BT HID + HTTP API
+│       │       └── HidKeyMapper.kt          # Char → HID keycode mapping
+│       └── test/                            # Cucumber-JVM step definitions
+│           └── java/com/whisperbt/keyboard/
+│               └── steps/
+│                   ├── BtLifecycleSteps.kt  # BT state machine steps
+│                   ├── AuthSteps.kt         # Token validation steps
+│                   └── ApiSteps.kt          # HTTP API response steps
 │
 ├── pwa/                                 # Progressive Web App (React + Vite + TypeScript)
 │   ├── index.html                       # Vite entry HTML
@@ -825,34 +968,46 @@ whisper-hid/
 │   ├── tsconfig.json
 │   ├── package.json
 │   ├── public/                          # Static assets (icons, etc.)
-│   └── src/
-│       ├── main.tsx                     # React entry point
-│       ├── App.tsx                      # Root component + routing
-│       ├── index.css                    # Tailwind directives
-│       ├── hooks/
-│       │   ├── useAudioCapture.ts       # Mic capture (AudioWorklet / MediaRecorder)
-│       │   ├── useWhisper.ts            # Whisper server API client
-│       │   ├── useHidService.ts         # Kotlin HID service API client
-│       │   └── useTranscriptStore.ts    # IndexedDB transcript history
-│       ├── components/
-│       │   ├── TranscriptList.tsx       # Scrolling transcript log
-│       │   ├── RecordingIndicator.tsx   # Recording state display
-│       │   ├── EditBuffer.tsx           # Edit-before-send text area
-│       │   ├── StatusBar.tsx            # BT + Whisper connection status
-│       │   ├── Settings.tsx             # Settings panel
-│       │   └── DebugLog.tsx             # Debug log view
-│       ├── lib/
-│       │   ├── api.ts                   # HTTP client helpers
-│       │   ├── db.ts                    # IndexedDB via idb
-│       │   └── audio-worklet.ts         # AudioWorklet processor
-│       └── types.ts                     # Shared TypeScript types
+│   ├── src/
+│   │   ├── main.tsx                     # React entry point
+│   │   ├── App.tsx                      # Root component + routing
+│   │   ├── index.css                    # Tailwind directives
+│   │   ├── hooks/
+│   │   │   ├── useAudioCapture.ts       # Mic capture (AudioWorklet / MediaRecorder)
+│   │   │   ├── useWhisper.ts            # Whisper server API client
+│   │   │   ├── useHidService.ts         # Kotlin HID service API client
+│   │   │   └── useTranscriptStore.ts    # IndexedDB transcript history
+│   │   ├── components/
+│   │   │   ├── TranscriptList.tsx       # Scrolling transcript log
+│   │   │   ├── RecordingIndicator.tsx   # Recording state display
+│   │   │   ├── EditBuffer.tsx           # Edit-before-send text area
+│   │   │   ├── StatusBar.tsx            # BT + Whisper connection status
+│   │   │   ├── Settings.tsx             # Settings panel
+│   │   │   └── DebugLog.tsx             # Debug log view
+│   │   ├── lib/
+│   │   │   ├── api.ts                   # HTTP client helpers
+│   │   │   ├── db.ts                    # IndexedDB via idb
+│   │   │   └── audio-worklet.ts         # AudioWorklet processor
+│   │   └── types.ts                     # Shared TypeScript types
+│   └── e2e/                             # Playwright + cucumber-js E2E tests
+│       ├── steps/
+│       │   ├── text-queuing.steps.ts    # Text queuing + flush steps
+│       │   └── auth.steps.ts            # PWA token receipt steps
+│       └── support/
+│           └── world.ts                 # Playwright browser setup
 │
 ├── scripts/                             # Termux scripts
 │   ├── setup-termux.sh                  # One-time environment setup
 │   ├── start-whisper-server.sh          # Start Whisper HTTP server
 │   ├── stop-whisper-server.sh           # Stop Whisper server
 │   ├── whisper-server.py                # Whisper HTTP API server
-│   └── update-model.sh                  # Download/swap Whisper models
+│   ├── update-model.sh                  # Download/swap Whisper models
+│   └── tests/                           # behave step definitions
+│       ├── steps/
+│       │   └── transcription_steps.py   # Whisper API steps
+│       ├── environment.py               # behave hooks (server startup/teardown)
+│       └── fixtures/
+│           └── test-hello.wav           # Pre-recorded test audio (16kHz mono PCM)
 │
 ├── build.gradle.kts
 ├── settings.gradle.kts
@@ -862,7 +1017,8 @@ whisper-hid/
 └── .github/
     └── workflows/
         ├── build-apk.yml                # Build Android APK (triggers on app/ changes)
-        └── deploy-pwa.yml               # Build PWA + deploy to GitHub Pages (triggers on pwa/ changes)
+        ├── deploy-pwa.yml               # Build PWA + deploy to GitHub Pages (triggers on pwa/ changes)
+        └── test-bdd.yml                 # Run BDD tests (Kotlin, PWA E2E, Python)
 ```
 
 ### Key differences from SPEC-1
@@ -878,7 +1034,8 @@ whisper-hid/
 | Auth/security | None (any app can write to socket) | Shared secret token + CORS |
 | PWA hosting | — | GitHub Pages (HTTPS) + saved to homescreen |
 | Files removed | — | `SocketListenerService.kt`, `BootReceiver.kt`, `start-stt.sh`, `stop-stt.sh` |
-| Files added | — | `pwa/` (Vite + React + TS), `whisper-server.py`, `deploy-pwa.yml` |
+| Testing | Manual only | BDD with Cucumber/Gherkin across all components |
+| Files added | — | `pwa/`, `features/`, `whisper-server.py`, `deploy-pwa.yml`, `test-bdd.yml` |
 
 ---
 
@@ -951,7 +1108,26 @@ Steps:
 4. Add `DebugLog` component pulling from both services' `/logs` endpoints
 5. Verify PWA manifest and Workbox service worker (generated by `vite-plugin-pwa`)
 
-### Phase 6: Hardening
+### Phase 6: BDD Test Suite
+
+**Goal**: Automated BDD tests covering the critical paths. Feature files are written incrementally during Phases 1–5; this phase wires them into CI and fills in any gaps.
+
+Steps:
+1. Write `features/bt-lifecycle.feature` — state machine transitions, auto-reconnect, `POST /restart` recovery
+2. Write `features/text-queuing.feature` — disconnect queuing, reconnect flush, ordering guarantees
+3. Write `features/auth.feature` — token generation, validation, rejection, PWA token receipt from URL
+4. Write `features/transcription.feature` — valid audio, empty audio, server status
+5. Implement Kotlin step definitions (`app/src/test/.../steps/`) — mock `BluetoothHidDevice` callbacks, test state machine and HTTP API in isolation
+6. Implement Python step definitions (`scripts/tests/steps/`) — start Whisper server, send test WAV, assert JSON responses
+7. Implement PWA E2E step definitions (`pwa/e2e/steps/`) — Playwright drives Chrome, mock backends with MSW for isolated tests, real backends for integration
+8. Create `test-bdd.yml` GitHub Actions workflow — runs all three test suites on push
+9. Record `scripts/tests/fixtures/test-hello.wav` — pre-recorded 16kHz mono PCM test audio for CI (no mic needed)
+
+**Success criteria**: `test-bdd.yml` passes in CI. BT state machine scenarios, text queuing scenarios, auth scenarios, and transcription scenarios all green. Feature files serve as living documentation of system behavior.
+
+Note: BDD scenarios should be written alongside the code they test (during Phases 1–5). This phase ensures full coverage and CI integration.
+
+### Phase 7: Hardening
 
 **Goal**: Production readiness.
 
@@ -976,6 +1152,10 @@ Note: BT auto-reconnect, `POST /restart`, state machine, and the reconnect UI ar
 - **BluetoothHidDevice API**: https://developer.android.com/reference/android/bluetooth/BluetoothHidDevice
 - **whisper.cpp**: https://github.com/ggml-org/whisper.cpp
 - **Flask**: https://flask.palletsprojects.com/
+- **Cucumber-JVM**: https://github.com/cucumber/cucumber-jvm
+- **cucumber-js**: https://github.com/cucumber/cucumber-js
+- **behave**: https://behave.readthedocs.io/
+- **Playwright**: https://playwright.dev/
 
 ## Constraints
 
