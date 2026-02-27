@@ -116,9 +116,15 @@ while true; do
         sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
         grep -vE "$SILENCE_PATTERNS" || true)
 
-    # Send non-empty transcription to stdout (piped to socket by socat)
+    # Send non-empty transcription to stdout (piped to socket by socat).
+    # Check echo's exit status: bash builtins don't reliably trigger the
+    # SIGPIPE trap, so the script can keep looping after a broken pipe.
+    # Breaking immediately lets socat restart and accept a new connection.
     if [ -n "$RESULT" ]; then
-        echo "$RESULT"
+        if ! echo "$RESULT"; then
+            echo "  [error] Socket write failed (broken pipe), exiting" >&2
+            break
+        fi
         echo "  >> $RESULT" >&2
     else
         echo "  [whisper] no speech (raw: $(echo "$RAW_WHISPER" | head -1 | cut -c1-60))" >&2
