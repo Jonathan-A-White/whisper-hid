@@ -59,66 +59,78 @@ if ! command -v termux-microphone-record &>/dev/null; then
     exit 1
 fi
 
+if [ ! -f "$INSTALL_DIR/stt-loop.sh" ]; then
+    echo "Error: stt-loop.sh not found. Re-run setup-termux.sh."
+    exit 1
+fi
+
 # Store PID
 echo $$ > "$PID_FILE"
 
 # Create temp directory for audio chunks
 mkdir -p "$AUDIO_DIR"
 
+# --- Test audio pipeline at startup ---
+# Try AAC first (default encoder, most compatible), fall back to AMR-WB
+echo "Testing audio pipeline..."
+RECORD_ARGS=""
+RECORD_EXT="aac"
+
+TEST_RAW="$AUDIO_DIR/pipeline_test.aac"
+TEST_WAV="$AUDIO_DIR/pipeline_test.wav"
+termux-microphone-record -f "$TEST_RAW" -l 1 2>/dev/null
+sleep 2
+termux-microphone-record -q 2>/dev/null || true
+sleep 0.5
+
+if [ ! -s "$TEST_RAW" ]; then
+    echo "Error: Microphone recording produced no audio."
+    echo "Ensure Termux:API app is installed and has microphone permission."
+    rm -f "$TEST_RAW"
+    exit 1
+fi
+
+if ffmpeg -y -i "$TEST_RAW" -ar 16000 -ac 1 -c:a pcm_s16le "$TEST_WAV" >/dev/null 2>&1; then
+    echo "  Audio format: AAC (default)"
+else
+    # AAC conversion failed — try AMR-WB as fallback
+    rm -f "$TEST_RAW" "$TEST_WAV"
+    TEST_RAW="$AUDIO_DIR/pipeline_test.amr"
+    termux-microphone-record -f "$TEST_RAW" -l 1 -e amr_wb -b 23850 2>/dev/null
+    sleep 2
+    termux-microphone-record -q 2>/dev/null || true
+    sleep 0.5
+    if [ -s "$TEST_RAW" ] && ffmpeg -y -i "$TEST_RAW" -ar 16000 -ac 1 -c:a pcm_s16le "$TEST_WAV" >/dev/null 2>&1; then
+        RECORD_ARGS="-e amr_wb -b 23850"
+        RECORD_EXT="amr"
+        echo "  Audio format: AMR-WB (fallback)"
+    else
+        echo "Error: Cannot convert recorded audio to WAV."
+        echo "Neither AAC nor AMR-WB conversion works with installed ffmpeg."
+        echo "Try reinstalling ffmpeg: pkg install ffmpeg"
+        rm -f "$TEST_RAW" "$TEST_WAV"
+        exit 1
+    fi
+fi
+rm -f "$TEST_RAW" "$TEST_WAV"
+echo "  Audio pipeline OK"
+
+# Export variables for stt-loop.sh (runs in a subprocess via socat)
+export WHISPER_BIN MODEL CHUNK_SEC AUDIO_DIR SILENCE_PATTERNS RECORD_ARGS RECORD_EXT
+
+echo ""
 echo "=== Whisper STT Started ==="
 echo "Model: $MODEL"
 echo "Port: $PORT"
 echo "Chunk size: ${CHUNK_SEC}s"
 echo "Waiting for connection on localhost:$PORT..."
 
-# Main loop: accept TCP connections and stream transcription
-socat TCP-LISTEN:"$PORT",reuseaddr,fork SYSTEM:"
-    echo 'Client connected' >&2
-    # Stop any stale recording from a previous connection
-    termux-microphone-record -q 2>/dev/null || true
-    while true; do
-        RAW_FILE=\"$AUDIO_DIR/chunk_\$\$_raw.amr\"
-        AUDIO_FILE=\"$AUDIO_DIR/chunk_\$\$.wav\"
-
-        # Record audio chunk (AMR-WB format)
-        termux-microphone-record -f \"\$RAW_FILE\" -l $CHUNK_SEC -e amr_wb -b 23850 2>/dev/null
-        sleep $CHUNK_SEC
-
-        # Stop recording for this chunk
-        termux-microphone-record -q 2>/dev/null || true
-
-        # Convert AMR to 16kHz 16-bit mono WAV (required by whisper.cpp)
-        if ! ffmpeg -y -i \"\$RAW_FILE\" -ar 16000 -ac 1 -c:a pcm_s16le \"\$AUDIO_FILE\" 2>/dev/null; then
-            echo 'Audio conversion failed' >&2
-            rm -f \"\$RAW_FILE\" \"\$AUDIO_FILE\"
-            continue
-        fi
-        rm -f \"\$RAW_FILE\"
-
-        # Skip if file is too small (no audio)
-        if [ ! -f \"\$AUDIO_FILE\" ] || [ \$(stat -c%s \"\$AUDIO_FILE\" 2>/dev/null || echo 0) -lt 1000 ]; then
-            rm -f \"\$AUDIO_FILE\"
-            continue
-        fi
-
-        # Run whisper transcription
-        RESULT=\$(\"$WHISPER_BIN\" \\
-            --model \"$MODEL\" \\
-            --language en \\
-            --no-timestamps \\
-            --no-context \\
-            --file \"\$AUDIO_FILE\" 2>/dev/null | \\
-            sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \\
-            grep -vE '$SILENCE_PATTERNS' || true)
-
-        # Send non-empty results
-        if [ -n \"\$RESULT\" ]; then
-            echo \"\$RESULT\"
-        fi
-
-        # Clean up audio chunk
-        rm -f \"\$AUDIO_FILE\"
-    done
-" &
-
-wait
+# Main loop: accept one TCP connection at a time, run transcription loop.
+# No 'fork' — prevents multiple processes fighting over the microphone.
+# When a connection ends, socat exits and we restart the listener.
+while true; do
+    socat TCP-LISTEN:"$PORT",reuseaddr SYSTEM:"bash '$INSTALL_DIR/stt-loop.sh'" 2>&1 || true
+    echo "Connection ended, listening again on port $PORT..." >&2
+    # Brief pause before accepting a new connection
+    sleep 1
+done

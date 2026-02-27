@@ -82,13 +82,24 @@ class SocketListenerService : Service() {
             try {
                 Socket("127.0.0.1", port).use { socket ->
                     reconnectDelay = RECONNECT_DELAY_MS
-                    transcriptionCallback?.onStatusChanged("Connected to socket")
+                    transcriptionCallback?.onStatusChanged("Connected — listening")
                     Log.i(TAG, "Connected to localhost:$port")
 
                     val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
                     var line: String? = null
                     while (running.get() && reader.readLine().also { line = it } != null) {
                         handleLine(line!!)
+                    }
+                }
+                // Connection closed cleanly (EOF) — delay before reconnecting
+                // to avoid a tight reconnect loop when the server restarts
+                if (running.get()) {
+                    Log.i(TAG, "Connection closed (EOF), reconnecting in ${RECONNECT_DELAY_MS}ms")
+                    transcriptionCallback?.onStatusChanged("Disconnected — reconnecting...")
+                    try {
+                        Thread.sleep(RECONNECT_DELAY_MS)
+                    } catch (_: InterruptedException) {
+                        break
                     }
                 }
             } catch (e: Exception) {

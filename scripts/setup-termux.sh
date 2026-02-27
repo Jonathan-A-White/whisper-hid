@@ -59,7 +59,7 @@ fi
 # 6. Copy scripts
 echo "[6/6] Setting up scripts..."
 MISSING_SCRIPTS=()
-for script in start-stt.sh stop-stt.sh update-model.sh; do
+for script in start-stt.sh stt-loop.sh stop-stt.sh update-model.sh; do
     if [ -f "$SCRIPT_DIR/$script" ]; then
         cp "$SCRIPT_DIR/$script" "$INSTALL_DIR/$script"
         chmod +x "$INSTALL_DIR/$script"
