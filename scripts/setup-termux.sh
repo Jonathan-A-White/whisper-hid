@@ -52,11 +52,16 @@ else
     fi
     echo "  CPU features detected, using: -march=$ARM_MARCH"
 
+    # GGML_NATIVE=OFF prevents ggml from auto-detecting -mcpu=native,
+    # which can emit instructions the CPU doesn't actually support (SIGILL).
+    # We pass our own -march via CMAKE_{C,CXX}_FLAGS instead.
     cmake -B build \
         -DCMAKE_C_FLAGS="-march=$ARM_MARCH" \
         -DCMAKE_CXX_FLAGS="-march=$ARM_MARCH" \
+        -DGGML_NATIVE=OFF \
         -DGGML_FLASH_ATTN=OFF \
-        -DWHISPER_NO_ACCELERATE=ON
+        -DWHISPER_NO_ACCELERATE=ON \
+        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     cmake --build build --config Release -j"$(nproc)"
 fi
 
