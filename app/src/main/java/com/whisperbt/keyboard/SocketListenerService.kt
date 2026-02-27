@@ -138,13 +138,15 @@ class SocketListenerService : Service() {
 
     /** Send PTT START command to the server. */
     fun pttStart() {
-        socketWriter?.println("START")
+        val writer = socketWriter ?: return
+        Thread { writer.println("START") }.start()
         Log.i(TAG, "PTT: START sent")
     }
 
     /** Send PTT STOP command to the server. */
     fun pttStop() {
-        socketWriter?.println("STOP")
+        val writer = socketWriter ?: return
+        Thread { writer.println("STOP") }.start()
         Log.i(TAG, "PTT: STOP sent")
     }
 
