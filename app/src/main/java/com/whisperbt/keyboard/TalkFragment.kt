@@ -95,8 +95,6 @@ class TalkFragment : Fragment() {
             if (!pttRecording) {
                 pttRecording = true
                 mainActivity?.socketService?.pttStart()
-                toneGen?.startTone(ToneGenerator.TONE_PROP_BEEP, 160)
-                haptic(longArrayOf(0, 60))
                 pttButton.text = getString(R.string.recording)
                 pttButton.setBackgroundResource(R.drawable.talk_button_recording)
                 pttButton.animate().scaleX(1.05f).scaleY(1.05f).setDuration(150).start()
@@ -104,7 +102,6 @@ class TalkFragment : Fragment() {
             } else {
                 pttRecording = false
                 mainActivity?.socketService?.pttStop()
-                toneGen?.startTone(ToneGenerator.TONE_PROP_BEEP2, 120)
                 haptic(longArrayOf(0, 40, 80, 40))
                 pttButton.text = getString(R.string.hold_to_talk)
                 pttButton.setBackgroundResource(R.drawable.talk_button_idle)
@@ -214,5 +211,14 @@ class TalkFragment : Fragment() {
         }
 
         override fun onStatusChanged(status: String) {}
+
+        override fun onMicReady() {
+            activity?.runOnUiThread {
+                if (pttRecording) {
+                    toneGen?.startTone(ToneGenerator.TONE_PROP_BEEP, 160)
+                    haptic(longArrayOf(0, 60))
+                }
+            }
+        }
     }
 }
