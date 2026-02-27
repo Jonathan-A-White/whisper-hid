@@ -1,11 +1,7 @@
 package com.whisperbt.keyboard
 
 import android.Manifest
-import android.bluetooth.BluetoothAdapter
 import android.media.AudioManager
-import android.media.ToneGenerator
-import android.os.VibrationEffect
-import android.os.Vibrator
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -15,105 +11,158 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.widget.Button
-import android.widget.CheckBox
-import android.widget.EditText
-import android.widget.ScrollView
-import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import com.google.android.material.bottomnavigation.BottomNavigationView
 
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val PERM_REQUEST_CODE = 1001
-        private const val PREFS_NAME = "whisper_keyboard_prefs"
-        private const val KEY_DELAY = "keystroke_delay"
-        private const val KEY_PORT = "socket_port"
-        private const val KEY_NEWLINE = "append_newline"
-        private const val KEY_SPACE = "append_space"
+        const val PREFS_NAME = "whisper_keyboard_prefs"
+        const val KEY_DELAY = "keystroke_delay"
+        const val KEY_PORT = "socket_port"
+        const val KEY_NEWLINE = "append_newline"
+        const val KEY_SPACE = "append_space"
+        const val KEY_AUTO_START = "auto_start_boot"
     }
 
-    private lateinit var prefs: SharedPreferences
-    private lateinit var statusText: TextView
-    private lateinit var logText: TextView
-    private lateinit var logScroll: ScrollView
-    private lateinit var toggleButton: Button
-    private lateinit var pairButton: Button
-    private lateinit var delayInput: EditText
-    private lateinit var portInput: EditText
-    private lateinit var newlineCheckbox: CheckBox
-    private lateinit var spaceCheckbox: CheckBox
-    private lateinit var pttButton: Button
+    interface ServiceListener {
+        fun onConnectionStateChanged(connected: Boolean, deviceName: String?) {}
+        fun onTranscription(text: String) {}
+        fun onStatusChanged(status: String) {}
+    }
 
-    private var hidService: BluetoothHidService? = null
-    private var socketService: SocketListenerService? = null
-    private var toneGen: ToneGenerator? = null
-    private var vibrator: Vibrator? = null
+    var hidService: BluetoothHidService? = null
+    var socketService: SocketListenerService? = null
+    lateinit var db: TranscriptionDatabase
+
+    private lateinit var prefs: SharedPreferences
+    private lateinit var bottomNav: BottomNavigationView
+
+    var talkFragment: TalkFragment? = null
+        private set
+    private var historyFragment: HistoryFragment? = null
+    private var settingsFragment: SettingsFragment? = null
+
     private var hidBound = false
     private var socketBound = false
-    private var servicesRunning = false
-    private var pttRecording = false
+    private var activeFragment: Fragment? = null
+    private var serviceListener: ServiceListener? = null
+    private val logBuffer = StringBuilder()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        db = TranscriptionDatabase(this)
 
-        statusText = findViewById(R.id.statusText)
-        logText = findViewById(R.id.logText)
-        logScroll = findViewById(R.id.logScroll)
-        toggleButton = findViewById(R.id.toggleButton)
-        pairButton = findViewById(R.id.pairButton)
-        delayInput = findViewById(R.id.delayInput)
-        portInput = findViewById(R.id.portInput)
-        newlineCheckbox = findViewById(R.id.newlineCheckbox)
-        spaceCheckbox = findViewById(R.id.spaceCheckbox)
-        pttButton = findViewById(R.id.pttButton)
+        bottomNav = findViewById(R.id.bottomNav)
 
-        // Load saved preferences
-        delayInput.setText(prefs.getInt(KEY_DELAY, 10).toString())
-        portInput.setText(prefs.getInt(KEY_PORT, 9876).toString())
-        newlineCheckbox.isChecked = prefs.getBoolean(KEY_NEWLINE, false)
-        spaceCheckbox.isChecked = prefs.getBoolean(KEY_SPACE, true)
+        // Create or restore fragments using show/hide for state preservation
+        if (savedInstanceState == null) {
+            talkFragment = TalkFragment()
+            historyFragment = HistoryFragment()
+            settingsFragment = SettingsFragment()
 
-        toggleButton.setOnClickListener { toggleServices() }
-        pairButton.setOnClickListener { openBluetoothSettings() }
-
-        setupPttButton()
-
-        try {
-            toneGen = ToneGenerator(AudioManager.STREAM_NOTIFICATION, ToneGenerator.MAX_VOLUME)
-        } catch (_: RuntimeException) {
-            // ToneGenerator unavailable (e.g. audio service not ready) — chime won't play
+            supportFragmentManager.beginTransaction()
+                .add(R.id.fragmentContainer, settingsFragment!!, "settings")
+                .hide(settingsFragment!!)
+                .add(R.id.fragmentContainer, historyFragment!!, "history")
+                .hide(historyFragment!!)
+                .add(R.id.fragmentContainer, talkFragment!!, "talk")
+                .commit()
+            activeFragment = talkFragment
+        } else {
+            talkFragment = supportFragmentManager.findFragmentByTag("talk") as? TalkFragment
+            historyFragment =
+                supportFragmentManager.findFragmentByTag("history") as? HistoryFragment
+            settingsFragment =
+                supportFragmentManager.findFragmentByTag("settings") as? SettingsFragment
+            activeFragment = talkFragment
         }
-        @Suppress("DEPRECATION")
-        vibrator = getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+
+        bottomNav.setOnItemSelectedListener { item ->
+            val selected: Fragment = when (item.itemId) {
+                R.id.nav_talk -> talkFragment ?: return@setOnItemSelectedListener false
+                R.id.nav_history -> historyFragment ?: return@setOnItemSelectedListener false
+                R.id.nav_settings -> settingsFragment ?: return@setOnItemSelectedListener false
+                else -> return@setOnItemSelectedListener false
+            }
+            if (selected != activeFragment) {
+                supportFragmentManager.beginTransaction().apply {
+                    activeFragment?.let { hide(it) }
+                    show(selected)
+                }.commit()
+                activeFragment = selected
+            }
+            true
+        }
+
+        // Back press returns to Talk tab first
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (bottomNav.selectedItemId != R.id.nav_talk) {
+                    bottomNav.selectedItemId = R.id.nav_talk
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
 
         requestPermissions()
+        startServices()
     }
 
     override fun onDestroy() {
-        toneGen?.release()
-        toneGen = null
+        stopServices()
+        db.close()
         super.onDestroy()
     }
 
     override fun onStart() {
         super.onStart()
-        if (servicesRunning) {
-            bindServices()
-        }
+        bindServices()
     }
 
     override fun onStop() {
         unbindServices()
-        savePreferences()
         super.onStop()
     }
+
+    fun setServiceListener(listener: ServiceListener?) {
+        serviceListener = listener
+    }
+
+    fun getPrefs(): SharedPreferences = prefs
+
+    fun appendLog(message: String) {
+        logBuffer.append(message).append('\n')
+        runOnUiThread {
+            settingsFragment?.appendLog(message)
+        }
+    }
+
+    fun getLogText(): String = logBuffer.toString()
+
+    fun clearLogs() {
+        logBuffer.clear()
+    }
+
+    fun applySettings() {
+        hidService?.keystrokeDelayMs = prefs.getInt(KEY_DELAY, 10).toLong()
+        socketService?.setPort(prefs.getInt(KEY_PORT, 9876))
+        socketService?.appendNewline = prefs.getBoolean(KEY_NEWLINE, false)
+        socketService?.appendSpace = prefs.getBoolean(KEY_SPACE, true)
+    }
+
+    // --- Permissions ---
 
     private fun requestPermissions() {
         val needed = mutableListOf<String>()
@@ -148,33 +197,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun toggleServices() {
-        if (servicesRunning) {
-            stopServices()
-        } else {
-            startServices()
-        }
-    }
+    // --- Service lifecycle ---
 
     private fun startServices() {
-        savePreferences()
-
-        // Enable Bluetooth SCO so termux-microphone-record can use the headset mic.
-        // This must be called before Termux starts recording with VOICE_COMMUNICATION source.
+        // Enable Bluetooth SCO so termux-microphone-record can use the headset mic
         @Suppress("DEPRECATION")
         (getSystemService(Context.AUDIO_SERVICE) as AudioManager).startBluetoothSco()
 
-        // Start BluetoothHidService as foreground service
         val hidIntent = Intent(this, BluetoothHidService::class.java)
         ContextCompat.startForegroundService(this, hidIntent)
 
-        // Start SocketListenerService
         val socketIntent = Intent(this, SocketListenerService::class.java)
         startService(socketIntent)
 
         bindServices()
-        servicesRunning = true
-        toggleButton.text = getString(R.string.stop)
         appendLog("Services started")
     }
 
@@ -188,18 +224,13 @@ class MainActivity : AppCompatActivity() {
         stopService(Intent(this, SocketListenerService::class.java))
         stopService(Intent(this, BluetoothHidService::class.java))
 
-        servicesRunning = false
-        toggleButton.text = getString(R.string.start)
-        statusText.text = getString(R.string.status_stopped)
         appendLog("Services stopped")
     }
 
     private fun bindServices() {
-        // Bind HID service
         val hidIntent = Intent(this, BluetoothHidService::class.java)
         bindService(hidIntent, hidConnection, Context.BIND_AUTO_CREATE)
 
-        // Bind Socket service
         val socketIntent = Intent(this, SocketListenerService::class.java)
         bindService(socketIntent, socketConnection, Context.BIND_AUTO_CREATE)
     }
@@ -217,25 +248,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // --- Service connections ---
+
     private val hidConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             hidService = (service as BluetoothHidService.LocalBinder).getService()
             hidBound = true
 
-            hidService?.keystrokeDelayMs = delayInput.text.toString().toLongOrNull() ?: 10L
+            hidService?.keystrokeDelayMs = prefs.getInt(KEY_DELAY, 10).toLong()
 
             hidService?.connectionCallback = object : BluetoothHidService.ConnectionCallback {
                 override fun onConnectionStateChanged(connected: Boolean, deviceName: String?) {
                     runOnUiThread {
                         if (connected) {
-                            statusText.text = "Connected to $deviceName"
                             appendLog("Bluetooth connected: $deviceName")
-                            // Flush any text that was buffered while waiting for BT
                             socketService?.flushBuffer()
                         } else {
-                            statusText.text = getString(R.string.status_disconnected)
                             appendLog("Bluetooth disconnected")
                         }
+                        serviceListener?.onConnectionStateChanged(connected, deviceName)
                     }
                 }
 
@@ -243,8 +274,6 @@ class MainActivity : AppCompatActivity() {
                     runOnUiThread {
                         if (ready) {
                             appendLog("HID profile registered — ready for pairing")
-                            statusText.text = getString(R.string.status_ready)
-                            // Start socket listener once HID is ready
                             socketService?.start()
                         } else {
                             appendLog("HID profile registration failed")
@@ -265,88 +294,32 @@ class MainActivity : AppCompatActivity() {
             socketService = (service as SocketListenerService.LocalBinder).getService()
             socketBound = true
 
-            socketService?.setPort(portInput.text.toString().toIntOrNull() ?: 9876)
-            socketService?.appendNewline = newlineCheckbox.isChecked
-            socketService?.appendSpace = spaceCheckbox.isChecked
+            socketService?.setPort(prefs.getInt(KEY_PORT, 9876))
+            socketService?.appendNewline = prefs.getBoolean(KEY_NEWLINE, false)
+            socketService?.appendSpace = prefs.getBoolean(KEY_SPACE, true)
             socketService?.pttMode = true
 
-            socketService?.transcriptionCallback = object : SocketListenerService.TranscriptionCallback {
-                override fun onTranscription(text: String) {
-                    runOnUiThread { appendLog("> $text") }
-                }
+            socketService?.transcriptionCallback =
+                object : SocketListenerService.TranscriptionCallback {
+                    override fun onTranscription(text: String) {
+                        db.insert(text)
+                        runOnUiThread {
+                            appendLog("> $text")
+                            serviceListener?.onTranscription(text)
+                        }
+                    }
 
-                override fun onStatusChanged(status: String) {
-                    runOnUiThread { appendLog("[Socket] $status") }
-                }
+                    override fun onStatusChanged(status: String) {
+                        runOnUiThread { appendLog("[Socket] $status") }
+                    }
 
-                override fun onMicReady() {
-                    // Beep is played immediately on button press; no second chime needed
+                    override fun onMicReady() {}
                 }
-            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             socketService = null
             socketBound = false
         }
-    }
-
-    private fun openBluetoothSettings() {
-        val intent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
-            putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 120)
-        }
-        try {
-            startActivity(intent)
-        } catch (_: SecurityException) {
-            // Fall back to general Bluetooth settings
-            startActivity(Intent(android.provider.Settings.ACTION_BLUETOOTH_SETTINGS))
-        }
-    }
-
-    private fun setupPttButton() {
-        pttButton.setOnClickListener {
-            if (!pttRecording) {
-                pttRecording = true
-                socketService?.pttStart()
-                toneGen?.startTone(ToneGenerator.TONE_PROP_BEEP, 160)
-                haptic(longArrayOf(0, 60))
-                pttButton.text = getString(R.string.recording)
-                appendLog("[PTT] Recording...")
-            } else {
-                pttRecording = false
-                socketService?.pttStop()
-                toneGen?.startTone(ToneGenerator.TONE_PROP_BEEP2, 120)
-                haptic(longArrayOf(0, 40, 80, 40))
-                pttButton.text = getString(R.string.hold_to_talk)
-                appendLog("[PTT] Stopped — transcribing...")
-            }
-        }
-    }
-
-    private fun haptic(timings: LongArray) {
-        vibrator?.vibrate(VibrationEffect.createWaveform(timings, -1))
-    }
-
-    private fun resetPttButton() {
-        if (pttRecording) {
-            socketService?.pttStop()
-            pttRecording = false
-        }
-        pttButton.text = getString(R.string.hold_to_talk)
-    }
-
-    private fun savePreferences() {
-        prefs.edit().apply {
-            putInt(KEY_DELAY, delayInput.text.toString().toIntOrNull() ?: 10)
-            putInt(KEY_PORT, portInput.text.toString().toIntOrNull() ?: 9876)
-            putBoolean(KEY_NEWLINE, newlineCheckbox.isChecked)
-            putBoolean(KEY_SPACE, spaceCheckbox.isChecked)
-            apply()
-        }
-    }
-
-    private fun appendLog(message: String) {
-        logText.append("$message\n")
-        logScroll.post { logScroll.fullScroll(ScrollView.FOCUS_DOWN) }
     }
 }

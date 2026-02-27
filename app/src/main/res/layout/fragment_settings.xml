@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/background_dark">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Settings Header -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_header"
+            android:textColor="@color/primary"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:textAllCaps="true"
+            android:letterSpacing="0.1"
+            android:paddingBottom="12dp" />
+
+        <!-- Keystroke Delay -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="12dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/delay_label"
+                android:textColor="@color/on_surface"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/delayInput"
+                android:layout_width="72dp"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:text="10"
+                android:textColor="@color/on_surface"
+                android:textSize="15sp"
+                android:gravity="center"
+                android:background="@drawable/card_bg"
+                android:padding="8dp" />
+        </LinearLayout>
+
+        <!-- Socket Port -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="16dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/port_label"
+                android:textColor="@color/on_surface"
+                android:textSize="15sp" />
+
+            <EditText
+                android:id="@+id/portInput"
+                android:layout_width="72dp"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:text="9876"
+                android:textColor="@color/on_surface"
+                android:textSize="15sp"
+                android:gravity="center"
+                android:background="@drawable/card_bg"
+                android:padding="8dp" />
+        </LinearLayout>
+
+        <!-- Checkboxes -->
+        <CheckBox
+            android:id="@+id/newlineCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/newline_option"
+            android:textColor="@color/on_surface"
+            android:textSize="15sp"
+            android:buttonTint="@color/primary"
+            android:paddingBottom="4dp" />
+
+        <CheckBox
+            android:id="@+id/spaceCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/space_option"
+            android:textColor="@color/on_surface"
+            android:textSize="15sp"
+            android:buttonTint="@color/primary"
+            android:checked="true"
+            android:paddingBottom="4dp" />
+
+        <CheckBox
+            android:id="@+id/autoStartCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/auto_start_boot"
+            android:textColor="@color/on_surface"
+            android:textSize="15sp"
+            android:buttonTint="@color/primary"
+            android:paddingBottom="16dp" />
+
+        <!-- Pair Button -->
+        <Button
+            android:id="@+id/pairButton"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="@string/pair"
+            android:textSize="15sp"
+            android:layout_marginBottom="24dp" />
+
+        <!-- Divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/divider"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Debug Logs Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:paddingBottom="8dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/debug_logs"
+                android:textColor="@color/primary"
+                android:textSize="14sp"
+                android:textStyle="bold"
+                android:textAllCaps="true"
+                android:letterSpacing="0.1" />
+
+            <Button
+                android:id="@+id/copyLogsButton"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:text="@string/copy_logs"
+                android:textColor="@color/primary"
+                android:textSize="12sp"
+                android:background="?attr/selectableItemBackground"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:layout_marginEnd="4dp" />
+
+            <Button
+                android:id="@+id/clearLogsButton"
+                android:layout_width="wrap_content"
+                android:layout_height="32dp"
+                android:text="@string/clear_logs"
+                android:textColor="@color/error"
+                android:textSize="12sp"
+                android:background="?attr/selectableItemBackground"
+                android:minWidth="0dp"
+                android:minHeight="0dp"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp" />
+        </LinearLayout>
+
+        <!-- Log area -->
+        <ScrollView
+            android:id="@+id/logScroll"
+            android:layout_width="match_parent"
+            android:layout_height="300dp"
+            android:background="@drawable/card_bg"
+            android:padding="10dp">
+
+            <TextView
+                android:id="@+id/logText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:textSize="11sp"
+                android:textColor="@color/on_surface_secondary"
+                android:textIsSelectable="true" />
+        </ScrollView>
+
+    </LinearLayout>
+</ScrollView>

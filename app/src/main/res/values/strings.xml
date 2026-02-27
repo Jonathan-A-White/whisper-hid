@@ -1,18 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Whisper Keyboard</string>
-    <string name="start">Start</string>
-    <string name="stop">Stop</string>
-    <string name="pair">Pair / Discoverable</string>
-    <string name="settings_header">Settings</string>
-    <string name="delay_label">Keystroke delay (ms):</string>
-    <string name="port_label">Socket port:</string>
-    <string name="newline_option">Add newline after each segment</string>
-    <string name="space_option">Add space between segments</string>
-<string name="hold_to_talk">Tap to Talk</string>
+
+    <!-- Bottom navigation -->
+    <string name="tab_talk">Talk</string>
+    <string name="tab_history">History</string>
+    <string name="tab_settings">Settings</string>
+
+    <!-- Talk screen -->
+    <string name="hold_to_talk">Tap to Talk</string>
     <string name="recording">Recording…</string>
-    <string name="log_header">Log</string>
-    <string name="status_stopped">Stopped</string>
+    <string name="status_stopped">Not connected</string>
     <string name="status_ready">Ready — waiting for connection</string>
     <string name="status_disconnected">Disconnected</string>
+    <string name="pinned_header">Quick Send</string>
+
+    <!-- History screen -->
+    <string name="search_history">Search history…</string>
+    <string name="clear_all_history">Clear All</string>
+    <string name="no_history">No transcriptions yet</string>
+    <string name="send">Send</string>
+    <string name="pin">Pin</string>
+    <string name="unpin">Unpin</string>
+    <string name="delete">Delete</string>
+    <string name="cancel">Cancel</string>
+    <string name="confirm_clear_all">Clear all history?</string>
+    <string name="confirm_clear_all_message">This will permanently delete all transcription history.</string>
+    <string name="item_pinned">Pinned</string>
+    <string name="item_unpinned">Unpinned</string>
+    <string name="history_cleared">History cleared</string>
+    <string name="item_deleted">Item deleted</string>
+
+    <!-- Settings screen -->
+    <string name="settings_header">Settings</string>
+    <string name="delay_label">Keystroke delay (ms)</string>
+    <string name="port_label">Socket port</string>
+    <string name="newline_option">Add newline after each segment</string>
+    <string name="space_option">Add space between segments</string>
+    <string name="auto_start_boot">Auto-start on boot</string>
+    <string name="pair">Pair / Discoverable</string>
+    <string name="debug_logs">Debug Logs</string>
+    <string name="copy_logs">Copy Logs</string>
+    <string name="clear_logs">Clear Logs</string>
+    <string name="logs_copied">Logs copied to clipboard</string>
 </resources>

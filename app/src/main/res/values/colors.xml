@@ -1,4 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#1A1A2E</color>
+
+    <!-- Dark theme colors -->
+    <color name="background_dark">#121212</color>
+    <color name="surface_dark">#1E1E2E</color>
+    <color name="surface_variant_dark">#2A2A3A</color>
+    <color name="primary">#4FC3F7</color>
+    <color name="primary_variant">#0097A7</color>
+    <color name="secondary">#80CBC4</color>
+    <color name="error">#FF5252</color>
+    <color name="recording_red">#FF5252</color>
+    <color name="on_background">#E0E0E0</color>
+    <color name="on_surface">#FFFFFF</color>
+    <color name="on_surface_secondary">#B0B0B0</color>
+    <color name="on_primary">#000000</color>
+    <color name="divider">#333333</color>
+    <color name="card_dark">#252538</color>
+    <color name="search_bg">#2A2A3A</color>
+    <color name="status_connected">#66BB6A</color>
+    <color name="status_disconnected">#FF5252</color>
+    <color name="pinned_chip_bg">#2A3A4A</color>
+    <color name="bottom_nav_bg">#1A1A2E</color>
 </resources>
