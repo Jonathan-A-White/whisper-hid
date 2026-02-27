@@ -9,6 +9,9 @@
     <string name="port_label">Socket port:</string>
     <string name="newline_option">Add newline after each segment</string>
     <string name="space_option">Add space between segments</string>
+    <string name="ptt_option">Push-to-talk mode</string>
+    <string name="hold_to_talk">Hold to Talk</string>
+    <string name="recording">Recording…</string>
     <string name="log_header">Log</string>
     <string name="status_stopped">Stopped</string>
     <string name="status_ready">Ready — waiting for connection</string>

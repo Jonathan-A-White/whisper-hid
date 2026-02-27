@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.util.Log
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.PrintWriter
 import java.net.Socket
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -38,7 +39,10 @@ class SocketListenerService : Service() {
     var transcriptionCallback: TranscriptionCallback? = null
     var appendNewline = false
     var appendSpace = true
+    var pttMode = false
     private var paused = false
+    @Volatile private var socketWriter: PrintWriter? = null
+    @Volatile private var currentSocket: Socket? = null
 
     inner class LocalBinder : Binder() {
         fun getService(): SocketListenerService = this@SocketListenerService
@@ -81,15 +85,29 @@ class SocketListenerService : Service() {
         while (running.get()) {
             try {
                 Socket("127.0.0.1", port).use { socket ->
+                    currentSocket = socket
                     reconnectDelay = RECONNECT_DELAY_MS
-                    transcriptionCallback?.onStatusChanged("Connected — listening")
-                    Log.i(TAG, "Connected to localhost:$port")
+
+                    // Set up writer for sending commands (PTT START/STOP) to server
+                    socketWriter = PrintWriter(socket.getOutputStream(), true)
+
+                    // Send mode line so server knows which loop to enter
+                    if (pttMode) {
+                        socketWriter?.println("MODE:PTT")
+                        transcriptionCallback?.onStatusChanged("Connected — push to talk")
+                    } else {
+                        transcriptionCallback?.onStatusChanged("Connected — listening")
+                    }
+                    Log.i(TAG, "Connected to localhost:$port (ptt=$pttMode)")
 
                     val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
                     var line: String? = null
                     while (running.get() && reader.readLine().also { line = it } != null) {
                         handleLine(line!!)
                     }
+
+                    socketWriter = null
+                    currentSocket = null
                 }
                 // Connection closed cleanly (EOF) — delay before reconnecting
                 // to avoid a tight reconnect loop when the server restarts
@@ -103,6 +121,8 @@ class SocketListenerService : Service() {
                     }
                 }
             } catch (e: Exception) {
+                socketWriter = null
+                currentSocket = null
                 if (!running.get()) break
                 Log.w(TAG, "Socket connection failed, retrying in ${reconnectDelay}ms", e)
                 transcriptionCallback?.onStatusChanged("Disconnected — retrying...")
@@ -114,6 +134,23 @@ class SocketListenerService : Service() {
                 reconnectDelay = (reconnectDelay * 2).coerceAtMost(MAX_RECONNECT_DELAY_MS)
             }
         }
+    }
+
+    /** Send PTT START command to the server. */
+    fun pttStart() {
+        socketWriter?.println("START")
+        Log.i(TAG, "PTT: START sent")
+    }
+
+    /** Send PTT STOP command to the server. */
+    fun pttStop() {
+        socketWriter?.println("STOP")
+        Log.i(TAG, "PTT: STOP sent")
+    }
+
+    /** Close the current connection to force a reconnect (e.g. after mode change). */
+    fun reconnect() {
+        try { currentSocket?.close() } catch (_: Exception) {}
     }
 
     private fun handleLine(line: String) {
