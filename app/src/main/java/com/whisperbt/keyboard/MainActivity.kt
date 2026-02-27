@@ -1,7 +1,6 @@
 package com.whisperbt.keyboard
 
 import android.Manifest
-import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.content.ComponentName
 import android.content.Context
@@ -12,7 +11,6 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
-import android.view.MotionEvent
 import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
@@ -54,6 +52,7 @@ class MainActivity : AppCompatActivity() {
     private var hidBound = false
     private var socketBound = false
     private var servicesRunning = false
+    private var pttRecording = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,8 +86,10 @@ class MainActivity : AppCompatActivity() {
         pttCheckbox.setOnCheckedChangeListener { _, isChecked ->
             pttButton.visibility = if (isChecked) View.VISIBLE else View.GONE
             socketService?.pttMode = isChecked
+            if (!isChecked) resetPttButton()
             // Reconnect so the server enters the correct mode
             if (servicesRunning) {
+                resetPttButton()
                 socketService?.reconnect()
             }
         }
@@ -287,25 +288,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    @SuppressLint("ClickableViewAccessibility")
     private fun setupPttButton() {
-        pttButton.setOnTouchListener { _, event ->
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> {
-                    socketService?.pttStart()
-                    pttButton.text = getString(R.string.recording)
-                    appendLog("[PTT] Recording...")
-                    true
-                }
-                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    socketService?.pttStop()
-                    pttButton.text = getString(R.string.hold_to_talk)
-                    appendLog("[PTT] Stopped — transcribing...")
-                    true
-                }
-                else -> false
+        pttButton.setOnClickListener {
+            if (!pttRecording) {
+                pttRecording = true
+                socketService?.pttStart()
+                pttButton.text = getString(R.string.recording)
+                appendLog("[PTT] Recording...")
+            } else {
+                pttRecording = false
+                socketService?.pttStop()
+                pttButton.text = getString(R.string.hold_to_talk)
+                appendLog("[PTT] Stopped — transcribing...")
             }
         }
+    }
+
+    private fun resetPttButton() {
+        if (pttRecording) {
+            socketService?.pttStop()
+            pttRecording = false
+        }
+        pttButton.text = getString(R.string.hold_to_talk)
     }
 
     private fun savePreferences() {
