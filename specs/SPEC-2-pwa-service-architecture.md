@@ -1,0 +1,1174 @@
+# Whisper Bluetooth Keyboard — SPEC 2: PWA + Service Architecture
+
+## Summary
+
+Redesign the system into three cleanly separated components: a **Progressive Web App (PWA)** for UI and microphone capture, a **Whisper transcription server** in Termux, and a **headless Kotlin Bluetooth HID service**. This replaces the current two-component architecture (SPEC-1) where Termux owns the mic and the Kotlin app owns both UI and Bluetooth.
+
+## Motivation
+
+The SPEC-1 architecture tightly couples concerns:
+- Termux owns mic capture *and* transcription
+- The Kotlin app owns UI *and* Bluetooth HID *and* socket listening
+
+This makes it hard to:
+- Build a good UI (Android XML layouts in a thin Kotlin app)
+- Show transcription history or let the user review/edit text
+- Handle Bluetooth disconnections gracefully (text vanishes into the socket)
+- Swap the transcription backend without touching the mic capture code
+
+The new architecture separates these concerns. Each component does one thing.
+
+---
+
+## Architecture
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  Samsung S24 Ultra                                         │
+│                                                            │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  PWA (saved to homescreen from GitHub Pages)         │  │
+│  │  - Mic capture via Web Audio API / MediaRecorder     │  │
+│  │  - UI: recording state, transcript history, settings │  │
+│  │  - Sends audio to Whisper server                     │  │
+│  │  - Sends transcribed text to Kotlin service          │  │
+│  │  - Queues text when BT is disconnected               │  │
+│  └──────┬──────────────────────────────────┬────────────┘  │
+│         │ audio chunks                     │ text          │
+│         │ http://localhost:9876             │ http://localhost:9877
+│         ▼                                  ▼               │
+│  ┌──────────────────┐          ┌───────────────────────┐   │
+│  │  Whisper Server   │          │  Kotlin BT HID Service│   │
+│  │  (Termux)         │          │  (Android)            │   │
+│  │  - Receives audio │          │  - Receives text      │   │
+│  │  - Returns text   │          │  - Sends BT HID keys  │   │
+│  │  - HTTP API       │          │  - Reports status/logs │   │
+│  │  - localhost:9876  │          │  - HTTP API            │   │
+│  └──────────────────┘          │  - localhost:9877       │   │
+│                                 │         │              │   │
+│                                 └─────────│──────────────┘   │
+│                                           │                  │
+└───────────────────────────────────────────│──────────────────┘
+                                            │ Bluetooth HID
+                                            ▼
+                                      ┌──────────┐
+                                      │  Laptop   │
+                                      │  (sees a  │
+                                      │  keyboard)│
+                                      └──────────┘
+
+PWA hosted at: https://jonathan-a-white.github.io/whisper-hid/
+API servers on phone: http://localhost:9876 (Whisper), http://localhost:9877 (HID)
+```
+
+### Why three components
+
+- **PWA**: Web tech gives a modern, iterable UI. Hosted on GitHub Pages (HTTPS), saved to homescreen via Chrome's "Add to Home Screen". Mic capture via Web Audio API works because HTTPS is a secure context. The PWA talks to localhost services via `fetch()` with Private Network Access headers. The PWA is the orchestrator — it captures audio, gets transcriptions, and decides when to send text.
+- **Whisper server**: A stateless transcription API. Receives audio bytes, returns text. No mic ownership, no socket management. Can be swapped for a different engine or a remote API without changing anything else.
+- **Kotlin BT HID service**: A headless service that receives text and sends keystrokes. No UI, no socket listening from Termux, no transcription awareness. Its only job is Bluetooth HID.
+
+### Communication flow
+
+```
+User speaks
+  → PWA captures audio via MediaRecorder / AudioWorklet
+  → PWA sends audio to Whisper server (POST /transcribe)
+  → Whisper server returns transcribed text
+  → PWA displays text in transcript history
+  → PWA sends text to Kotlin service (POST /type)
+  → Kotlin service sends keystrokes via Bluetooth HID
+  → Text appears on laptop
+```
+
+---
+
+## Component 1: PWA
+
+### Tech Stack
+
+| Tool | Purpose |
+|------|---------|
+| React 19 | UI framework |
+| Vite | Build tool / dev server |
+| TypeScript | Type-safe JavaScript |
+| Tailwind CSS 4 | Utility-first styling |
+| vite-plugin-pwa + Workbox | Service worker / offline caching / installability |
+| IndexedDB (via `idb`) | Client-side storage (transcript history, settings) |
+
+`idb` is the only runtime dependency beyond React. Tailwind, Vite, and TypeScript are dev-only.
+
+### Hosting
+
+The PWA is hosted on **GitHub Pages** at `https://jonathan-a-white.github.io/whisper-hid/`. Users save it to their homescreen via Chrome's "Add to Home Screen" — it then launches as a standalone app.
+
+**Why GitHub Pages instead of localhost**:
+- No need to run a local HTTP server on the phone (`serve-pwa.sh` eliminated)
+- PWA updates automatically when code is pushed — no file copying to the phone
+- HTTPS is a secure context, so `getUserMedia` (mic access) and service workers work natively
+- The Workbox service worker caches the app shell, so after first load it works offline
+
+**Development**: `npm run dev` runs Vite's dev server on `localhost:5173` with HMR.
+
+**Production**: CI builds the PWA and deploys to GitHub Pages on push to `main`. Vite's `base` config is set to `/whisper-hid/` to match the GitHub Pages path.
+
+**Private Network Access**: The PWA (HTTPS) makes requests to localhost services (HTTP). Chrome allows this but requires the localhost servers to respond to CORS preflight with:
+```
+Access-Control-Allow-Private-Network: true
+```
+Both the Whisper server and Kotlin HID service must include this header (see Security section).
+
+### Mic Capture
+
+Two approaches, in order of preference:
+
+1. **AudioWorklet (preferred)**: Captures raw PCM samples at a configurable sample rate. The worklet outputs 16kHz 16-bit mono PCM directly, which is what whisper.cpp expects. No transcoding needed.
+
+2. **MediaRecorder (fallback)**: Captures audio as WebM/Opus or MP4/AAC. Requires server-side transcoding (FFmpeg in Termux) before Whisper can process it. Simpler browser code but adds a format conversion step.
+
+The PWA should segment audio into chunks (configurable, default 5 seconds) and send each chunk to the Whisper server for transcription.
+
+### UI
+
+#### Default mode (auto-send)
+
+```
+┌──────────────────────────────────┐
+│  Whisper Keyboard                │
+│                                  │
+│  ● Recording                    │
+│                                  │
+│  ┌────────────────────────────┐  │
+│  │ hello world              ✓ │  │
+│  │ this is a test           ✓ │  │
+│  │ the quick brown fox      ✓ │  │
+│  │ jumped over the lazy dog ✓ │  │
+│  └────────────────────────────┘  │
+│                                  │
+│  ⚙ Settings                     │
+└──────────────────────────────────┘
+```
+
+- Transcribed text is sent to the Kotlin service immediately
+- Each entry shows a checkmark when confirmed sent
+- The transcript is a scrolling log of everything sent to the laptop
+
+#### Edit-before-send mode (optional, off by default)
+
+```
+┌──────────────────────────────────┐
+│  Whisper Keyboard                │
+│                                  │
+│  ● Recording                    │
+│                                  │
+│  │ hello world              ✓ │  │
+│  │ this is a test           ✓ │  │
+│  ├────────────────────────────┤  │
+│  │ the quik brown fox jumpd  │  │
+│  │           [Send] [Discard] │  │
+│  └────────────────────────────┘  │
+│                                  │
+│  ⚙ Settings                     │
+└──────────────────────────────────┘
+```
+
+- Transcription lands in an editable text buffer
+- User can fix errors before tapping Send
+- New utterances queue below if the user keeps talking before sending
+- Enabled via a toggle in Settings
+
+#### Editing history
+
+Tapping any sent entry in the transcript opens it for editing:
+
+```
+┌──────────────────────────────────┐
+│  │ hello world              ✓ │  │
+│  │ ┌──────────────────────┐   │  │
+│  │ │the quick brown fox   │   │  │
+│  │ │  [Resend] [Cancel]   │   │  │
+│  │ └──────────────────────┘   │  │
+│  │ jumped over the lazy dog ✓ │  │
+└──────────────────────────────────┘
+```
+
+**Resend sends the corrected text as new keystrokes** at wherever the laptop's cursor currently is. The PWA does not attempt to erase the original text on the laptop (backspacing would be fragile and unreliable since the user may have moved their cursor). It is the user's responsibility to position their cursor and clean up the old text on the laptop side.
+
+#### Bluetooth disconnection
+
+When the Kotlin service reports BT is disconnected, the PWA shows a status banner driven by the `/status` response's `bluetooth` field. The banner adapts as the service moves through the state machine (see Resilience section):
+
+- **`reconnecting`**: Shows attempt counter and auto-retry progress. No user action needed yet
+- **`failed`**: Shows action buttons — "Restart HID" (`POST /restart`) and "View Debug Log"
+- **`connected`** (recovered): Banner clears, queued text flushes automatically
+
+```
+┌──────────────────────────────────────┐
+│  ⚠ Laptop disconnected              │
+│  Reconnecting... (attempt 3 of 10)  │
+│                                      │
+│  ● Recording                        │
+│                                      │
+│  │ hello world                  ✓ │  │
+│  │ this is a test               ✓ │  │
+│  │ fix the bug in main          ⏳│  │
+│  │ and update the tests         ⏳│  │
+│  └────────────────────────────────┘  │
+└──────────────────────────────────────┘
+```
+
+If auto-reconnect fails:
+
+```
+┌──────────────────────────────────────┐
+│  ✖ Connection failed                │
+│  Auto-reconnect timed out           │
+│  ┌────────────────────────────────┐  │
+│  │ [Restart HID]  [View Debug Log]│  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  ● Recording                        │
+│                                      │
+│  │ fix the bug in main          ⏳│  │
+│  │ and update the tests         ⏳│  │
+│  └────────────────────────────────┘  │
+└──────────────────────────────────────┘
+```
+
+Throughout all disconnection states:
+- Mic capture and transcription continue working
+- Transcribed text queues with a pending indicator
+- When BT reconnects (by any means), the PWA flushes the queue to `/type` in order
+- No text is lost
+
+#### Connection status
+
+The PWA polls the Kotlin service's `/status` endpoint (every 2-3 seconds) or holds an open WebSocket for real-time state changes. Displays:
+- Bluetooth connection state (connected / disconnected / pairing)
+- Connected device name
+- Whisper server reachability
+
+#### Debug view
+
+A collapsible panel or a separate `/debug` route that aggregates logs from both backend services:
+
+```
+┌──────────────────────────────────┐
+│  Debug Log                       │
+│                                  │
+│  12:05:45 [hid]  BT connected    │
+│           to ThinkPad T480       │
+│  12:12:03 [hid]  BT dropped     │
+│  12:12:08 [hid]  BT reconnected │
+│  12:14:22 [wsp]  Model loaded    │
+│           base.en (142 MB)       │
+│  12:14:25 [wsp]  Transcribed     │
+│           420ms "hello world"    │
+└──────────────────────────────────┘
+```
+
+Pulls from `/logs` on both the Kotlin service and the Whisper server.
+
+### Settings
+
+Stored in IndexedDB (via `idb`). No accounts, no cloud.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Edit before send | Off | Require manual send for each transcription |
+| Whisper model | base.en | Model used for transcription |
+| Audio chunk length | 5s | Duration of audio segments sent to Whisper |
+| Language | en | Language hint for Whisper |
+
+### PWA Manifest & Service Worker
+
+Handled by `vite-plugin-pwa`. The plugin generates a `manifest.webmanifest` and a Workbox-powered service worker from the Vite config:
+
+```ts
+// vite.config.ts (relevant excerpt)
+VitePWA({
+  registerType: "autoUpdate",
+  manifest: {
+    name: "Whisper Keyboard",
+    short_name: "Whisper",
+    start_url: "/",
+    display: "standalone",
+    background_color: "#000000",
+    theme_color: "#000000",
+  },
+  workbox: {
+    globPatterns: ["**/*.{js,css,html,woff2,png,svg}"],
+  },
+})
+```
+
+The service worker caches the PWA shell for offline use. API calls (`/transcribe`, `/type`, `/status`) are **not** cached — they must be live.
+
+---
+
+## Component 2: Whisper Server (Termux)
+
+### Overview
+
+A lightweight HTTP server wrapping whisper.cpp. It receives audio, transcribes it, and returns text. It does not capture audio from the mic — the PWA handles that.
+
+### API
+
+#### `POST /transcribe`
+
+Accepts audio data, returns transcribed text.
+
+**Request:**
+```
+POST /transcribe
+Content-Type: application/octet-stream
+
+<raw audio bytes — 16kHz 16-bit mono PCM, or other format if transcoding is enabled>
+```
+
+**Response (success):**
+```json
+{
+  "text": "hello world",
+  "duration_ms": 420
+}
+```
+
+**Response (error):**
+```json
+{
+  "error": "model_not_loaded",
+  "message": "Whisper model is not loaded. Run setup first."
+}
+```
+
+#### `GET /status`
+
+Reports server health and loaded model.
+
+**Response:**
+```json
+{
+  "status": "ready",
+  "model": "base.en",
+  "model_size_mb": 142
+}
+```
+
+#### `GET /logs`
+
+Returns recent log entries for debugging.
+
+**Response:**
+```json
+{
+  "logs": [
+    { "ts": 1709012422, "level": "info", "msg": "Model loaded: base.en (142 MB)" },
+    { "ts": 1709012425, "level": "info", "msg": "Transcribed 420ms -> \"hello world\"" },
+    { "ts": 1709012430, "level": "warn", "msg": "Empty audio segment, skipping" }
+  ]
+}
+```
+
+### Implementation
+
+The server can be built as:
+- A **Python Flask/FastAPI** app (Python is available in Termux) that shells out to the whisper.cpp binary
+- A **Bash script with socat/ncat** that wraps the whisper.cpp binary in an HTTP interface
+- A **small C/C++ HTTP server** linked directly against whisper.cpp's library
+
+Python with Flask is probably the pragmatic choice — easy to write, available in Termux, and the transcription time dominates any framework overhead.
+
+### Audio Format
+
+The server expects **16kHz 16-bit mono PCM WAV** by default (what whisper.cpp needs). If the PWA sends a different format (WebM/Opus from MediaRecorder), the server transcodes with FFmpeg before inference:
+
+```
+ffmpeg -i input.webm -ar 16000 -ac 1 -f wav pipe:1 | whisper ...
+```
+
+If the PWA uses AudioWorklet to send raw PCM, no transcoding is needed.
+
+### Port
+
+`localhost:9876` (same port as the current SPEC-1 socket, repurposed as HTTP).
+
+---
+
+## Component 3: Kotlin Bluetooth HID Service
+
+### Overview
+
+A headless Android foreground service that:
+1. Registers as a Bluetooth HID keyboard
+2. Exposes an HTTP API on localhost for receiving text and reporting status
+3. Sends received text as keystrokes to the paired laptop
+
+The Kotlin app is stripped down to the minimum: a thin Activity for lifecycle management, plus the BT HID service.
+
+### Kotlin Activity
+
+A single-screen Activity that:
+1. Starts the foreground service
+2. Shows basic status (service running, BT connection state)
+3. Has a button to open the PWA in Chrome (`https://jonathan-a-white.github.io/whisper-hid/`)
+4. Has a button to stop the service
+
+```
+┌──────────────────────────────────┐
+│  Whisper HID Service             │
+│                                  │
+│  Service: Running ●              │
+│  Bluetooth: Connected to         │
+│    "ThinkPad T480"               │
+│                                  │
+│  [Open Whisper Keyboard]         │
+│  [Stop Service]                  │
+└──────────────────────────────────┘
+```
+
+The "Open Whisper Keyboard" button fires an intent to Chrome with the PWA URL, including the auth token as a query parameter (see Security section). This is the last time the user sees this Activity during normal operation.
+
+The foreground service notification in the tray brings the user back here if tapped.
+
+### HTTP API
+
+Served on `localhost:9877`.
+
+#### `POST /type`
+
+Sends text as Bluetooth HID keystrokes to the connected laptop.
+
+**Request:**
+```json
+{
+  "text": "hello world"
+}
+```
+
+**Response (success):**
+```json
+{
+  "ok": true
+}
+```
+
+**Response (error — BT disconnected):**
+```json
+{
+  "ok": false,
+  "error": "bluetooth_disconnected",
+  "message": "No Bluetooth device connected."
+}
+```
+
+**Response (error — unauthorized):**
+```json
+{
+  "ok": false,
+  "error": "unauthorized",
+  "message": "Invalid or missing auth token."
+}
+```
+
+The PWA uses the response to decide whether to queue text (BT disconnected) or show an error.
+
+#### `POST /restart`
+
+Soft-restarts the Bluetooth HID registration without killing the app. Unregisters and re-registers the HID device, re-entering the state machine at `IDLE` (see Resilience section).
+
+**Response (success):**
+```json
+{
+  "ok": true,
+  "message": "HID service restarting. Re-registering Bluetooth HID device."
+}
+```
+
+**Response (error):**
+```json
+{
+  "ok": false,
+  "error": "restart_failed",
+  "message": "Failed to unregister HID device. Try restarting the app."
+}
+```
+
+#### `GET /status`
+
+Reports service and Bluetooth connection state.
+
+**Response (connected):**
+```json
+{
+  "service": "running",
+  "bluetooth": "connected",
+  "device": "ThinkPad T480",
+  "uptime_seconds": 3842
+}
+```
+
+**Response (reconnecting):**
+```json
+{
+  "service": "running",
+  "bluetooth": "reconnecting",
+  "device": "ThinkPad T480",
+  "uptime_seconds": 3842,
+  "reconnect_attempt": 3,
+  "reconnect_max": 10,
+  "next_retry_seconds": 8
+}
+```
+
+**Response (failed):**
+```json
+{
+  "service": "running",
+  "bluetooth": "failed",
+  "device": "ThinkPad T480",
+  "uptime_seconds": 3842,
+  "failure_reason": "Auto-reconnect timed out after 10 attempts"
+}
+```
+
+Bluetooth states: `"connected"`, `"registered"` (waiting for first connection), `"reconnecting"`, `"failed"`.
+
+#### `GET /logs`
+
+Returns recent log entries.
+
+**Response:**
+```json
+{
+  "logs": [
+    { "ts": 1709012345, "level": "info", "msg": "Service started" },
+    { "ts": 1709012350, "level": "info", "msg": "BT registered as HID device" },
+    { "ts": 1709012355, "level": "info", "msg": "BT connected to ThinkPad T480" },
+    { "ts": 1709012400, "level": "warn", "msg": "BT connection dropped" },
+    { "ts": 1709012405, "level": "info", "msg": "BT reconnecting..." },
+    { "ts": 1709012410, "level": "info", "msg": "BT reconnected to ThinkPad T480" }
+  ]
+}
+```
+
+### Bluetooth HID
+
+Unchanged from SPEC-1:
+- Registers via `BluetoothHidDevice` API
+- Standard USB HID keyboard descriptor (boot protocol compatible)
+- 8-byte report: `[modifier, reserved, key1, key2, key3, key4, key5, key6]`
+- Character-to-HID keycode mapping (see SPEC-1 for full table)
+- Configurable keystroke delay (default 10ms)
+
+### HTTP Server Implementation
+
+The service runs a lightweight HTTP server using Android's built-in `com.sun.net.httpserver.HttpServer` (available in Android's JVM) or a minimal custom implementation using `ServerSocket`. No external dependencies.
+
+### Permissions
+
+Same as SPEC-1, plus network permission for the HTTP server:
+
+```xml
+<uses-permission android:name="android.permission.BLUETOOTH" />
+<uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+<uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+<uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+<uses-permission android:name="android.permission.INTERNET" />
+```
+
+### Port
+
+`localhost:9877` (distinct from the Whisper server on `:9876`).
+
+---
+
+## Security: API Authentication
+
+### Threat Model
+
+Any app on the phone can hit `localhost:9877` and send arbitrary keystrokes to the paired laptop. This must be prevented.
+
+Browser-based attacks (malicious web pages calling localhost) are a secondary concern but also addressed.
+
+### Shared Secret Token
+
+1. **Token generation**: The Kotlin Activity generates a cryptographically random token (32 bytes, hex-encoded) each time the service starts.
+
+2. **Token delivery**: When the user taps "Open Whisper Keyboard", the Activity opens Chrome with the token in the URL:
+   ```
+   https://jonathan-a-white.github.io/whisper-hid/?token=a7f2b9c1e4d83f...
+   ```
+
+3. **Token storage**: The PWA reads the token from the URL query parameter, stores it in `sessionStorage`, and strips the token from the URL bar (via `history.replaceState`). The auth token intentionally uses `sessionStorage` (not IndexedDB) so it dies with the browser tab.
+
+4. **Token usage**: The PWA sends the token with every request to the Kotlin service:
+   ```
+   POST /type
+   Authorization: Bearer a7f2b9c1e4d83f...
+   ```
+
+5. **Token validation**: The Kotlin service rejects any request without a valid `Authorization` header with HTTP 403.
+
+6. **Token lifetime**: The token lives only as long as the service is running. Restarting the service generates a new token. `sessionStorage` clears when the browser tab closes, so there's no stale token on disk.
+
+### CORS and Private Network Access
+
+Since the PWA is served from GitHub Pages (HTTPS) and the API servers run on localhost (HTTP), two layers of browser security must be satisfied:
+
+**1. CORS**: Both the Kotlin service and the Whisper server set headers to restrict browser-based access:
+
+```
+Access-Control-Allow-Origin: https://jonathan-a-white.github.io
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Authorization, Content-Type
+```
+
+**2. Private Network Access**: Chrome requires localhost servers to explicitly opt in to receiving requests from public websites. Both servers must handle `OPTIONS` preflight requests and respond with:
+
+```
+Access-Control-Allow-Private-Network: true
+```
+
+The full preflight response from both servers looks like:
+
+```
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: https://jonathan-a-white.github.io
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Authorization, Content-Type
+Access-Control-Allow-Private-Network: true
+```
+
+This prevents arbitrary web pages from calling the APIs. Combined with the auth token, both native app and browser-based attacks are mitigated.
+
+### What this does NOT protect against
+
+- An attacker with root access to the phone (can read process memory, intercept localhost traffic)
+- An attacker who can read Chrome's `sessionStorage` (requires device compromise)
+- A malicious app on the phone that directly calls localhost (not via a browser — CORS doesn't apply)
+
+The auth token mitigates the last case — even a direct localhost caller needs the token. The first two are acceptable risks — if the attacker has root, the entire device is compromised regardless.
+
+---
+
+## Resilience and Operability
+
+The most common failure mode is Bluetooth disconnecting (out of range, laptop sleep, Android power management) and the service not recovering without a manual restart. The SPEC-2 architecture addresses this at every layer.
+
+### BT Connection State Machine
+
+The Kotlin HID service tracks connection state as a well-defined state machine. Every transition is logged via `/logs` and reflected in `/status`.
+
+```
+         ┌─────────┐
+         │  IDLE    │ ← service started, HID not registered
+         └────┬────┘
+              │ registerApp() succeeds
+              ▼
+        ┌────────────┐
+        │ REGISTERED  │ ← HID registered, waiting for connection
+        └──────┬─────┘
+               │ onConnectionStateChanged(CONNECTED)
+               ▼
+        ┌────────────┐
+        │ CONNECTED   │ ← normal operating state
+        └──────┬─────┘
+               │ onConnectionStateChanged(DISCONNECTED)
+               ▼
+       ┌───────────────┐
+       │ RECONNECTING   │ ← auto-retry with exponential backoff
+       └───────┬───────┘
+              ╱ ╲
+    success  ╱   ╲  after max attempts
+            ▼     ▼
+    ┌────────────┐  ┌────────┐
+    │ CONNECTED   │  │ FAILED  │ ← needs manual intervention
+    └────────────┘  └────────┘
+                         │ POST /restart
+                         ▼
+                    ┌─────────┐
+                    │  IDLE    │ (re-enters state machine from top)
+                    └─────────┘
+```
+
+### Auto-Reconnect Behavior
+
+When `onConnectionStateChanged` fires with `DISCONNECTED`:
+
+1. Service enters `RECONNECTING` state
+2. Attempts to reconnect with exponential backoff: **2s, 4s, 8s, 16s, 30s**
+3. After 5 failures, backs off to **every 30 seconds** for up to 5 minutes
+4. After 5 minutes of failed reconnects, enters `FAILED` state and stops retrying
+5. If the device reconnects at any point (Android may reconnect autonomously), the `onConnectionStateChanged(CONNECTED)` callback fires and the service returns to `CONNECTED`
+
+The reconnect counter and timing are reported via `/status` so the PWA can show progress.
+
+### Service Recovery: `POST /restart`
+
+When auto-reconnect fails (HID registration stuck, Bluetooth stack in a bad state), the service supports a soft restart without killing the entire app:
+
+1. PWA sends `POST /restart` to the Kotlin service
+2. Service unregisters the HID device (`unregisterApp()`)
+3. Service re-registers (`registerApp()`) — re-enters state machine at `IDLE`
+4. Service attempts to reconnect to the last known device
+
+This handles the "walk away and come back" scenario where the Bluetooth stack gets into a bad state that auto-reconnect alone can't fix.
+
+If `POST /restart` also fails, the PWA shows a "Restart App" action that launches an Android intent to force-restart the Kotlin activity.
+
+### PWA Health Monitoring
+
+The PWA monitors both backend services and shows clear, actionable status:
+
+| Service state | What the user sees | Available actions |
+|---|---|---|
+| Kotlin service unreachable | "HID Service not running" (red) | "Open HID App" (launches Kotlin activity) |
+| BT `CONNECTED` | "Connected to ThinkPad T480" (green) | — |
+| BT `RECONNECTING` | "Reconnecting... (attempt 3)" (yellow) | — (auto-retry in progress) |
+| BT `FAILED` | "Connection failed" (red) | "Restart HID", "View Debug Log" |
+| Whisper server unreachable | "Whisper server offline" (red) | "View Debug Log" |
+| Whisper server ready | "Whisper ready (base.en)" (green) | — |
+
+The PWA polls `/status` on both services every 3 seconds. If a `/status` call fails (connection refused), the PWA treats the service as unreachable — distinct from "service running but BT disconnected."
+
+### PWA Disconnection UI
+
+When BT is disconnected but auto-reconnecting:
+
+```
+┌──────────────────────────────────────┐
+│  ⚠ Laptop disconnected              │
+│  Reconnecting... (attempt 3 of 10)  │
+│                                      │
+│  ● Recording                        │
+│                                      │
+│  │ hello world                  ✓ │  │
+│  │ this is a test               ✓ │  │
+│  │ fix the bug in main          ⏳│  │
+│  │ and update the tests         ⏳│  │
+│  └────────────────────────────────┘  │
+└──────────────────────────────────────┘
+```
+
+When auto-reconnect has failed:
+
+```
+┌──────────────────────────────────────┐
+│  ✖ Connection failed                │
+│  Auto-reconnect timed out           │
+│  ┌────────────────────────────────┐  │
+│  │ [Restart HID]  [View Debug Log]│  │
+│  └────────────────────────────────┘  │
+│                                      │
+│  ● Recording                        │
+│                                      │
+│  │ fix the bug in main          ⏳│  │
+│  │ and update the tests         ⏳│  │
+│  └────────────────────────────────┘  │
+└──────────────────────────────────────┘
+```
+
+"Restart HID" calls `POST /restart`. Text continues to queue — nothing is lost. When the connection recovers (by any means), the PWA flushes the queue.
+
+### Debug Log: What to Look For
+
+The debug log is designed to answer the question **"why isn't it working?"** at a glance. State transitions are the most important entries:
+
+```
+12:05:45 [hid]  State: IDLE → REGISTERED
+12:05:46 [hid]  State: REGISTERED → CONNECTED (ThinkPad T480)
+12:12:03 [hid]  State: CONNECTED → RECONNECTING (reason: connection dropped)
+12:12:05 [hid]  Reconnect attempt 1 of 10...
+12:12:09 [hid]  Reconnect attempt 2 of 10...
+12:12:17 [hid]  State: RECONNECTING → CONNECTED (ThinkPad T480)
+12:12:17 [hid]  Flushing 2 queued messages
+```
+
+Versus a stuck service:
+
+```
+12:12:03 [hid]  State: CONNECTED → RECONNECTING
+12:12:05 [hid]  Reconnect attempt 1 of 10...
+...
+12:17:05 [hid]  Reconnect attempt 10 of 10... failed
+12:17:05 [hid]  State: RECONNECTING → FAILED
+12:17:05 [hid]  registerApp() returned false — BT stack may need restart
+```
+
+The second log immediately tells you: the HID registration itself is stuck, not just the connection. That's when "Restart HID" is the right action.
+
+---
+
+## Testing: BDD with Cucumber/Gherkin
+
+All three components use **Cucumber** (Gherkin `.feature` files) for BDD testing. Gherkin is the common spec format — the same syntax used by godog (Go), Cucumber-JVM (Kotlin), cucumber-js (TypeScript), and behave (Python).
+
+### Framework per Component
+
+| Component | Framework | Runner | Notes |
+|---|---|---|---|
+| Kotlin HID service | **Cucumber-JVM** (`io.cucumber:cucumber-android`) | Android instrumentation tests | Test-only dependency. Mocks `BluetoothHidDevice` callbacks |
+| PWA (TypeScript) | **Playwright** + **cucumber-js** | Node.js (CI + local dev) | Drives real Chrome. Also runs cross-component E2E tests |
+| Whisper server (Python) | **behave** | Python (CI + Termux) | Tests Flask API directly with real WAV files |
+
+### Shared Feature Files
+
+All `.feature` files live in a top-level `features/` directory, organized by concern rather than by component. Step definitions live in each component's test directory and implement the Gherkin steps for their layer.
+
+Some scenarios span components (e.g., text queuing involves the PWA and the Kotlin service). These run from the PWA E2E layer since Playwright can drive the browser while mocking or running the backend services.
+
+### Key Scenarios
+
+#### BT Connection Lifecycle (Kotlin)
+
+```gherkin
+Feature: Bluetooth HID connection lifecycle
+
+  Scenario: Auto-reconnect on disconnect
+    Given the HID service is connected to "ThinkPad T480"
+    When the Bluetooth connection drops
+    Then the service state should be "RECONNECTING"
+    And the service should retry with exponential backoff
+    When the device reconnects
+    Then the service state should be "CONNECTED"
+
+  Scenario: Failed reconnect leads to FAILED state
+    Given the HID service is reconnecting
+    When 10 reconnect attempts fail over 5 minutes
+    Then the service state should be "FAILED"
+    And GET /status should include "failure_reason"
+
+  Scenario: POST /restart recovers from FAILED
+    Given the HID service is in "FAILED" state
+    When the PWA sends POST /restart
+    Then the service should unregister the HID device
+    And the service should re-register the HID device
+    And the service state should be "IDLE"
+```
+
+#### Text Queuing During Disconnect (PWA E2E)
+
+```gherkin
+Feature: Text queuing during BT disconnect
+
+  Scenario: Text queues when disconnected and flushes on reconnect
+    Given the PWA is connected to the HID service
+    And Bluetooth is disconnected
+    When the user speaks "fix the bug"
+    And the user speaks "update the tests"
+    Then 2 messages should show pending indicators
+    When Bluetooth reconnects
+    Then the queued messages should flush to /type in order
+    And both messages should show sent indicators
+
+  Scenario: Recording continues during disconnect
+    Given Bluetooth is disconnected
+    When the user speaks "hello world"
+    Then the Whisper server should return a transcription
+    And the transcript list should show the text with a pending indicator
+```
+
+#### API Authentication (Kotlin)
+
+```gherkin
+Feature: API authentication
+
+  Scenario: Valid token accepted
+    Given the HID service generated token "abc123"
+    When POST /type is called with Authorization "Bearer abc123"
+    Then the response should be 200 with "ok": true
+
+  Scenario: Missing token rejected
+    When POST /type is called without an Authorization header
+    Then the response should be 403
+
+  Scenario: PWA receives token from URL
+    Given the Kotlin app opens the PWA with "?token=abc123"
+    Then the PWA should store the token in sessionStorage
+    And the URL bar should not contain the token
+```
+
+#### Whisper Transcription (Python)
+
+```gherkin
+Feature: Whisper transcription server
+
+  Scenario: Transcribe a valid audio file
+    Given the Whisper server is running with model "base.en"
+    When POST /transcribe receives a 16kHz mono PCM WAV file
+    Then the response should contain "text" with a non-empty string
+    And the response should contain "duration_ms" as a positive integer
+
+  Scenario: Empty audio returns no text
+    Given the Whisper server is running with model "base.en"
+    When POST /transcribe receives a silent audio segment
+    Then the response "text" should be empty or whitespace
+
+  Scenario: Server reports status
+    Given the Whisper server is running with model "base.en"
+    When GET /status is called
+    Then the response "status" should be "ready"
+    And the response "model" should be "base.en"
+```
+
+### What to Test Where
+
+| Layer | What to test | Speed |
+|---|---|---|
+| **Kotlin unit BDD** (Cucumber-JVM) | State machine transitions, HID keycode mapping, token validation, HTTP API responses. Mock `BluetoothHidDevice` callbacks | Fast (seconds) |
+| **Python API BDD** (behave) | Whisper server endpoints. Send real WAV files, verify JSON responses | Medium (depends on model inference time) |
+| **PWA E2E BDD** (Playwright + cucumber-js) | Full flows through the browser: polling `/status`, reacting to state changes, queuing text, flushing on reconnect. Mock or run real backends | Slow (browser startup + network) |
+
+### CI Integration
+
+BDD tests run in GitHub Actions alongside the existing build workflows:
+
+- **Kotlin BDD**: Runs with `./gradlew connectedAndroidTest` (requires Android emulator in CI) or `./gradlew test` for non-instrumentation Cucumber tests that mock the BT layer
+- **Python BDD**: Runs with `behave` in a Python job. Uses a pre-recorded test WAV file (no mic needed in CI). Whisper model downloaded and cached
+- **PWA E2E BDD**: Runs with `npx cucumber-js` + Playwright in a Node.js job. Backends can be mocked with MSW (Mock Service Worker) for isolated PWA testing, or started as real processes for full integration
+
+---
+
+## Repository Structure
+
+```
+whisper-hid/
+├── specs/
+│   ├── SPEC-1-termux-hid.md            # Original spec (Termux + Kotlin two-component)
+│   └── SPEC-2-pwa-service-architecture.md  # This spec (PWA + services three-component)
+│
+├── features/                            # Shared Gherkin .feature files (BDD)
+│   ├── bt-lifecycle.feature            # BT state machine transitions
+│   ├── text-queuing.feature            # Disconnect queuing + reconnect flush
+│   ├── auth.feature                    # API token auth flow
+│   └── transcription.feature           # Whisper transcription scenarios
+│
+├── app/                                 # Android Kotlin app (BT HID service)
+│   ├── build.gradle.kts
+│   └── src/
+│       ├── main/
+│       │   ├── AndroidManifest.xml
+│       │   └── java/com/whisperbt/keyboard/
+│       │       ├── MainActivity.kt          # Thin launcher Activity
+│       │       ├── BluetoothHidService.kt   # BT HID + HTTP API
+│       │       └── HidKeyMapper.kt          # Char → HID keycode mapping
+│       └── test/                            # Cucumber-JVM step definitions
+│           └── java/com/whisperbt/keyboard/
+│               └── steps/
+│                   ├── BtLifecycleSteps.kt  # BT state machine steps
+│                   ├── AuthSteps.kt         # Token validation steps
+│                   └── ApiSteps.kt          # HTTP API response steps
+│
+├── pwa/                                 # Progressive Web App (React + Vite + TypeScript)
+│   ├── index.html                       # Vite entry HTML
+│   ├── vite.config.ts                   # Vite + PWA plugin config
+│   ├── tailwind.config.ts               # Tailwind CSS config
+│   ├── tsconfig.json
+│   ├── package.json
+│   ├── public/                          # Static assets (icons, etc.)
+│   ├── src/
+│   │   ├── main.tsx                     # React entry point
+│   │   ├── App.tsx                      # Root component + routing
+│   │   ├── index.css                    # Tailwind directives
+│   │   ├── hooks/
+│   │   │   ├── useAudioCapture.ts       # Mic capture (AudioWorklet / MediaRecorder)
+│   │   │   ├── useWhisper.ts            # Whisper server API client
+│   │   │   ├── useHidService.ts         # Kotlin HID service API client
+│   │   │   └── useTranscriptStore.ts    # IndexedDB transcript history
+│   │   ├── components/
+│   │   │   ├── TranscriptList.tsx       # Scrolling transcript log
+│   │   │   ├── RecordingIndicator.tsx   # Recording state display
+│   │   │   ├── EditBuffer.tsx           # Edit-before-send text area
+│   │   │   ├── StatusBar.tsx            # BT + Whisper connection status
+│   │   │   ├── Settings.tsx             # Settings panel
+│   │   │   └── DebugLog.tsx             # Debug log view
+│   │   ├── lib/
+│   │   │   ├── api.ts                   # HTTP client helpers
+│   │   │   ├── db.ts                    # IndexedDB via idb
+│   │   │   └── audio-worklet.ts         # AudioWorklet processor
+│   │   └── types.ts                     # Shared TypeScript types
+│   └── e2e/                             # Playwright + cucumber-js E2E tests
+│       ├── steps/
+│       │   ├── text-queuing.steps.ts    # Text queuing + flush steps
+│       │   └── auth.steps.ts            # PWA token receipt steps
+│       └── support/
+│           └── world.ts                 # Playwright browser setup
+│
+├── scripts/                             # Termux scripts
+│   ├── setup-termux.sh                  # One-time environment setup
+│   ├── start-whisper-server.sh          # Start Whisper HTTP server
+│   ├── stop-whisper-server.sh           # Stop Whisper server
+│   ├── whisper-server.py                # Whisper HTTP API server
+│   ├── update-model.sh                  # Download/swap Whisper models
+│   └── tests/                           # behave step definitions
+│       ├── steps/
+│       │   └── transcription_steps.py   # Whisper API steps
+│       ├── environment.py               # behave hooks (server startup/teardown)
+│       └── fixtures/
+│           └── test-hello.wav           # Pre-recorded test audio (16kHz mono PCM)
+│
+├── build.gradle.kts
+├── settings.gradle.kts
+├── CLAUDE.md
+├── README.md
+│
+└── .github/
+    └── workflows/
+        ├── build-apk.yml                # Build Android APK (triggers on app/ changes)
+        ├── deploy-pwa.yml               # Build PWA + deploy to GitHub Pages (triggers on pwa/ changes)
+        └── test-bdd.yml                 # Run BDD tests (Kotlin, PWA E2E, Python)
+```
+
+### Key differences from SPEC-1
+
+| Concern | SPEC-1 | SPEC-2 |
+|---------|--------|--------|
+| Mic capture | Termux (`termux-microphone-record`) | PWA (Web Audio API) |
+| UI | Kotlin Activity | PWA (HTML/CSS/JS) |
+| Transcription | whisper.cpp CLI in a bash loop | Whisper HTTP server |
+| Kotlin app role | UI + socket listener + BT HID | BT HID service + HTTP API only |
+| Communication | Raw TCP socket, newline-delimited | HTTP REST APIs |
+| BT disconnect handling | Text lost | PWA queues text, flushes on reconnect |
+| Auth/security | None (any app can write to socket) | Shared secret token + CORS |
+| PWA hosting | — | GitHub Pages (HTTPS) + saved to homescreen |
+| Files removed | — | `SocketListenerService.kt`, `BootReceiver.kt`, `start-stt.sh`, `stop-stt.sh` |
+| Testing | Manual only | BDD with Cucumber/Gherkin across all components |
+| Files added | — | `pwa/`, `features/`, `whisper-server.py`, `deploy-pwa.yml`, `test-bdd.yml` |
+
+---
+
+## Development Phases
+
+### Phase 1: Whisper HTTP Server
+
+**Goal**: Replace the bash loop + socket with an HTTP API wrapping whisper.cpp.
+
+Steps:
+1. Write `whisper-server.py` (Python + Flask) that accepts audio and returns text
+2. Test with `curl -X POST --data-binary @test.wav http://localhost:9876/transcribe`
+3. Verify `/status` and `/logs` endpoints work
+
+**Success criteria**: Audio file submitted via HTTP, correct transcription returned as JSON.
+
+### Phase 2: PWA Shell
+
+**Goal**: Scaffold the PWA with Vite + React + TypeScript + Tailwind, deploy to GitHub Pages, capture mic audio, display transcription.
+
+Steps:
+1. Scaffold Vite project in `pwa/` (`npm create vite@latest . -- --template react-ts`)
+2. Add Tailwind CSS 4, `vite-plugin-pwa`, and `idb`
+3. Configure `vite.config.ts` with PWA plugin and `base: "/whisper-hid/"`
+4. Create `deploy-pwa.yml` GitHub Actions workflow (build + deploy to GitHub Pages)
+5. Build `App.tsx`, `useAudioCapture` hook (AudioWorklet, fallback: MediaRecorder)
+6. Build `useWhisper` hook — send audio chunks to Whisper server, receive text
+7. Build `TranscriptList` component — display transcription history
+8. Push to main → verify GitHub Pages deployment → save to homescreen on phone
+
+**Success criteria**: Speak into phone, see transcribed text in the PWA (served from GitHub Pages, saved to homescreen).
+
+### Phase 3: Kotlin Service Refactor
+
+**Goal**: Strip the Kotlin app down to a headless BT HID service with HTTP API, with built-in resilience.
+
+Steps:
+1. Remove `SocketListenerService`, simplify `MainActivity`
+2. Add HTTP server to `BluetoothHidService` (using `HttpServer` or `ServerSocket`)
+3. Implement `/type`, `/status`, `/logs`, `/restart` endpoints
+4. Implement BT connection state machine (IDLE → REGISTERED → CONNECTED → RECONNECTING → FAILED)
+5. Implement auto-reconnect with exponential backoff on BT disconnect
+6. Implement auth token generation and validation
+7. Add Private Network Access header (`Access-Control-Allow-Private-Network: true`) to CORS preflight responses
+8. Add "Open PWA" button that passes token via GitHub Pages URL
+
+**Success criteria**: `curl -X POST -H "Authorization: Bearer <token>" -d '{"text":"hello"}' http://localhost:9877/type` sends keystrokes to the paired laptop. Disconnecting BT triggers auto-reconnect visible via `/status`. `POST /restart` recovers from a stuck HID registration.
+
+### Phase 4: Integration
+
+**Goal**: Wire all three components together.
+
+Steps:
+1. PWA reads auth token from URL, stores in `sessionStorage`
+2. PWA sends transcribed text to Kotlin service via `/type`
+3. PWA polls `/status` and displays BT connection state
+4. Implement text queuing when BT is disconnected
+5. Implement queue flush on BT reconnect
+
+**Success criteria**: Speak into phone → text appears on laptop. Disconnect BT → text queues. Reconnect → queued text sent.
+
+### Phase 5: Edit and Polish
+
+**Goal**: Add edit-before-send mode, history editing, debug view.
+
+Steps:
+1. Implement `Settings` component with IndexedDB persistence (via `idb`)
+2. Add edit-before-send toggle
+3. Add tap-to-edit on history entries with resend (`EditBuffer` component)
+4. Add `DebugLog` component pulling from both services' `/logs` endpoints
+5. Verify PWA manifest and Workbox service worker (generated by `vite-plugin-pwa`)
+
+### Phase 6: BDD Test Suite
+
+**Goal**: Automated BDD tests covering the critical paths. Feature files are written incrementally during Phases 1–5; this phase wires them into CI and fills in any gaps.
+
+Steps:
+1. Write `features/bt-lifecycle.feature` — state machine transitions, auto-reconnect, `POST /restart` recovery
+2. Write `features/text-queuing.feature` — disconnect queuing, reconnect flush, ordering guarantees
+3. Write `features/auth.feature` — token generation, validation, rejection, PWA token receipt from URL
+4. Write `features/transcription.feature` — valid audio, empty audio, server status
+5. Implement Kotlin step definitions (`app/src/test/.../steps/`) — mock `BluetoothHidDevice` callbacks, test state machine and HTTP API in isolation
+6. Implement Python step definitions (`scripts/tests/steps/`) — start Whisper server, send test WAV, assert JSON responses
+7. Implement PWA E2E step definitions (`pwa/e2e/steps/`) — Playwright drives Chrome, mock backends with MSW for isolated tests, real backends for integration
+8. Create `test-bdd.yml` GitHub Actions workflow — runs all three test suites on push
+9. Record `scripts/tests/fixtures/test-hello.wav` — pre-recorded 16kHz mono PCM test audio for CI (no mic needed)
+
+**Success criteria**: `test-bdd.yml` passes in CI. BT state machine scenarios, text queuing scenarios, auth scenarios, and transcription scenarios all green. Feature files serve as living documentation of system behavior.
+
+Note: BDD scenarios should be written alongside the code they test (during Phases 1–5). This phase ensures full coverage and CI integration.
+
+### Phase 7: Hardening
+
+**Goal**: Production readiness.
+
+- Auto-reconnect to Whisper server if Termux restarts (PWA detects unreachable, retries)
+- Battery optimization (release mic when not recording, reduce `/status` polling when app is backgrounded)
+- Edge case error states and user-facing error messages
+- Startup script that launches both on-device components (`whisper-server`, Kotlin service)
+
+Note: BT auto-reconnect, `POST /restart`, state machine, and the reconnect UI are part of Phases 3–4 (core design, not hardening).
+
+---
+
+## Key Technical References
+
+- **React 19**: https://react.dev/
+- **Vite**: https://vite.dev/
+- **Tailwind CSS 4**: https://tailwindcss.com/
+- **vite-plugin-pwa**: https://vite-pwa-org.netlify.app/
+- **idb (IndexedDB)**: https://github.com/jakearchibald/idb
+- **Web Audio API / AudioWorklet**: https://developer.mozilla.org/en-US/docs/Web/API/AudioWorklet
+- **MediaRecorder API**: https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder
+- **BluetoothHidDevice API**: https://developer.android.com/reference/android/bluetooth/BluetoothHidDevice
+- **whisper.cpp**: https://github.com/ggml-org/whisper.cpp
+- **Flask**: https://flask.palletsprojects.com/
+- **Cucumber-JVM**: https://github.com/cucumber/cucumber-jvm
+- **cucumber-js**: https://github.com/cucumber/cucumber-js
+- **behave**: https://behave.readthedocs.io/
+- **Playwright**: https://playwright.dev/
+
+## Constraints
+
+All constraints from SPEC-1 still apply:
+- **No software on laptop**: Laptop sees a standard Bluetooth keyboard
+- **On-device processing**: All transcription happens on the phone, no cloud APIs
+- **Sideloaded APK**: Built via GitHub Actions, not on Play Store
+- **Samsung S24 Ultra**: Primary target device (Snapdragon 8 Gen 3, Android 14+)
+- **No external Kotlin dependencies**: Android SDK built-ins only for the Kotlin app
+
+Additional constraints:
+- **PWA hosted on GitHub Pages**: Served at `https://jonathan-a-white.github.io/whisper-hid/`, saved to homescreen via Chrome. No local HTTP server for the PWA
+- **PWA must work on Android Chrome**: Tested on Chrome for Android, connecting to localhost services via Private Network Access
+- **PWA built with Vite + React 19 + TypeScript**: CI builds and deploys to GitHub Pages. Node.js is a dev/CI dependency only — not required on the phone
+- **Minimal PWA runtime dependencies**: Only `react`, `react-dom`, and `idb`. Tailwind, Vite, and TypeScript are dev-only
+- **Python available in Termux**: Used for the Whisper server, installable via `pkg install python`
