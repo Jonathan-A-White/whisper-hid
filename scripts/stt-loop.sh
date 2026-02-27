@@ -71,12 +71,20 @@ while true; do
     echo "  [wav] size=${WAV_SIZE}B, running whisper..." >&2
 
     # Run whisper transcription
+    WHISPER_ERR="$AUDIO_DIR/whisper_stderr_$$.txt"
     RAW_WHISPER=$("$WHISPER_BIN" \
         --model "$MODEL" \
         --language en \
         --no-timestamps \
         --no-context \
-        --file "$AUDIO_FILE" 2>/dev/null || true)
+        --file "$AUDIO_FILE" 2>"$WHISPER_ERR" || true)
+    # Show whisper errors if any (model load failures, crashes, etc.)
+    if [ -s "$WHISPER_ERR" ]; then
+        # Show last few meaningful lines (skip progress bars)
+        WERR=$(grep -v '^\r' "$WHISPER_ERR" | tail -5)
+        [ -n "$WERR" ] && echo "  [whisper-err] $WERR" >&2
+    fi
+    rm -f "$WHISPER_ERR"
     RESULT=$(echo "$RAW_WHISPER" | \
         sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
         grep -vE "$SILENCE_PATTERNS" || true)
