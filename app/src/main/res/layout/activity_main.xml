@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <!-- Status -->
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/status_stopped"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:paddingBottom="16dp" />
+
+        <!-- Controls -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingBottom="16dp">
+
+            <Button
+                android:id="@+id/toggleButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/start"
+                android:layout_marginEnd="8dp" />
+
+            <Button
+                android:id="@+id/pairButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/pair" />
+        </LinearLayout>
+
+        <!-- Settings -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_header"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:paddingBottom="8dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingBottom="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/delay_label"
+                android:layout_gravity="center_vertical" />
+
+            <EditText
+                android:id="@+id/delayInput"
+                android:layout_width="80dp"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:text="10"
+                android:layout_marginStart="8dp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingBottom="8dp">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/port_label"
+                android:layout_gravity="center_vertical" />
+
+            <EditText
+                android:id="@+id/portInput"
+                android:layout_width="80dp"
+                android:layout_height="wrap_content"
+                android:inputType="number"
+                android:text="9876"
+                android:layout_marginStart="8dp" />
+        </LinearLayout>
+
+        <CheckBox
+            android:id="@+id/newlineCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/newline_option"
+            android:paddingBottom="4dp" />
+
+        <CheckBox
+            android:id="@+id/spaceCheckbox"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/space_option"
+            android:checked="true"
+            android:paddingBottom="16dp" />
+
+        <!-- Log -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/log_header"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:paddingBottom="4dp" />
+
+        <ScrollView
+            android:id="@+id/logScroll"
+            android:layout_width="match_parent"
+            android:layout_height="250dp"
+            android:background="#F0F0F0"
+            android:padding="8dp">
+
+            <TextView
+                android:id="@+id/logText"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:textSize="12sp" />
+        </ScrollView>
+
+    </LinearLayout>
+</ScrollView>
