@@ -1,6 +1,7 @@
 package com.whisperbt.keyboard
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.content.ComponentName
 import android.content.Context
@@ -11,6 +12,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.view.MotionEvent
+import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -30,6 +33,7 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_PORT = "socket_port"
         private const val KEY_NEWLINE = "append_newline"
         private const val KEY_SPACE = "append_space"
+        private const val KEY_PTT = "ptt_mode"
     }
 
     private lateinit var prefs: SharedPreferences
@@ -42,6 +46,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var portInput: EditText
     private lateinit var newlineCheckbox: CheckBox
     private lateinit var spaceCheckbox: CheckBox
+    private lateinit var pttCheckbox: CheckBox
+    private lateinit var pttButton: Button
 
     private var hidService: BluetoothHidService? = null
     private var socketService: SocketListenerService? = null
@@ -64,15 +70,30 @@ class MainActivity : AppCompatActivity() {
         portInput = findViewById(R.id.portInput)
         newlineCheckbox = findViewById(R.id.newlineCheckbox)
         spaceCheckbox = findViewById(R.id.spaceCheckbox)
+        pttCheckbox = findViewById(R.id.pttCheckbox)
+        pttButton = findViewById(R.id.pttButton)
 
         // Load saved preferences
         delayInput.setText(prefs.getInt(KEY_DELAY, 10).toString())
         portInput.setText(prefs.getInt(KEY_PORT, 9876).toString())
         newlineCheckbox.isChecked = prefs.getBoolean(KEY_NEWLINE, false)
         spaceCheckbox.isChecked = prefs.getBoolean(KEY_SPACE, true)
+        pttCheckbox.isChecked = prefs.getBoolean(KEY_PTT, false)
+        pttButton.visibility = if (pttCheckbox.isChecked) View.VISIBLE else View.GONE
 
         toggleButton.setOnClickListener { toggleServices() }
         pairButton.setOnClickListener { openBluetoothSettings() }
+
+        pttCheckbox.setOnCheckedChangeListener { _, isChecked ->
+            pttButton.visibility = if (isChecked) View.VISIBLE else View.GONE
+            socketService?.pttMode = isChecked
+            // Reconnect so the server enters the correct mode
+            if (servicesRunning) {
+                socketService?.reconnect()
+            }
+        }
+
+        setupPttButton()
 
         requestPermissions()
     }
@@ -235,6 +256,7 @@ class MainActivity : AppCompatActivity() {
             socketService?.setPort(portInput.text.toString().toIntOrNull() ?: 9876)
             socketService?.appendNewline = newlineCheckbox.isChecked
             socketService?.appendSpace = spaceCheckbox.isChecked
+            socketService?.pttMode = pttCheckbox.isChecked
 
             socketService?.transcriptionCallback = object : SocketListenerService.TranscriptionCallback {
                 override fun onTranscription(text: String) {
@@ -265,12 +287,34 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setupPttButton() {
+        pttButton.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    socketService?.pttStart()
+                    pttButton.text = getString(R.string.recording)
+                    appendLog("[PTT] Recording...")
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    socketService?.pttStop()
+                    pttButton.text = getString(R.string.hold_to_talk)
+                    appendLog("[PTT] Stopped — transcribing...")
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
     private fun savePreferences() {
         prefs.edit().apply {
             putInt(KEY_DELAY, delayInput.text.toString().toIntOrNull() ?: 10)
             putInt(KEY_PORT, portInput.text.toString().toIntOrNull() ?: 9876)
             putBoolean(KEY_NEWLINE, newlineCheckbox.isChecked)
             putBoolean(KEY_SPACE, spaceCheckbox.isChecked)
+            putBoolean(KEY_PTT, pttCheckbox.isChecked)
             apply()
         }
     }

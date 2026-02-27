@@ -17,7 +17,7 @@ AUDIO_DIR="$INSTALL_DIR/audio_tmp"
 PID_FILE="$INSTALL_DIR/.stt.pid"
 
 # Silence patterns to filter out
-SILENCE_PATTERNS='^\[BLANK_AUDIO\]$|^\(silence\)$|^$|^\[MUSIC.*\]$|^\[music.*\]$|^\[Music.*\]$|^ *$'
+SILENCE_PATTERNS='^\[.*\]$|^\(silence\)$|^$|^ *$'
 
 cleanup() {
     echo "Shutting down..."
