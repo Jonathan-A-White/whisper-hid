@@ -12,7 +12,8 @@ cleanup() {
     [ "${_CLEANING_UP:-}" = 1 ] && return
     _CLEANING_UP=1
     termux-microphone-record -q 0</dev/null 1>&2 2>/dev/null || true
-    rm -f "$AUDIO_DIR"/chunk_$$_raw.* "$AUDIO_DIR"/chunk_$$_ptt.* "$AUDIO_DIR"/chunk_$$.wav
+    rm -f "$AUDIO_DIR"/chunk_$$_raw.* "$AUDIO_DIR"/chunk_$$_ptt_*.* \
+          "$AUDIO_DIR"/chunk_$$.wav "$AUDIO_DIR"/chunk_$$_[0-9]*.wav
     exit 0
 }
 trap cleanup EXIT TERM INT PIPE
@@ -90,8 +91,8 @@ transcribe_and_send() {
 
     init_whisper_flags
 
-    local whisper_err="$AUDIO_DIR/whisper_stderr_$$.txt"
-    local whisper_out="$AUDIO_DIR/whisper_stdout_$$.txt"
+    local whisper_err="$AUDIO_DIR/whisper_stderr_${BASHPID}.txt"
+    local whisper_out="$AUDIO_DIR/whisper_stdout_${BASHPID}.txt"
     # shellcheck disable=SC2086
     $WHISPER_BIN $WHISPER_FLAGS "$audio_file" >"$whisper_out" 2>"$whisper_err"
     local whisper_rc=$?
@@ -172,6 +173,7 @@ ptt_loop() {
     echo "  [mode] Push-to-talk" >&2
     local recording=false
     local raw_file=""
+    local ptt_seq=0
 
     while IFS= read -r cmd; do
         case "$cmd" in
@@ -180,7 +182,8 @@ ptt_loop() {
                     echo "  [ptt] Already recording, ignoring START" >&2
                     continue
                 fi
-                raw_file="$AUDIO_DIR/chunk_${$}_ptt.$RECORD_EXT"
+                ptt_seq=$((ptt_seq + 1))
+                raw_file="$AUDIO_DIR/chunk_${$}_ptt_${ptt_seq}.$RECORD_EXT"
                 rm -f "$raw_file"
                 # Record without time limit — stopped by STOP command
                 # shellcheck disable=SC2086
@@ -195,16 +198,27 @@ ptt_loop() {
                 fi
                 termux-microphone-record -q 0</dev/null 1>&2 2>/dev/null || true
                 recording=false
-                sleep 1
-                echo "  [ptt] Recording stopped, transcribing..." >&2
-                AUDIO_FILE="$AUDIO_DIR/chunk_${$}.wav"
-                transcribe_and_send "$raw_file" "$AUDIO_FILE" || break
+                # Capture file info before raw_file is reused by the next START
+                local bg_raw="$raw_file"
+                local bg_seq="$ptt_seq"
+                raw_file=""
+                # Transcribe in background so the next START is handled immediately
+                # instead of waiting for ffmpeg+whisper to finish (avoids missing
+                # the start of the next PTT press).
+                (
+                    sleep 1
+                    echo "  [ptt] Recording stopped, transcribing..." >&2
+                    bg_audio="$AUDIO_DIR/chunk_${$}_${bg_seq}.wav"
+                    transcribe_and_send "$bg_raw" "$bg_audio" || true
+                ) &
                 ;;
             *)
                 echo "  [cmd] Unknown: $cmd" >&2
                 ;;
         esac
     done
+    # Wait for any in-flight background transcriptions to finish
+    wait
 }
 
 # --- Mode selection ---
