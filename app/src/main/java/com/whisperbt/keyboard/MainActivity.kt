@@ -171,6 +171,11 @@ class MainActivity : AppCompatActivity() {
     private fun startServices() {
         savePreferences()
 
+        // Enable Bluetooth SCO so termux-microphone-record can use the headset mic.
+        // This must be called before Termux starts recording with VOICE_COMMUNICATION source.
+        @Suppress("DEPRECATION")
+        (getSystemService(Context.AUDIO_SERVICE) as AudioManager).startBluetoothSco()
+
         // Start BluetoothHidService as foreground service
         val hidIntent = Intent(this, BluetoothHidService::class.java)
         ContextCompat.startForegroundService(this, hidIntent)
@@ -188,6 +193,9 @@ class MainActivity : AppCompatActivity() {
     private fun stopServices() {
         socketService?.stop()
         unbindServices()
+
+        @Suppress("DEPRECATION")
+        (getSystemService(Context.AUDIO_SERVICE) as AudioManager).stopBluetoothSco()
 
         stopService(Intent(this, SocketListenerService::class.java))
         stopService(Intent(this, BluetoothHidService::class.java))
