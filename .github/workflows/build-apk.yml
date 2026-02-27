@@ -4,8 +4,12 @@ on:
   push:
     branches: [main, "claude/**"]
     tags: ["v*"]
+    paths-ignore:
+      - "scripts/**"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "scripts/**"
 
 jobs:
   build:
