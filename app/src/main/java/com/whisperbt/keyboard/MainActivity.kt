@@ -3,6 +3,8 @@ package com.whisperbt.keyboard
 import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -51,6 +53,7 @@ class MainActivity : AppCompatActivity() {
 
     private var hidService: BluetoothHidService? = null
     private var socketService: SocketListenerService? = null
+    private var toneGen: ToneGenerator? = null
     private var hidBound = false
     private var socketBound = false
     private var servicesRunning = false
@@ -95,7 +98,19 @@ class MainActivity : AppCompatActivity() {
 
         setupPttButton()
 
+        try {
+            toneGen = ToneGenerator(AudioManager.STREAM_MUSIC, ToneGenerator.MAX_VOLUME)
+        } catch (_: RuntimeException) {
+            // ToneGenerator unavailable (e.g. audio service not ready) — chime won't play
+        }
+
         requestPermissions()
+    }
+
+    override fun onDestroy() {
+        toneGen?.release()
+        toneGen = null
+        super.onDestroy()
     }
 
     override fun onStart() {
@@ -265,6 +280,10 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onStatusChanged(status: String) {
                     runOnUiThread { appendLog("[Socket] $status") }
+                }
+
+                override fun onMicReady() {
+                    toneGen?.startTone(ToneGenerator.TONE_PROP_BEEP, 160)
                 }
             }
         }
