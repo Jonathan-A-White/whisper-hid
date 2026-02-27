@@ -27,7 +27,7 @@ The new architecture separates these concerns. Each component does one thing.
 │  Samsung S24 Ultra                                         │
 │                                                            │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  PWA (homescreen app, served from localhost)         │  │
+│  │  PWA (saved to homescreen from GitHub Pages)         │  │
 │  │  - Mic capture via Web Audio API / MediaRecorder     │  │
 │  │  - UI: recording state, transcript history, settings │  │
 │  │  - Sends audio to Whisper server                     │  │
@@ -35,13 +35,14 @@ The new architecture separates these concerns. Each component does one thing.
 │  │  - Queues text when BT is disconnected               │  │
 │  └──────┬──────────────────────────────────┬────────────┘  │
 │         │ audio chunks                     │ text          │
+│         │ http://localhost:9876             │ http://localhost:9877
 │         ▼                                  ▼               │
 │  ┌──────────────────┐          ┌───────────────────────┐   │
 │  │  Whisper Server   │          │  Kotlin BT HID Service│   │
 │  │  (Termux)         │          │  (Android)            │   │
 │  │  - Receives audio │          │  - Receives text      │   │
 │  │  - Returns text   │          │  - Sends BT HID keys  │   │
-│  │  - HTTP/WS API    │          │  - Reports status/logs │   │
+│  │  - HTTP API       │          │  - Reports status/logs │   │
 │  │  - localhost:9876  │          │  - HTTP API            │   │
 │  └──────────────────┘          │  - localhost:9877       │   │
 │                                 │         │              │   │
@@ -55,11 +56,14 @@ The new architecture separates these concerns. Each component does one thing.
                                       │  (sees a  │
                                       │  keyboard)│
                                       └──────────┘
+
+PWA hosted at: https://jonathan-a-white.github.io/whisper-hid/
+API servers on phone: http://localhost:9876 (Whisper), http://localhost:9877 (HID)
 ```
 
 ### Why three components
 
-- **PWA**: Web tech gives a modern, iterable UI. Mic capture via Web Audio API works on Android Chrome over localhost. The PWA is the orchestrator — it captures audio, gets transcriptions, and decides when to send text.
+- **PWA**: Web tech gives a modern, iterable UI. Hosted on GitHub Pages (HTTPS), saved to homescreen via Chrome's "Add to Home Screen". Mic capture via Web Audio API works because HTTPS is a secure context. The PWA talks to localhost services via `fetch()` with Private Network Access headers. The PWA is the orchestrator — it captures audio, gets transcriptions, and decides when to send text.
 - **Whisper server**: A stateless transcription API. Receives audio bytes, returns text. No mic ownership, no socket management. Can be swapped for a different engine or a remote API without changing anything else.
 - **Kotlin BT HID service**: A headless service that receives text and sends keystrokes. No UI, no socket listening from Termux, no transcription awareness. Its only job is Bluetooth HID.
 
@@ -95,15 +99,23 @@ User speaks
 
 ### Hosting
 
-The PWA is built with Vite and served as static files from localhost.
+The PWA is hosted on **GitHub Pages** at `https://jonathan-a-white.github.io/whisper-hid/`. Users save it to their homescreen via Chrome's "Add to Home Screen" — it then launches as a standalone app.
 
-**Development**: `npm run dev` runs Vite's dev server on `localhost:8080` with HMR.
+**Why GitHub Pages instead of localhost**:
+- No need to run a local HTTP server on the phone (`serve-pwa.sh` eliminated)
+- PWA updates automatically when code is pushed — no file copying to the phone
+- HTTPS is a secure context, so `getUserMedia` (mic access) and service workers work natively
+- The Workbox service worker caches the app shell, so after first load it works offline
 
-**Production**: `npm run build` outputs optimized static files to `pwa/dist/`. These are served in Termux via:
-- `python3 -m http.server 8080 -d dist`
-- Or a lightweight HTTP server like `busybox httpd`
+**Development**: `npm run dev` runs Vite's dev server on `localhost:5173` with HMR.
 
-Served at `http://localhost:8080`. Chrome on Android allows mic access over localhost without HTTPS.
+**Production**: CI builds the PWA and deploys to GitHub Pages on push to `main`. Vite's `base` config is set to `/whisper-hid/` to match the GitHub Pages path.
+
+**Private Network Access**: The PWA (HTTPS) makes requests to localhost services (HTTP). Chrome allows this but requires the localhost servers to respond to CORS preflight with:
+```
+Access-Control-Allow-Private-Network: true
+```
+Both the Whisper server and Kotlin HID service must include this header (see Security section).
 
 ### Mic Capture
 
@@ -374,7 +386,7 @@ The Kotlin app is stripped down to the minimum: a thin Activity for lifecycle ma
 A single-screen Activity that:
 1. Starts the foreground service
 2. Shows basic status (service running, BT connection state)
-3. Has a button to open the PWA in Chrome (`http://localhost:8080`)
+3. Has a button to open the PWA in Chrome (`https://jonathan-a-white.github.io/whisper-hid/`)
 4. Has a button to stop the service
 
 ```
@@ -517,10 +529,10 @@ Browser-based attacks (malicious web pages calling localhost) are a secondary co
 
 2. **Token delivery**: When the user taps "Open Whisper Keyboard", the Activity opens Chrome with the token in the URL:
    ```
-   http://localhost:8080/?token=a7f2b9c1e4d83f...
+   https://jonathan-a-white.github.io/whisper-hid/?token=a7f2b9c1e4d83f...
    ```
 
-3. **Token storage**: The PWA reads the token from the URL query parameter, stores it in `sessionStorage`, and strips the token from the URL bar (via `history.replaceState`).
+3. **Token storage**: The PWA reads the token from the URL query parameter, stores it in `sessionStorage`, and strips the token from the URL bar (via `history.replaceState`). The auth token intentionally uses `sessionStorage` (not IndexedDB) so it dies with the browser tab.
 
 4. **Token usage**: The PWA sends the token with every request to the Kotlin service:
    ```
@@ -532,24 +544,43 @@ Browser-based attacks (malicious web pages calling localhost) are a secondary co
 
 6. **Token lifetime**: The token lives only as long as the service is running. Restarting the service generates a new token. `sessionStorage` clears when the browser tab closes, so there's no stale token on disk.
 
-### CORS
+### CORS and Private Network Access
 
-The Kotlin service sets CORS headers to restrict browser-based access:
+Since the PWA is served from GitHub Pages (HTTPS) and the API servers run on localhost (HTTP), two layers of browser security must be satisfied:
+
+**1. CORS**: Both the Kotlin service and the Whisper server set headers to restrict browser-based access:
 
 ```
-Access-Control-Allow-Origin: http://localhost:8080
-Access-Control-Allow-Methods: GET, POST
+Access-Control-Allow-Origin: https://jonathan-a-white.github.io
+Access-Control-Allow-Methods: GET, POST, OPTIONS
 Access-Control-Allow-Headers: Authorization, Content-Type
 ```
 
-This prevents arbitrary web pages from calling the API. Combined with the token, both native app and browser-based attacks are mitigated.
+**2. Private Network Access**: Chrome requires localhost servers to explicitly opt in to receiving requests from public websites. Both servers must handle `OPTIONS` preflight requests and respond with:
+
+```
+Access-Control-Allow-Private-Network: true
+```
+
+The full preflight response from both servers looks like:
+
+```
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: https://jonathan-a-white.github.io
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: Authorization, Content-Type
+Access-Control-Allow-Private-Network: true
+```
+
+This prevents arbitrary web pages from calling the APIs. Combined with the auth token, both native app and browser-based attacks are mitigated.
 
 ### What this does NOT protect against
 
 - An attacker with root access to the phone (can read process memory, intercept localhost traffic)
 - An attacker who can read Chrome's `sessionStorage` (requires device compromise)
+- A malicious app on the phone that directly calls localhost (not via a browser — CORS doesn't apply)
 
-These are acceptable risks — if the attacker has root, the entire device is compromised regardless.
+The auth token mitigates the last case — even a direct localhost caller needs the token. The first two are acceptable risks — if the attacker has root, the entire device is compromised regardless.
 
 ---
 
@@ -604,7 +635,6 @@ whisper-hid/
 │   ├── start-whisper-server.sh          # Start Whisper HTTP server
 │   ├── stop-whisper-server.sh           # Stop Whisper server
 │   ├── whisper-server.py                # Whisper HTTP API server
-│   ├── serve-pwa.sh                     # Serve PWA static files on :8080
 │   └── update-model.sh                  # Download/swap Whisper models
 │
 ├── build.gradle.kts
@@ -614,7 +644,8 @@ whisper-hid/
 │
 └── .github/
     └── workflows/
-        └── build-apk.yml
+        ├── build-apk.yml                # Build Android APK (triggers on app/ changes)
+        └── deploy-pwa.yml               # Build PWA + deploy to GitHub Pages (triggers on pwa/ changes)
 ```
 
 ### Key differences from SPEC-1
@@ -628,8 +659,9 @@ whisper-hid/
 | Communication | Raw TCP socket, newline-delimited | HTTP REST APIs |
 | BT disconnect handling | Text lost | PWA queues text, flushes on reconnect |
 | Auth/security | None (any app can write to socket) | Shared secret token + CORS |
+| PWA hosting | — | GitHub Pages (HTTPS) + saved to homescreen |
 | Files removed | — | `SocketListenerService.kt`, `BootReceiver.kt`, `start-stt.sh`, `stop-stt.sh` |
-| Files added | — | `pwa/` (Vite + React + TS), `whisper-server.py`, `serve-pwa.sh` |
+| Files added | — | `pwa/` (Vite + React + TS), `whisper-server.py`, `deploy-pwa.yml` |
 
 ---
 
@@ -648,18 +680,19 @@ Steps:
 
 ### Phase 2: PWA Shell
 
-**Goal**: Scaffold the PWA with Vite + React + TypeScript + Tailwind, capture mic audio, display transcription.
+**Goal**: Scaffold the PWA with Vite + React + TypeScript + Tailwind, deploy to GitHub Pages, capture mic audio, display transcription.
 
 Steps:
 1. Scaffold Vite project in `pwa/` (`npm create vite@latest . -- --template react-ts`)
 2. Add Tailwind CSS 4, `vite-plugin-pwa`, and `idb`
-3. Configure `vite.config.ts` with PWA plugin and dev server on port 8080
-4. Build `App.tsx`, `useAudioCapture` hook (AudioWorklet, fallback: MediaRecorder)
-5. Build `useWhisper` hook — send audio chunks to Whisper server, receive text
-6. Build `TranscriptList` component — display transcription history
-7. `npm run build` → deploy `dist/` to phone, verify homescreen install
+3. Configure `vite.config.ts` with PWA plugin and `base: "/whisper-hid/"`
+4. Create `deploy-pwa.yml` GitHub Actions workflow (build + deploy to GitHub Pages)
+5. Build `App.tsx`, `useAudioCapture` hook (AudioWorklet, fallback: MediaRecorder)
+6. Build `useWhisper` hook — send audio chunks to Whisper server, receive text
+7. Build `TranscriptList` component — display transcription history
+8. Push to main → verify GitHub Pages deployment → save to homescreen on phone
 
-**Success criteria**: Speak into phone, see transcribed text in the PWA.
+**Success criteria**: Speak into phone, see transcribed text in the PWA (served from GitHub Pages, saved to homescreen).
 
 ### Phase 3: Kotlin Service Refactor
 
@@ -670,7 +703,8 @@ Steps:
 2. Add HTTP server to `BluetoothHidService` (using `HttpServer` or `ServerSocket`)
 3. Implement `/type`, `/status`, `/logs` endpoints
 4. Implement auth token generation and validation
-5. Add "Open PWA" button that passes token via URL
+5. Add Private Network Access header (`Access-Control-Allow-Private-Network: true`) to CORS preflight responses
+6. Add "Open PWA" button that passes token via GitHub Pages URL
 
 **Success criteria**: `curl -X POST -H "Authorization: Bearer <token>" -d '{"text":"hello"}' http://localhost:9877/type` sends keystrokes to the paired laptop.
 
@@ -706,7 +740,7 @@ Steps:
 - Graceful handling of service crashes
 - Battery optimization (release mic when not recording)
 - Error states and user-facing error messages
-- Startup script that launches all three components (`whisper-server`, `serve-pwa`, Kotlin service)
+- Startup script that launches both on-device components (`whisper-server`, Kotlin service)
 
 ---
 
@@ -733,7 +767,8 @@ All constraints from SPEC-1 still apply:
 - **No external Kotlin dependencies**: Android SDK built-ins only for the Kotlin app
 
 Additional constraints:
-- **PWA must work on Android Chrome**: Tested on Chrome for Android over localhost
-- **PWA built with Vite + React 19 + TypeScript**: Built output (`pwa/dist/`) is static files served as-is. Node.js is a dev-time dependency only — not required on the phone
+- **PWA hosted on GitHub Pages**: Served at `https://jonathan-a-white.github.io/whisper-hid/`, saved to homescreen via Chrome. No local HTTP server for the PWA
+- **PWA must work on Android Chrome**: Tested on Chrome for Android, connecting to localhost services via Private Network Access
+- **PWA built with Vite + React 19 + TypeScript**: CI builds and deploys to GitHub Pages. Node.js is a dev/CI dependency only — not required on the phone
 - **Minimal PWA runtime dependencies**: Only `react`, `react-dom`, and `idb`. Tailwind, Vite, and TypeScript are dev-only
 - **Python available in Termux**: Used for the Whisper server, installable via `pkg install python`
