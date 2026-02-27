@@ -6,6 +6,8 @@ WHISPER_REPO="https://github.com/ggml-org/whisper.cpp.git"
 MODEL_REPO="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 DEFAULT_MODEL="ggml-base.en.bin"
 INSTALL_DIR="$HOME/whisper-stt"
+# Capture script directory before any cd commands change the working directory
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== Whisper Bluetooth Keyboard — Termux Setup ==="
 echo ""
@@ -56,7 +58,6 @@ fi
 
 # 6. Copy scripts
 echo "[6/6] Setting up scripts..."
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MISSING_SCRIPTS=()
 for script in start-stt.sh stop-stt.sh update-model.sh; do
     if [ -f "$SCRIPT_DIR/$script" ]; then
