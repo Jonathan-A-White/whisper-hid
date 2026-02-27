@@ -16,7 +16,7 @@ pkg update -y && pkg upgrade -y
 
 # 2. Install build tools
 echo "[2/6] Installing build tools..."
-pkg install -y clang cmake make git tmux termux-api socat
+pkg install -y clang cmake make git tmux termux-api socat ffmpeg
 
 # 3. Clone whisper.cpp
 echo "[3/6] Cloning whisper.cpp..."
@@ -62,7 +62,11 @@ echo "=== Setup Complete ==="
 echo ""
 echo "Installation directory: $INSTALL_DIR"
 echo "Model: $INSTALL_DIR/models/$DEFAULT_MODEL"
-echo "Whisper binary: $INSTALL_DIR/whisper.cpp/build/bin/main"
+if [ -x "$INSTALL_DIR/whisper.cpp/build/bin/whisper-cli" ]; then
+    echo "Whisper binary: $INSTALL_DIR/whisper.cpp/build/bin/whisper-cli"
+else
+    echo "Whisper binary: $INSTALL_DIR/whisper.cpp/build/bin/main"
+fi
 echo ""
 echo "Next steps:"
 echo "  1. Grant Termux:API microphone permission"
