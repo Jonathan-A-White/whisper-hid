@@ -80,12 +80,28 @@ User speaks
 
 ## Component 1: PWA
 
+### Tech Stack
+
+| Tool | Purpose |
+|------|---------|
+| React 19 | UI framework |
+| Vite | Build tool / dev server |
+| TypeScript | Type-safe JavaScript |
+| Tailwind CSS 4 | Utility-first styling |
+| vite-plugin-pwa + Workbox | Service worker / offline caching / installability |
+| IndexedDB (via `idb`) | Client-side storage (transcript history, settings) |
+
+`idb` is the only runtime dependency beyond React. Tailwind, Vite, and TypeScript are dev-only.
+
 ### Hosting
 
-The PWA is a set of static files (HTML, CSS, JS) served from localhost. Options for serving:
-- `python3 -m http.server 8080` in Termux
-- A small static file server script in Termux
-- A lightweight HTTP server like `busybox httpd`
+The PWA is built with Vite and served as static files from localhost.
+
+**Development**: `npm run dev` runs Vite's dev server on `localhost:8080` with HMR.
+
+**Production**: `npm run build` outputs optimized static files to `pwa/dist/`. These are served in Termux via:
+- `python3 -m http.server 8080 -d dist`
+- Or a lightweight HTTP server like `busybox httpd`
 
 Served at `http://localhost:8080`. Chrome on Android allows mic access over localhost without HTTPS.
 
@@ -218,7 +234,7 @@ Pulls from `/logs` on both the Kotlin service and the Whisper server.
 
 ### Settings
 
-Stored in `localStorage`. No accounts, no cloud.
+Stored in IndexedDB (via `idb`). No accounts, no cloud.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -227,22 +243,29 @@ Stored in `localStorage`. No accounts, no cloud.
 | Audio chunk length | 5s | Duration of audio segments sent to Whisper |
 | Language | en | Language hint for Whisper |
 
-### PWA Manifest
+### PWA Manifest & Service Worker
 
-Standard `manifest.json` so it can be added to the homescreen:
+Handled by `vite-plugin-pwa`. The plugin generates a `manifest.webmanifest` and a Workbox-powered service worker from the Vite config:
 
-```json
-{
-  "name": "Whisper Keyboard",
-  "short_name": "Whisper",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#000000",
-  "theme_color": "#000000"
-}
+```ts
+// vite.config.ts (relevant excerpt)
+VitePWA({
+  registerType: "autoUpdate",
+  manifest: {
+    name: "Whisper Keyboard",
+    short_name: "Whisper",
+    start_url: "/",
+    display: "standalone",
+    background_color: "#000000",
+    theme_color: "#000000",
+  },
+  workbox: {
+    globPatterns: ["**/*.{js,css,html,woff2,png,svg}"],
+  },
+})
 ```
 
-Optionally include a service worker for offline caching of the static assets (the PWA shell itself, not the APIs).
+The service worker caches the PWA shell for offline use. API calls (`/transcribe`, `/type`, `/status`) are **not** cached — they must be live.
 
 ---
 
@@ -547,14 +570,34 @@ whisper-hid/
 │           ├── BluetoothHidService.kt   # BT HID + HTTP API
 │           └── HidKeyMapper.kt          # Char → HID keycode mapping
 │
-├── pwa/                                 # Progressive Web App
-│   ├── index.html
-│   ├── app.js                           # Main app logic
-│   ├── audio.js                         # Mic capture (AudioWorklet or MediaRecorder)
-│   ├── api.js                           # API clients for Whisper and HID services
-│   ├── style.css
-│   ├── manifest.json                    # PWA manifest
-│   └── sw.js                            # Service worker (offline caching)
+├── pwa/                                 # Progressive Web App (React + Vite + TypeScript)
+│   ├── index.html                       # Vite entry HTML
+│   ├── vite.config.ts                   # Vite + PWA plugin config
+│   ├── tailwind.config.ts               # Tailwind CSS config
+│   ├── tsconfig.json
+│   ├── package.json
+│   ├── public/                          # Static assets (icons, etc.)
+│   └── src/
+│       ├── main.tsx                     # React entry point
+│       ├── App.tsx                      # Root component + routing
+│       ├── index.css                    # Tailwind directives
+│       ├── hooks/
+│       │   ├── useAudioCapture.ts       # Mic capture (AudioWorklet / MediaRecorder)
+│       │   ├── useWhisper.ts            # Whisper server API client
+│       │   ├── useHidService.ts         # Kotlin HID service API client
+│       │   └── useTranscriptStore.ts    # IndexedDB transcript history
+│       ├── components/
+│       │   ├── TranscriptList.tsx       # Scrolling transcript log
+│       │   ├── RecordingIndicator.tsx   # Recording state display
+│       │   ├── EditBuffer.tsx           # Edit-before-send text area
+│       │   ├── StatusBar.tsx            # BT + Whisper connection status
+│       │   ├── Settings.tsx             # Settings panel
+│       │   └── DebugLog.tsx             # Debug log view
+│       ├── lib/
+│       │   ├── api.ts                   # HTTP client helpers
+│       │   ├── db.ts                    # IndexedDB via idb
+│       │   └── audio-worklet.ts         # AudioWorklet processor
+│       └── types.ts                     # Shared TypeScript types
 │
 ├── scripts/                             # Termux scripts
 │   ├── setup-termux.sh                  # One-time environment setup
@@ -586,7 +629,7 @@ whisper-hid/
 | BT disconnect handling | Text lost | PWA queues text, flushes on reconnect |
 | Auth/security | None (any app can write to socket) | Shared secret token + CORS |
 | Files removed | — | `SocketListenerService.kt`, `BootReceiver.kt`, `start-stt.sh`, `stop-stt.sh` |
-| Files added | — | `pwa/*`, `whisper-server.py`, `serve-pwa.sh` |
+| Files added | — | `pwa/` (Vite + React + TS), `whisper-server.py`, `serve-pwa.sh` |
 
 ---
 
@@ -605,13 +648,16 @@ Steps:
 
 ### Phase 2: PWA Shell
 
-**Goal**: Static PWA that captures mic audio and displays transcription.
+**Goal**: Scaffold the PWA with Vite + React + TypeScript + Tailwind, capture mic audio, display transcription.
 
 Steps:
-1. Build `index.html`, `app.js`, `audio.js`, `style.css`
-2. Implement mic capture via AudioWorklet (fallback: MediaRecorder)
-3. Send audio chunks to Whisper server, display returned text
-4. Add to homescreen, verify it works standalone
+1. Scaffold Vite project in `pwa/` (`npm create vite@latest . -- --template react-ts`)
+2. Add Tailwind CSS 4, `vite-plugin-pwa`, and `idb`
+3. Configure `vite.config.ts` with PWA plugin and dev server on port 8080
+4. Build `App.tsx`, `useAudioCapture` hook (AudioWorklet, fallback: MediaRecorder)
+5. Build `useWhisper` hook — send audio chunks to Whisper server, receive text
+6. Build `TranscriptList` component — display transcription history
+7. `npm run build` → deploy `dist/` to phone, verify homescreen install
 
 **Success criteria**: Speak into phone, see transcribed text in the PWA.
 
@@ -646,11 +692,11 @@ Steps:
 **Goal**: Add edit-before-send mode, history editing, debug view.
 
 Steps:
-1. Implement settings panel with `localStorage` persistence
+1. Implement `Settings` component with IndexedDB persistence (via `idb`)
 2. Add edit-before-send toggle
-3. Add tap-to-edit on history entries with resend
-4. Add debug log view pulling from both services
-5. PWA manifest and service worker for homescreen install
+3. Add tap-to-edit on history entries with resend (`EditBuffer` component)
+4. Add `DebugLog` component pulling from both services' `/logs` endpoints
+5. Verify PWA manifest and Workbox service worker (generated by `vite-plugin-pwa`)
 
 ### Phase 6: Hardening
 
@@ -666,9 +712,13 @@ Steps:
 
 ## Key Technical References
 
+- **React 19**: https://react.dev/
+- **Vite**: https://vite.dev/
+- **Tailwind CSS 4**: https://tailwindcss.com/
+- **vite-plugin-pwa**: https://vite-pwa-org.netlify.app/
+- **idb (IndexedDB)**: https://github.com/jakearchibald/idb
 - **Web Audio API / AudioWorklet**: https://developer.mozilla.org/en-US/docs/Web/API/AudioWorklet
 - **MediaRecorder API**: https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder
-- **PWA manifest**: https://developer.mozilla.org/en-US/docs/Web/Manifest
 - **BluetoothHidDevice API**: https://developer.android.com/reference/android/bluetooth/BluetoothHidDevice
 - **whisper.cpp**: https://github.com/ggml-org/whisper.cpp
 - **Flask**: https://flask.palletsprojects.com/
@@ -684,5 +734,6 @@ All constraints from SPEC-1 still apply:
 
 Additional constraints:
 - **PWA must work on Android Chrome**: Tested on Chrome for Android over localhost
-- **No build toolchain for PWA**: Vanilla HTML/CSS/JS, no webpack/vite/npm. Files are served as-is
+- **PWA built with Vite + React 19 + TypeScript**: Built output (`pwa/dist/`) is static files served as-is. Node.js is a dev-time dependency only — not required on the phone
+- **Minimal PWA runtime dependencies**: Only `react`, `react-dom`, and `idb`. Tailwind, Vite, and TypeScript are dev-only
 - **Python available in Termux**: Used for the Whisper server, installable via `pkg install python`
