@@ -20,6 +20,10 @@ SILENCE_PATTERNS='^\[BLANK_AUDIO\]$|^\(silence\)$|^$|^\[MUSIC\]$|^\[music\]$|^ *
 
 cleanup() {
     echo "Shutting down..."
+    trap - SIGTERM SIGINT EXIT  # Prevent re-entry
+    # Kill child processes (socat and stt-loop.sh) by process group
+    kill -- -$$ 2>/dev/null || true
+    sleep 0.5
     # Stop any recording
     termux-microphone-record -q 2>/dev/null || true
     # Remove PID file
@@ -63,6 +67,11 @@ if [ ! -f "$INSTALL_DIR/stt-loop.sh" ]; then
     echo "Error: stt-loop.sh not found. Re-run setup-termux.sh."
     exit 1
 fi
+
+# Kill orphaned stt-loop.sh processes from previous runs that may
+# periodically call termux-microphone-record -q and stop new recordings.
+pkill -f "stt-loop.sh" 2>/dev/null || true
+termux-microphone-record -q 2>/dev/null || true
 
 # Store PID
 echo $$ > "$PID_FILE"
