@@ -28,6 +28,7 @@ class SocketListenerService : Service() {
     interface TranscriptionCallback {
         fun onTranscription(text: String)
         fun onStatusChanged(status: String)
+        fun onMicReady() {}
     }
 
     private val binder = LocalBinder()
@@ -192,6 +193,9 @@ class SocketListenerService : Service() {
                 paused = false
                 transcriptionCallback?.onStatusChanged("Listening")
                 flushBuffer()
+            }
+            msg == "MIC_READY" -> {
+                transcriptionCallback?.onMicReady()
             }
             msg.startsWith("BACKSPACE:") -> {
                 val count = msg.substringAfter("BACKSPACE:").toIntOrNull() ?: 1

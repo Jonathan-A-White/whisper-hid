@@ -190,6 +190,8 @@ ptt_loop() {
                 termux-microphone-record -f "$raw_file" $RECORD_ARGS 0</dev/null 1>&2 2>/dev/null
                 recording=true
                 echo "  [ptt] Recording started" >&2
+                # After a brief mic-init delay, send MIC_READY so Android can play a chime
+                ( sleep 0.5; printf '\x01MIC_READY\n' ) &
                 ;;
             STOP)
                 if [ "$recording" != true ]; then
