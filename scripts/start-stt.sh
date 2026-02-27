@@ -4,6 +4,7 @@
 set -euo pipefail
 
 INSTALL_DIR="$HOME/whisper-stt"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Try whisper-cli first (newer builds), fall back to main (older builds)
 WHISPER_BIN="$INSTALL_DIR/whisper.cpp/build/bin/whisper-cli"
 if [ ! -x "$WHISPER_BIN" ]; then
@@ -63,14 +64,21 @@ if ! command -v termux-microphone-record &>/dev/null; then
     exit 1
 fi
 
-if [ ! -f "$INSTALL_DIR/stt-loop.sh" ]; then
+# Prefer stt-loop.sh next to this script (repo/development mode),
+# fall back to installed copy in $INSTALL_DIR.
+if [ -f "$SCRIPT_DIR/stt-loop.sh" ]; then
+    STT_LOOP="$SCRIPT_DIR/stt-loop.sh"
+elif [ -f "$INSTALL_DIR/stt-loop.sh" ]; then
+    STT_LOOP="$INSTALL_DIR/stt-loop.sh"
+else
     echo "Error: stt-loop.sh not found. Re-run setup-termux.sh."
     exit 1
 fi
 
 # Kill orphaned stt-loop.sh processes from previous runs that may
 # periodically call termux-microphone-record -q and stop new recordings.
-pkill -f "stt-loop.sh" 2>/dev/null || true
+# Use SIGKILL — old versions trap TERM and don't exit.
+pkill -9 -f "stt-loop.sh" 2>/dev/null || true
 termux-microphone-record -q 2>/dev/null || true
 
 # Store PID
@@ -138,7 +146,7 @@ echo "Waiting for connection on localhost:$PORT..."
 # No 'fork' — prevents multiple processes fighting over the microphone.
 # When a connection ends, socat exits and we restart the listener.
 while true; do
-    socat TCP-LISTEN:"$PORT",reuseaddr SYSTEM:"bash '$INSTALL_DIR/stt-loop.sh'" 2>&1 || true
+    socat TCP-LISTEN:"$PORT",reuseaddr SYSTEM:"bash '$STT_LOOP'" 2>&1 || true
     echo "Connection ended, listening again on port $PORT..." >&2
     # Brief pause before accepting a new connection
     sleep 1

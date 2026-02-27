@@ -35,8 +35,8 @@ else
     rm -f "$PID_FILE"
 fi
 
-# Kill any orphaned stt-loop.sh processes
-pkill -f "stt-loop.sh" 2>/dev/null || true
+# Kill any orphaned stt-loop.sh processes (SIGKILL — old versions trap TERM)
+pkill -9 -f "stt-loop.sh" 2>/dev/null || true
 
 # Stop any lingering recording
 termux-microphone-record -q 2>/dev/null || true
