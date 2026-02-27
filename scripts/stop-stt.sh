@@ -14,7 +14,8 @@ PID=$(cat "$PID_FILE")
 
 if kill -0 "$PID" 2>/dev/null; then
     echo "Stopping STT process (PID $PID)..."
-    kill -TERM "$PID"
+    # Kill the process group to include socat and stt-loop.sh children
+    kill -- -"$PID" 2>/dev/null || kill -TERM "$PID" 2>/dev/null || true
     # Wait for process to exit
     for i in $(seq 1 10); do
         if ! kill -0 "$PID" 2>/dev/null; then
@@ -26,13 +27,16 @@ if kill -0 "$PID" 2>/dev/null; then
     done
     # Force kill if still running
     echo "Force killing STT process..."
-    kill -9 "$PID" 2>/dev/null || true
+    kill -9 -- -"$PID" 2>/dev/null || kill -9 "$PID" 2>/dev/null || true
     rm -f "$PID_FILE"
     echo "STT stopped."
 else
     echo "STT process (PID $PID) is not running. Cleaning up."
     rm -f "$PID_FILE"
 fi
+
+# Kill any orphaned stt-loop.sh processes
+pkill -f "stt-loop.sh" 2>/dev/null || true
 
 # Stop any lingering recording
 termux-microphone-record -q 2>/dev/null || true

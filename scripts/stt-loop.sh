@@ -5,37 +5,43 @@
 #                   SILENCE_PATTERNS, RECORD_ARGS, RECORD_EXT
 
 cleanup() {
-    termux-microphone-record -q </dev/null >/dev/null 2>/dev/null || true
+    # Guard against re-entrant cleanup (EXIT trap fires after signal traps)
+    [ "${_CLEANING_UP:-}" = 1 ] && return
+    _CLEANING_UP=1
+    termux-microphone-record -q 0</dev/null 1>&2 2>/dev/null || true
     rm -f "$AUDIO_DIR"/chunk_$$_raw.* "$AUDIO_DIR"/chunk_$$.wav
+    exit 0
 }
 trap cleanup EXIT TERM INT PIPE
 
 echo "Client connected" >&2
 
-# Save stderr fd for our own logging, then set up redirects.
 # socat connects our stdin/stdout to the TCP socket, but termux-microphone-record
-# (via termux-api binary) needs clean I/O for its IPC with the Termux:API app.
-# Redirect stdin/stdout on all termux-microphone-record calls to /dev/null.
+# (via termux-api binary) needs a functional stdout for its IPC with the Termux:API app.
+# All termux-microphone-record calls redirect: stdin from /dev/null, stdout to
+# stderr (the terminal), and suppress stderr — keeping output off the TCP socket
+# while giving termux-api a real fd to write to.
 
 # Stop any stale recording from a previous connection
-termux-microphone-record -q </dev/null >/dev/null 2>/dev/null || true
+termux-microphone-record -q 0</dev/null 1>&2 2>/dev/null || true
 
 while true; do
     RAW_FILE="$AUDIO_DIR/chunk_${$}_raw.$RECORD_EXT"
     AUDIO_FILE="$AUDIO_DIR/chunk_${$}.wav"
 
     # Record audio chunk using the format determined at startup.
-    # Redirect stdin/stdout to /dev/null — socat has them wired to the TCP socket
-    # which breaks termux-api's internal IPC protocol.
+    # Redirect stdin from /dev/null and stdout to stderr (the terminal) — socat
+    # has stdin/stdout wired to the TCP socket.  termux-api needs a functional
+    # stdout fd for its IPC with the Termux:API app; /dev/null breaks it.
     # shellcheck disable=SC2086
-    termux-microphone-record -f "$RAW_FILE" -l "$CHUNK_SEC" $RECORD_ARGS </dev/null >/dev/null 2>/dev/null
+    termux-microphone-record -f "$RAW_FILE" -l "$CHUNK_SEC" $RECORD_ARGS 0</dev/null 1>&2 2>/dev/null
 
     # Wait for the recording to complete. Add 1s buffer beyond the recording limit
     # so the file is fully flushed before we try to read it.
     sleep "$((CHUNK_SEC + 1))"
 
     # Stop recording to finalize the file (may already be stopped via -l limit)
-    termux-microphone-record -q </dev/null >/dev/null 2>/dev/null || true
+    termux-microphone-record -q 0</dev/null 1>&2 2>/dev/null || true
     sleep 1
 
     # Verify raw audio file exists and has content
