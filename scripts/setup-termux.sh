@@ -31,11 +31,18 @@ fi
 # 4. Build whisper.cpp with ARM64 NEON flags
 echo "[4/6] Building whisper.cpp (this may take a few minutes)..."
 cd "$INSTALL_DIR/whisper.cpp"
-cmake -B build \
-    -DCMAKE_C_FLAGS="-march=armv8.2-a+dotprod+fp16" \
-    -DCMAKE_CXX_FLAGS="-march=armv8.2-a+dotprod+fp16" \
-    -DWHISPER_NO_ACCELERATE=ON
-cmake --build build --config Release -j"$(nproc)"
+WHISPER_BIN_CLI="$INSTALL_DIR/whisper.cpp/build/bin/whisper-cli"
+WHISPER_BIN_MAIN="$INSTALL_DIR/whisper.cpp/build/bin/main"
+if [ -x "$WHISPER_BIN_CLI" ] || [ -x "$WHISPER_BIN_MAIN" ]; then
+    echo "  whisper.cpp already built, skipping compile step."
+    echo "  (Delete $INSTALL_DIR/whisper.cpp/build to force rebuild)"
+else
+    cmake -B build \
+        -DCMAKE_C_FLAGS="-march=armv8.2-a+dotprod+fp16" \
+        -DCMAKE_CXX_FLAGS="-march=armv8.2-a+dotprod+fp16" \
+        -DWHISPER_NO_ACCELERATE=ON
+    cmake --build build --config Release -j"$(nproc)"
+fi
 
 # 5. Download default model
 echo "[5/6] Downloading default model ($DEFAULT_MODEL)..."
@@ -50,12 +57,29 @@ fi
 # 6. Copy scripts
 echo "[6/6] Setting up scripts..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MISSING_SCRIPTS=()
 for script in start-stt.sh stop-stt.sh update-model.sh; do
     if [ -f "$SCRIPT_DIR/$script" ]; then
         cp "$SCRIPT_DIR/$script" "$INSTALL_DIR/$script"
         chmod +x "$INSTALL_DIR/$script"
+        echo "  Installed $script"
+    else
+        MISSING_SCRIPTS+=("$script")
     fi
 done
+if [ ${#MISSING_SCRIPTS[@]} -gt 0 ]; then
+    echo ""
+    echo "Error: The following scripts were not found in $SCRIPT_DIR:"
+    for s in "${MISSING_SCRIPTS[@]}"; do
+        echo "  - $s"
+    done
+    echo ""
+    echo "Please ensure you are running setup-termux.sh from the whisper-hid/scripts/"
+    echo "directory of a complete git clone:"
+    echo "  git clone <repo-url>"
+    echo "  cd whisper-hid/scripts && bash setup-termux.sh"
+    exit 1
+fi
 
 echo ""
 echo "=== Setup Complete ==="
