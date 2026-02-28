@@ -68,7 +68,7 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
   const isConnected = hid.status?.bluetooth === "connected";
 
   return (
-    <div className="flex flex-col items-center justify-center p-6 min-h-[calc(100vh-8rem)]">
+    <div className="flex flex-col items-center justify-center p-6 h-full">
       {/* Pinned items */}
       {store.pinnedEntries.length > 0 && (
         <div className="w-full mb-6 overflow-x-auto">
