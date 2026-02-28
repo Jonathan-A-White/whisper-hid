@@ -12,7 +12,7 @@ export default defineConfig({
         name: "Whisper Keyboard",
         short_name: "Whisper",
         start_url: "/whisper-hid/",
-        display: "standalone",
+        display: "fullscreen",
         background_color: "#000000",
         theme_color: "#000000",
         icons: [
