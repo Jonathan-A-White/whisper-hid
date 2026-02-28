@@ -154,6 +154,8 @@ def load_model():
 
 def transcode_to_wav(input_path: str, output_path: str) -> bool:
     """Transcode any audio format to 16kHz mono WAV using ffmpeg."""
+    input_size = os.path.getsize(input_path) if os.path.isfile(input_path) else 0
+    add_log("info", f"Transcode: input={input_path} size={input_size}B")
     try:
         result = subprocess.run(
             [
@@ -161,16 +163,29 @@ def transcode_to_wav(input_path: str, output_path: str) -> bool:
                 "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", output_path,
             ],
             capture_output=True,
+            text=True,
             timeout=30,
         )
         if result.returncode != 0:
-            add_log("warn", f"ffmpeg exited {result.returncode}: {result.stderr[-200:]}")
+            add_log("warn", f"ffmpeg exited {result.returncode}: {result.stderr[-300:]}")
             return False
-        if not os.path.isfile(output_path) or os.path.getsize(output_path) < 1000:
-            add_log("warn", f"WAV too small after transcode ({os.path.getsize(output_path) if os.path.isfile(output_path) else 0}B)")
+        out_size = os.path.getsize(output_path) if os.path.isfile(output_path) else 0
+        # Extract duration from ffmpeg stderr (e.g. "Duration: 00:00:06.12")
+        duration_line = ""
+        for line in result.stderr.splitlines():
+            if "Duration:" in line:
+                duration_line = line.strip()
+                break
+        add_log("info", f"Transcode: output={out_size}B {duration_line}")
+        if out_size < 1000:
+            add_log("warn", f"WAV too small after transcode ({out_size}B) — likely silence or corrupt input")
             return False
         return True
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    except subprocess.TimeoutExpired:
+        add_log("error", "ffmpeg timed out (30s)")
+        return False
+    except FileNotFoundError:
+        add_log("error", "ffmpeg binary not found")
         return False
 
 
@@ -179,6 +194,9 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
     whisper_bin = WHISPER_BIN or find_whisper_bin()
     if not whisper_bin:
         raise RuntimeError("whisper.cpp binary not found")
+
+    wav_size = os.path.getsize(wav_path) if os.path.isfile(wav_path) else 0
+    add_log("info", f"Whisper: input={wav_path} size={wav_size}B")
 
     t0 = time.time()
     result = subprocess.run(
@@ -197,13 +215,27 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
     )
     duration_ms = int((time.time() - t0) * 1000)
 
+    add_log("info", f"Whisper: exit={result.returncode} took={duration_ms}ms")
+    add_log("info", f"Whisper stdout: {repr(result.stdout[:500])}")
+    if result.stderr:
+        # Log last few lines of stderr (contains processing info)
+        stderr_lines = result.stderr.strip().splitlines()
+        for line in stderr_lines[-5:]:
+            add_log("info", f"Whisper stderr: {line.strip()}")
+
     # Parse output — whisper.cpp prints transcription to stdout
-    text = result.stdout.strip()
+    raw_text = result.stdout.strip()
+    text = raw_text
     # Filter out silence/blank markers
     silence_markers = ["[BLANK_AUDIO]", "(silence)", "[silence]"]
     for marker in silence_markers:
         text = text.replace(marker, "")
     text = text.strip()
+
+    if not text and raw_text:
+        add_log("warn", f"Whisper returned only silence markers: {repr(raw_text)}")
+    elif not text:
+        add_log("warn", "Whisper returned empty output — no speech detected")
 
     return text, duration_ms
 
@@ -299,8 +331,10 @@ def transcribe_start():
             ]
             if audio_format == "amr_wb":
                 rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+            add_log("info", f"Recording cmd: {' '.join(rec_cmd)}")
             recording_process = subprocess.Popen(rec_cmd)
-            add_log("info", "Recording started (PTT)")
+            add_log("info", f"Recording started: {recording_file}")
+            print(f"Recording started: {recording_file}")
             return jsonify({"ok": True, "message": "Recording started"})
         except FileNotFoundError:
             recording_process = None
@@ -320,14 +354,20 @@ def transcribe_stop():
 
         # Stop the recording
         try:
-            subprocess.run(["termux-microphone-record", "-q"], timeout=5)
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+            stop_result = subprocess.run(
+                ["termux-microphone-record", "-q"],
+                timeout=5, capture_output=True, text=True,
+            )
+            add_log("info", f"Recording stop cmd exit={stop_result.returncode}")
+            if stop_result.stdout.strip():
+                add_log("info", f"Recording stop stdout: {stop_result.stdout.strip()[:200]}")
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            add_log("warn", f"Recording stop failed: {e}")
 
         # Wait for the audio file to be fully flushed/finalized.
         # Without this delay the file may be truncated when ffmpeg reads it,
         # producing a WAV with no audible content → "no speech detected".
-        time.sleep(1)
+        time.sleep(2)
 
         recording_process = None
         audio_file = recording_file
@@ -336,6 +376,12 @@ def transcribe_stop():
     if not audio_file or not os.path.isfile(audio_file):
         add_log("error", "Recording file not found after stop")
         return jsonify({"error": "recording_failed", "message": "Recording file not found."}), 500
+
+    audio_size = os.path.getsize(audio_file)
+    add_log("info", f"Recording finished: {audio_file} size={audio_size}B")
+    print(f"Recording finished: {audio_file} size={audio_size}B")
+    if audio_size < 100:
+        add_log("error", f"Recording file too small ({audio_size}B) — mic may not be working")
 
     # Transcribe
     with transcribe_lock:
@@ -383,6 +429,113 @@ def status():
 @app.route("/logs", methods=["GET"])
 def logs():
     return jsonify({"logs": list(log_buffer)})
+
+
+@app.route("/debug/test-pipeline", methods=["POST"])
+def debug_test_pipeline():
+    """Record 3 seconds of audio and return full diagnostic info.
+
+    Speak during the 3-second recording window.  The response includes
+    file sizes, ffmpeg output, whisper raw output, and the final text.
+    """
+    if not model_loaded:
+        return jsonify({"error": "model_not_loaded"}), 503
+
+    diag = {"audio_format": audio_format, "audio_ext": audio_ext, "steps": []}
+
+    with tempfile.TemporaryDirectory() as td:
+        raw_file = os.path.join(td, f"test.{audio_ext}")
+        wav_file = os.path.join(td, "test.wav")
+
+        # Step 1: Record 3 seconds
+        rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", "3"]
+        if audio_format == "amr_wb":
+            rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+        diag["rec_cmd"] = " ".join(rec_cmd)
+
+        try:
+            subprocess.run(rec_cmd, timeout=5)
+            time.sleep(4)  # wait for recording to finish + flush
+            subprocess.run(["termux-microphone-record", "-q"], timeout=5)
+            time.sleep(1)
+        except Exception as e:
+            diag["steps"].append({"step": "record", "error": str(e)})
+            return jsonify(diag), 500
+
+        raw_size = os.path.getsize(raw_file) if os.path.isfile(raw_file) else 0
+        diag["steps"].append({"step": "record", "file": raw_file, "size_bytes": raw_size})
+
+        if raw_size == 0:
+            diag["steps"].append({"step": "record", "error": "Recording produced empty file — mic not working"})
+            return jsonify(diag), 500
+
+        # Step 2: Transcode
+        ffmpeg_result = subprocess.run(
+            ["ffmpeg", "-y", "-i", raw_file,
+             "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav_file],
+            capture_output=True, text=True, timeout=30,
+        )
+        wav_size = os.path.getsize(wav_file) if os.path.isfile(wav_file) else 0
+        diag["steps"].append({
+            "step": "transcode",
+            "exit_code": ffmpeg_result.returncode,
+            "wav_size_bytes": wav_size,
+            "ffmpeg_stderr": ffmpeg_result.stderr[-500:] if ffmpeg_result.stderr else "",
+        })
+
+        if ffmpeg_result.returncode != 0 or wav_size < 1000:
+            return jsonify(diag), 500
+
+        # Step 3: Estimate audio energy (check if mic captured real audio)
+        try:
+            import struct
+            with open(wav_file, "rb") as f:
+                raw = f.read()
+            # Skip WAV header (44 bytes), read PCM samples
+            pcm = raw[44:]
+            if len(pcm) >= 2:
+                samples = struct.unpack(f"<{len(pcm)//2}h", pcm[:len(pcm)//2*2])
+                max_amp = max(abs(s) for s in samples)
+                avg_amp = sum(abs(s) for s in samples) / len(samples)
+                diag["steps"].append({
+                    "step": "audio_analysis",
+                    "num_samples": len(samples),
+                    "duration_sec": round(len(samples) / 16000, 2),
+                    "max_amplitude": max_amp,
+                    "avg_amplitude": round(avg_amp, 1),
+                    "max_amplitude_pct": round(max_amp / 32768 * 100, 1),
+                    "silent": max_amp < 100,
+                })
+        except Exception as e:
+            diag["steps"].append({"step": "audio_analysis", "error": str(e)})
+
+        # Step 4: Run whisper
+        whisper_bin = WHISPER_BIN or find_whisper_bin()
+        t0 = time.time()
+        whisper_result = subprocess.run(
+            [whisper_bin, "--model", model_path, "--language", "en",
+             "--no-timestamps", "--print-special", "false",
+             "--no-context", "--file", wav_file],
+            capture_output=True, text=True, timeout=60,
+        )
+        whisper_ms = int((time.time() - t0) * 1000)
+        diag["steps"].append({
+            "step": "whisper",
+            "exit_code": whisper_result.returncode,
+            "duration_ms": whisper_ms,
+            "raw_stdout": whisper_result.stdout[:500],
+            "stderr_tail": "\n".join(whisper_result.stderr.strip().splitlines()[-10:]) if whisper_result.stderr else "",
+        })
+
+        # Final text
+        text = whisper_result.stdout.strip()
+        for marker in ["[BLANK_AUDIO]", "(silence)", "[silence]"]:
+            text = text.replace(marker, "")
+        text = text.strip()
+        diag["final_text"] = text
+        diag["speech_detected"] = bool(text)
+
+    return jsonify(diag)
 
 
 # --- Main ---
