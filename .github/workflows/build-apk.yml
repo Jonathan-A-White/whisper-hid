@@ -4,18 +4,20 @@ on:
   push:
     branches: [main, "claude/**"]
     tags: ["v*"]
-    paths-ignore:
-      - "scripts/**"
-      - "specs/**"
-      - "pwa/**"
-      - "*.md"
+    paths:
+      - "app/**"
+      - "*.gradle"
+      - "*.gradle.kts"
+      - "gradle/**"
+      - "gradlew"
   pull_request:
     branches: [main]
-    paths-ignore:
-      - "scripts/**"
-      - "specs/**"
-      - "pwa/**"
-      - "*.md"
+    paths:
+      - "app/**"
+      - "*.gradle"
+      - "*.gradle.kts"
+      - "gradle/**"
+      - "gradlew"
 
 jobs:
   build:
