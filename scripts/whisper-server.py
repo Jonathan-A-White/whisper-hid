@@ -189,30 +189,60 @@ def transcode_to_wav(input_path: str, output_path: str) -> bool:
         return False
 
 
+def _detect_whisper_flags() -> list[str]:
+    """Probe whisper-cli --help to find supported flags (run once)."""
+    whisper_bin = WHISPER_BIN or find_whisper_bin()
+    if not whisper_bin:
+        return []
+    try:
+        r = subprocess.run([whisper_bin, "--help"], capture_output=True, text=True, timeout=10)
+        help_text = r.stdout + r.stderr
+    except Exception:
+        return []
+
+    flags: list[str] = []
+    if "--no-gpu" in help_text:
+        flags.append("-ng")
+    if "--no-timestamps" in help_text:
+        flags.append("--no-timestamps")
+    if "--no-flash-attn" in help_text:
+        flags.append("-nfa")
+    if "--no-context" in help_text:
+        flags.append("--no-context")
+
+    add_log("info", f"Whisper detected flags: {' '.join(flags)}")
+    return flags
+
+
+# Cache detected flags (populated on first call)
+_whisper_extra_flags: list[str] | None = None
+
+
 def run_whisper(wav_path: str) -> tuple[str, int]:
     """Run whisper.cpp on a WAV file. Returns (text, duration_ms)."""
+    global _whisper_extra_flags
+
     whisper_bin = WHISPER_BIN or find_whisper_bin()
     if not whisper_bin:
         raise RuntimeError("whisper.cpp binary not found")
 
+    if _whisper_extra_flags is None:
+        _whisper_extra_flags = _detect_whisper_flags()
+
     wav_size = os.path.getsize(wav_path) if os.path.isfile(wav_path) else 0
     add_log("info", f"Whisper: input={wav_path} size={wav_size}B")
 
+    cmd = [
+        whisper_bin,
+        "--model", model_path,
+        "--language", "en",
+        *_whisper_extra_flags,
+        "--file", wav_path,
+    ]
+    add_log("info", f"Whisper cmd: {' '.join(cmd)}")
+
     t0 = time.time()
-    result = subprocess.run(
-        [
-            whisper_bin,
-            "--model", model_path,
-            "--language", "en",
-            "--no-timestamps",
-            "--print-special", "false",
-            "--no-context",
-            "--file", wav_path,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     duration_ms = int((time.time() - t0) * 1000)
 
     add_log("info", f"Whisper: exit={result.returncode} took={duration_ms}ms")
@@ -510,13 +540,18 @@ def debug_test_pipeline():
             diag["steps"].append({"step": "audio_analysis", "error": str(e)})
 
         # Step 4: Run whisper
+        global _whisper_extra_flags
         whisper_bin = WHISPER_BIN or find_whisper_bin()
+        if _whisper_extra_flags is None:
+            _whisper_extra_flags = _detect_whisper_flags()
+        whisper_cmd = [
+            whisper_bin, "--model", model_path, "--language", "en",
+            *_whisper_extra_flags, "--file", wav_file,
+        ]
+        diag["whisper_cmd"] = " ".join(whisper_cmd)
         t0 = time.time()
         whisper_result = subprocess.run(
-            [whisper_bin, "--model", model_path, "--language", "en",
-             "--no-timestamps", "--print-special", "false",
-             "--no-context", "--file", wav_file],
-            capture_output=True, text=True, timeout=60,
+            whisper_cmd, capture_output=True, text=True, timeout=60,
         )
         whisper_ms = int((time.time() - t0) * 1000)
         diag["steps"].append({
