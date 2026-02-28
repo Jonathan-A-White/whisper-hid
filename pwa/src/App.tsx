@@ -79,7 +79,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-black flex flex-col">
+    <div className="h-[100dvh] bg-black flex flex-col overflow-hidden">
       <StatusBar
         hidStatus={hid.status}
         hidReachable={hid.reachable}
