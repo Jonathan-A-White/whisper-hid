@@ -90,7 +90,7 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
                     className="p-1 text-xs text-gray-500 hover:text-red-400"
                     title="Delete"
                   >
-                    \u2715
+                    {"\u2715"}
                   </button>
                 </div>
               </div>
