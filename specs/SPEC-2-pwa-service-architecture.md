@@ -105,7 +105,7 @@ User taps PTT button again (stop)
 | Tailwind CSS | Utility-first styling |
 | vite-plugin-pwa + Workbox | Service worker / offline caching / installability |
 
-No runtime dependencies beyond React. Tailwind, Vite, and TypeScript are dev-only. Settings and transcript history use `localStorage` (see "Storage" below).
+No runtime dependencies beyond React. Tailwind, Vite, and TypeScript are dev-only. Settings use `localStorage`; transcript history uses IndexedDB (see "Storage" below).
 
 ### Hosting
 
@@ -289,11 +289,9 @@ Stored in `localStorage` (JSON-serialized settings object). No accounts, no clou
 
 ### Storage
 
-Settings and transcript history use **`localStorage`**:
-- **Settings**: `JSON.stringify` a settings object. Simple, synchronous, sufficient.
-- **Transcript history**: Store the last ~500 entries as a JSON array. Pinned status stored with each entry.
-
-`localStorage` is simpler than IndexedDB and sufficient for this use case. IndexedDB would only be needed for thousands of entries, full-text search, or large blob storage — none of which apply here.
+- **Settings**: `localStorage` with `JSON.stringify`. Simple, synchronous, sufficient for a small settings object.
+- **Auth token**: `localStorage`. Persists across tab closes and homescreen launches.
+- **Transcript history**: **IndexedDB** (`whisper-keyboard` database, `transcripts` object store). IndexedDB provides indexed queries for fast search and filtering, no serialization bottleneck, and effectively unlimited storage (~hundreds of MB vs. localStorage's ~5MB cap). Each entry is stored as a separate record with indexes on `timestamp` and `pinned` for efficient sorting and filtering. No entry cap — old entries can be pruned manually via the History view.
 
 ### PWA Manifest & Service Worker
 
@@ -868,8 +866,8 @@ These elements carry forward unchanged or with minimal adaptation:
 | Text buffering during BT disconnect | Moved from SocketListenerService to PWA |
 | BootReceiver for auto-start | Identical |
 | Append newline/space settings | Moved from Kotlin SharedPreferences to PWA localStorage |
-| Pinned items | Moved from SQLite to PWA localStorage |
-| Transcript history with search | Moved from SQLite to PWA localStorage |
+| Pinned items | Moved from SQLite to PWA IndexedDB |
+| Transcript history with search | Moved from SQLite to PWA IndexedDB |
 
 ---
 
@@ -911,7 +909,7 @@ whisper-hid/
 │       ├── hooks/
 │       │   ├── useWhisper.ts             # Whisper server API client (start/stop/transcribe)
 │       │   ├── useHidService.ts          # Kotlin HID service API client
-│       │   └── useTranscriptStore.ts     # localStorage transcript history + pins
+│       │   └── useTranscriptStore.ts     # IndexedDB transcript history + pins
 │       ├── components/
 │       │   ├── TalkView.tsx              # PTT button, pinned chips, status
 │       │   ├── HistoryView.tsx           # Searchable transcript list with pin/delete
@@ -955,7 +953,7 @@ whisper-hid/
 | `TalkFragment.kt` | UI moved to PWA TalkView |
 | `HistoryFragment.kt` | UI moved to PWA HistoryView |
 | `SettingsFragment.kt` | UI moved to PWA SettingsView |
-| `TranscriptionDatabase.kt` | Replaced by PWA localStorage |
+| `TranscriptionDatabase.kt` | Replaced by PWA IndexedDB |
 | `TranscriptionEntry.kt` | Replaced by PWA TypeScript types |
 | `HistoryAdapter.kt` | UI moved to PWA |
 | `PinnedAdapter.kt` | UI moved to PWA |
@@ -988,10 +986,10 @@ whisper-hid/
 | Communication | Raw TCP socket, newline-delimited | HTTP REST APIs |
 | BT disconnect handling | `SocketListenerService` buffers text | PWA queues text, flushes on reconnect |
 | Auth/security | None (any app can write to socket) | Shared secret token + CORS + PNA headers |
-| Transcript storage | SQLite (`TranscriptionDatabase`) | `localStorage` in PWA |
+| Transcript storage | SQLite (`TranscriptionDatabase`) | IndexedDB in PWA |
 | Settings storage | Android `SharedPreferences` | `localStorage` in PWA |
 | PTT mode | Yes (primary interaction mode) | Yes (primary interaction mode) — preserved |
-| Pinned items | Yes (SQLite-backed, chips on Talk tab) | Yes (localStorage-backed, chips on Talk view) — preserved |
+| Pinned items | Yes (SQLite-backed, chips on Talk tab) | Yes (IndexedDB-backed, chips on Talk view) — preserved |
 | Append newline/space | Yes (SharedPreferences) | Yes (localStorage settings) — preserved |
 | Boot auto-start | `BootReceiver` starts both services | `BootReceiver` starts Kotlin + Termux:Boot starts Whisper. PWA requires manual open |
 | Audio SCO routing | `MainActivity.startBluetoothSco()` | `BluetoothHidService.setCommunicationDevice()` |
@@ -1040,7 +1038,7 @@ Steps:
 4. Create `deploy-pwa.yml` GitHub Actions workflow
 5. Build Talk view with PTT button, History view, Settings view
 6. Build `useWhisper` hook — start/stop recording, receive text
-7. Build `useTranscriptStore` — localStorage transcript history with pins
+7. Build `useTranscriptStore` — IndexedDB transcript history with pins
 8. Build status bar with connection indicators
 9. Push to main, verify GitHub Pages deployment, save to homescreen
 
