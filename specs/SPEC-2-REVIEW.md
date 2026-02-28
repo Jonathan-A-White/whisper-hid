@@ -50,11 +50,45 @@ The current SocketListenerService handles PAUSE, RESUME, BACKSPACE:N, and MIC_RE
 
 **Recommendation**: Add a "Startup" section. The Kotlin service and Whisper server can auto-start via BootReceiver and Termux:Boot respectively. The user taps the "Open PWA" button in the Kotlin app's notification after boot. This is a minor UX regression from the current "everything auto-starts" experience.
 
-### 2d. Audio SCO Routing — Not Addressed
+### 2d. Audio SCO Routing — SHOWSTOPPER RISK (Researched)
 
-`MainActivity.kt` calls `AudioManager.startBluetoothSco()` to route the headset mic through the phone. In SPEC-2, the PWA uses `getUserMedia()` which goes through the browser's audio stack. Does Chrome on Android automatically route to the BT headset mic when SCO is active? Or does the Kotlin service still need to manage SCO?
+`MainActivity.kt` calls `AudioManager.startBluetoothSco()` to route the headset mic through the phone. In SPEC-2, the PWA uses `getUserMedia()` which goes through the browser's audio stack.
 
-**Recommendation**: Investigate and document. This could be a showstopper — if the PWA can't access the BT headset mic, the whole design falls apart. Add a spike task to Phase 2 to verify `getUserMedia()` picks up the BT headset mic.
+**Research findings**: This is a real problem, not a hypothetical one.
+
+Chrome on Android **does not automatically activate Bluetooth SCO** when `getUserMedia()` requests microphone access. Bluetooth audio has two modes: **A2DP** (high-quality music playback, no mic) and **SCO/HFP** (lower-quality bidirectional audio with mic). Devices default to A2DP. To use the headset mic, the SCO link must be explicitly established via native Android APIs.
+
+The APIs that activate SCO are:
+- `AudioManager.startBluetoothSco()` (deprecated since Android 12)
+- `AudioManager.setCommunicationDevice(AudioDeviceInfo)` (Android 12+, the replacement)
+
+**Neither of these is available to web apps.** Chrome's `getUserMedia()` has no way to trigger SCO connection establishment. When a web app calls `getUserMedia({ audio: true })` with a BT headset connected, Chrome typically returns audio from the **phone's built-in microphone**, not the headset mic. There is a Chromium issue tracking this: [Issue 40222537 — "Android 12+: Chrome ignores connected bluetooth..."](https://issues.chromium.org/issues/40222537).
+
+The `enumerateDevices()` API may list the BT headset as an audio input, and you can pass its `deviceId` to `getUserMedia()`, but this doesn't reliably work because the SCO transport layer isn't activated — the device is "visible" but the audio path isn't open. Additionally, `enumerateDevices()` on Android Chrome often returns only a single `audioinput` entry regardless of how many mics are connected — the BT mic may not even appear as a selectable option ([Chromium Issue 370332086](https://issues.chromium.org/issues/370332086), [react-native-webrtc Issue 1116](https://github.com/react-native-webrtc/react-native-webrtc/issues/1116)).
+
+**Additional problem: SCO audio quality.** Even when SCO is active, the audio is limited to **8kHz mono** (per the HFP Bluetooth profile). Whisper expects **16kHz** input. The current SPEC-1 system uses `termux-microphone-record` with source type `VOICE_COMMUNICATION` (audio source 7), which may negotiate higher sample rates depending on the headset's codec support, and then ffmpeg upsamples to 16kHz WAV. With SCO via `getUserMedia()`, the browser gets 8kHz audio and would need to upsample. This will degrade transcription accuracy compared to the native path. This is a Bluetooth protocol limitation, not a software bug — HFP (Hands-Free Profile) trades audio quality for bidirectional mic+speaker ([Daily.co: Why Bluetooth audio quality suffers in video calls](https://www.daily.co/blog/why-bluetooth-audio-quality-suffers-in-video-calls/)).
+
+**Impact on SPEC-2**: Two problems: (1) the PWA can't reliably access the BT headset mic at all without native help, and (2) even if it could, SCO audio is 8kHz which hurts Whisper accuracy. This undermines a core use case (commuter with BT headset).
+
+**Possible solutions** (pick one):
+
+1. **Kotlin service manages SCO** (recommended): The Kotlin HID service already runs as a foreground service. Add `setCommunicationDevice()` / `startBluetoothSco()` calls there. The PWA calls a new endpoint (e.g., `POST /sco?enable=true`) to tell the Kotlin service to activate SCO before starting mic capture. Once SCO is active system-wide, `getUserMedia()` should pick up the headset mic. This keeps the PWA as the mic owner but delegates the SCO plumbing to the native service that's already running.
+
+2. **Use a WebView instead of Chrome**: If the Kotlin app hosts the PWA in a `WebView` instead of opening it in Chrome, the native app can call `setCommunicationDevice()` before the WebView's `getUserMedia()` fires, and can override `onPermissionRequest` to grant mic access. This loses the "deploy PWA via GitHub Pages" advantage but guarantees mic routing works.
+
+3. **Keep mic capture in Termux** (hybrid): Don't move mic capture to the PWA. Keep the current Termux mic capture (via `termux-microphone-record`, which uses native APIs and respects SCO). The PWA becomes a UI-only layer — it sends a "start recording" command to the Whisper server, which captures audio and returns text. This is a smaller departure from SPEC-1 but still gets the PWA UI benefits.
+
+**Recommendation**: Given the 8kHz quality issue, **Option 3 is now the stronger choice**. Keeping mic capture in Termux means the native `termux-microphone-record` handles SCO activation and can potentially get higher-quality audio than the browser's SCO path. The PWA still gets all the UI benefits — it just doesn't own the mic. If you want to try Option 1 first, add a Phase 2 spike to verify both (a) that `getUserMedia()` picks up the BT headset mic after `setCommunicationDevice()`, and (b) that the 8kHz SCO audio produces acceptable Whisper transcription quality on the S24 Ultra.
+
+**Sources**:
+- [Google Oboe Wiki: Bluetooth Audio](https://github.com/google/oboe/wiki/TechNote_BluetoothAudio) — SCO vs A2DP, setCommunicationDevice API
+- [Chromium Issue 40222537](https://issues.chromium.org/issues/40222537) — Android 12+ Chrome ignoring BT devices
+- [Chromium Issue 370332086](https://issues.chromium.org/issues/370332086) — getUserMedia ignores deviceId constraints
+- [WebRTC Issue 739 / 42232497](https://bugs.chromium.org/p/webrtc/issues/detail?id=739) — Bluetooth mic not working with getUserMedia
+- [webrtc/samples Issue 1338](https://github.com/webrtc/samples/issues/1338) — BT headset mic fails or behaves inconsistently on Android
+- [Daily.co: Why Bluetooth audio quality suffers](https://www.daily.co/blog/why-bluetooth-audio-quality-suffers-in-video-calls/) — HFP 8kHz limitation
+- [Mozilla Bug 1091417](https://bugzilla.mozilla.org/show_bug.cgi?id=1091417) — Investigate Bluetooth SCO API for WebRTC
+- [Chromium code review 1231623004](https://groups.google.com/a/chromium.org/g/chromium-reviews/c/5OarCwcMf-Q) — Chrome's internal AudioManagerAndroid.java and SCO handling
 
 ### 2e. Pinned Items / Quick Resend — Not Addressed
 
@@ -272,7 +306,7 @@ The architecture diagram shows the components and ports. What's missing is a **s
 | Priority | Recommendation |
 |----------|---------------|
 | **High** | Add PTT mode to PWA spec (currently the primary interaction mode) |
-| **High** | Investigate/document audio SCO routing for PWA's getUserMedia |
+| **High** | Resolve BT SCO mic routing: getUserMedia can't activate SCO, and SCO is only 8kHz (Whisper wants 16kHz). Consider keeping mic in Termux (Option 3) or spike Option 1 with real hardware first |
 | **High** | Strengthen the "why three components" with deployment/iteration argument |
 | **High** | Address token re-authentication when PWA is opened without going through Kotlin app |
 | **Medium** | Add append-newline/space settings to PWA |
