@@ -105,6 +105,26 @@ export function useTranscriptStore() {
     [refresh]
   );
 
+  const updateEntry = useCallback(
+    async (id: string, text: string) => {
+      if (!text.trim()) return;
+      const db = await openDB();
+      const tx = db.transaction(STORE_NAME, "readwrite");
+      const store = tx.objectStore(STORE_NAME);
+      const request = store.get(id);
+      request.onsuccess = () => {
+        const entry = request.result as TranscriptEntry;
+        entry.text = text.trim();
+        store.put(entry);
+      };
+      await new Promise<void>((resolve) => {
+        tx.oncomplete = () => resolve();
+      });
+      await refresh();
+    },
+    [refresh]
+  );
+
   const clearAll = useCallback(async () => {
     const db = await openDB();
     const tx = db.transaction(STORE_NAME, "readwrite");
@@ -130,6 +150,7 @@ export function useTranscriptStore() {
     setSearchQuery,
     addEntry,
     deleteEntry,
+    updateEntry,
     togglePin,
     clearAll,
     refresh,

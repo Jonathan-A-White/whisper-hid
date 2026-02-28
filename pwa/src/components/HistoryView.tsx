@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 interface HistoryViewProps {
   store: {
@@ -6,6 +6,7 @@ interface HistoryViewProps {
     searchQuery: string;
     setSearchQuery: (q: string) => void;
     deleteEntry: (id: string) => Promise<void>;
+    updateEntry: (id: string, text: string) => Promise<void>;
     togglePin: (id: string) => Promise<void>;
     clearAll: () => Promise<void>;
   };
@@ -16,10 +17,13 @@ interface HistoryViewProps {
 
 const DELETE_WIDTH = 80;
 const SWIPE_THRESHOLD = 40;
+const LONG_PRESS_MS = 500;
 
 export function HistoryView({ store, hid }: HistoryViewProps) {
   const [confirmClear, setConfirmClear] = useState(false);
   const [swipedId, setSwipedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
   const touchRef = useRef<{
     startX: number;
     startY: number;
@@ -28,6 +32,9 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
     direction: "horizontal" | "vertical" | null;
   } | null>(null);
   const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFired = useRef(false);
+  const editTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const setCardRef = useCallback(
     (id: string) => (el: HTMLDivElement | null) => {
@@ -36,6 +43,22 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
     },
     [],
   );
+
+  // Auto-focus textarea when editing starts
+  useEffect(() => {
+    if (editingId && editTextareaRef.current) {
+      const ta = editTextareaRef.current;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+  }, [editingId]);
+
+  const cancelLongPress = () => {
+    if (longPressTimer.current) {
+      clearTimeout(longPressTimer.current);
+      longPressTimer.current = null;
+    }
+  };
 
   const closeSwipe = useCallback(() => {
     if (swipedId) {
@@ -48,7 +71,27 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
     }
   }, [swipedId]);
 
+  const startEditing = (id: string, text: string) => {
+    closeSwipe();
+    setEditingId(id);
+    setEditText(text);
+  };
+
+  const saveEdit = () => {
+    if (editingId && editText.trim()) {
+      store.updateEntry(editingId, editText);
+    }
+    setEditingId(null);
+    setEditText("");
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditText("");
+  };
+
   const handleTouchStart = (e: React.TouchEvent, id: string) => {
+    if (editingId) return;
     if (swipedId && swipedId !== id) {
       closeSwipe();
     }
@@ -59,13 +102,33 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
       startOffset: swipedId === id ? -DELETE_WIDTH : 0,
       direction: null,
     };
+
+    // Start long press timer (only if not already swiped open)
+    longPressFired.current = false;
+    if (swipedId !== id) {
+      cancelLongPress();
+      longPressTimer.current = setTimeout(() => {
+        longPressFired.current = true;
+        touchRef.current = null;
+        const entry = store.entries.find((e) => e.id === id);
+        if (entry) startEditing(id, entry.text);
+      }, LONG_PRESS_MS);
+    }
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
     const t = touchRef.current;
-    if (!t) return;
+    if (!t) {
+      cancelLongPress();
+      return;
+    }
     const dx = e.touches[0].clientX - t.startX;
     const dy = e.touches[0].clientY - t.startY;
+
+    // Any movement cancels long press
+    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+      cancelLongPress();
+    }
 
     if (!t.direction) {
       if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) {
@@ -90,6 +153,7 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
   };
 
   const handleTouchEnd = () => {
+    cancelLongPress();
     const t = touchRef.current;
     if (!t) return;
     touchRef.current = null;
@@ -183,36 +247,68 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
                 className="relative bg-gray-900 p-3 border border-gray-800"
                 style={{ willChange: "transform" }}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <button
-                    onClick={(e) => {
-                      if (swipedId === entry.id) {
-                        e.stopPropagation();
-                        closeSwipe();
-                        return;
-                      }
-                      hid.sendText(entry.text);
-                    }}
-                    className="text-left text-sm text-gray-200 flex-1 hover:text-white"
-                  >
-                    {entry.text}
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      store.togglePin(entry.id);
-                    }}
-                    className={`p-2 text-sm flex-shrink-0 ${
-                      entry.pinned ? "text-yellow-400" : "text-gray-500"
-                    }`}
-                    title={entry.pinned ? "Unpin" : "Pin"}
-                  >
-                    {entry.pinned ? "\u2605" : "\u2606"}
-                  </button>
-                </div>
-                <p className="text-xs text-gray-600 mt-1">
-                  {formatTime(entry.timestamp)}
-                </p>
+                {editingId === entry.id ? (
+                  /* Inline editor */
+                  <div onClick={(e) => e.stopPropagation()}>
+                    <textarea
+                      ref={editTextareaRef}
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      rows={3}
+                      className="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1 text-sm resize-none focus:outline-none focus:border-blue-500"
+                    />
+                    <div className="flex gap-2 mt-2">
+                      <button
+                        onClick={saveEdit}
+                        disabled={!editText.trim()}
+                        className="text-xs bg-blue-600 text-white px-3 py-1 rounded disabled:opacity-40"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={cancelEdit}
+                        className="text-xs text-gray-400 px-3 py-1"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  /* Normal display */
+                  <>
+                    <div className="flex items-start justify-between gap-2">
+                      <button
+                        onClick={(e) => {
+                          if (longPressFired.current) return;
+                          if (swipedId === entry.id) {
+                            e.stopPropagation();
+                            closeSwipe();
+                            return;
+                          }
+                          hid.sendText(entry.text);
+                        }}
+                        className="text-left text-sm text-gray-200 flex-1 hover:text-white"
+                      >
+                        {entry.text}
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          store.togglePin(entry.id);
+                        }}
+                        className={`p-2 text-sm flex-shrink-0 ${
+                          entry.pinned ? "text-yellow-400" : "text-gray-500"
+                        }`}
+                        title={entry.pinned ? "Unpin" : "Pin"}
+                      >
+                        {entry.pinned ? "\u2605" : "\u2606"}
+                      </button>
+                    </div>
+                    <p className="text-xs text-gray-600 mt-1">
+                      {formatTime(entry.timestamp)}
+                    </p>
+                  </>
+                )}
               </div>
             </div>
           ))}
