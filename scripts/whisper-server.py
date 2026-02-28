@@ -174,28 +174,72 @@ def transcode_to_wav(input_path: str, output_path: str) -> bool:
         return False
 
 
+whisper_flags: list[str] = []   # detected once via _init_whisper_flags()
+
+
+def _init_whisper_flags():
+    """Detect supported whisper.cpp flags at startup.
+
+    Mirrors stt-loop.sh init_whisper_flags() — runs ``whisper-cli --help``
+    and enables only the flags that the installed build supports.
+    """
+    global whisper_flags
+    whisper_bin = WHISPER_BIN or find_whisper_bin()
+    if not whisper_bin:
+        return
+
+    try:
+        r = subprocess.run(
+            [whisper_bin, "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        help_text = r.stdout + r.stderr
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        help_text = ""
+
+    flags = ["-m", model_path, "-l", "en"]
+
+    # Disable GPU — no CUDA/Metal in Termux
+    if "--no-gpu" in help_text:
+        flags.append("-ng")
+
+    # Disable timestamps for cleaner output
+    if "--no-timestamps" in help_text:
+        flags.append("--no-timestamps")
+
+    # Disable flash attention — enabled by default since v1.8.0,
+    # causes SIGILL on some ARM CPUs (CPU-only, no kernel support)
+    if "--no-flash-attn" in help_text:
+        flags.append("-nfa")
+
+    # -f must be last (takes the filename argument)
+    flags.append("-f")
+
+    whisper_flags = flags
+    add_log("info", f"Whisper flags: {' '.join(flags)}")
+
+
 def run_whisper(wav_path: str) -> tuple[str, int]:
     """Run whisper.cpp on a WAV file. Returns (text, duration_ms)."""
     whisper_bin = WHISPER_BIN or find_whisper_bin()
     if not whisper_bin:
         raise RuntimeError("whisper.cpp binary not found")
 
+    wav_size = os.path.getsize(wav_path) if os.path.isfile(wav_path) else 0
+    add_log("info", f"Running whisper on {wav_size}B WAV")
+
     t0 = time.time()
+    cmd = [whisper_bin] + whisper_flags + [wav_path]
     result = subprocess.run(
-        [
-            whisper_bin,
-            "--model", model_path,
-            "--language", "en",
-            "--no-timestamps",
-            "--print-special", "false",
-            "--no-context",
-            "--file", wav_path,
-        ],
+        cmd,
         capture_output=True,
         text=True,
         timeout=60,
     )
     duration_ms = int((time.time() - t0) * 1000)
+
+    if result.returncode != 0 or not result.stdout.strip():
+        add_log("warn", f"whisper rc={result.returncode} stdout={result.stdout[:100]!r} stderr={result.stderr[:200]!r}")
 
     # Parse output — whisper.cpp prints transcription to stdout
     text = result.stdout.strip()
@@ -394,6 +438,7 @@ if __name__ == "__main__":
     whisper_bin = WHISPER_BIN or find_whisper_bin()
     if whisper_bin:
         add_log("info", f"Whisper binary: {whisper_bin}")
+        _init_whisper_flags()
     else:
         add_log("error", "Whisper binary not found — transcription will fail")
 
