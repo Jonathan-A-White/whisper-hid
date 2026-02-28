@@ -7,7 +7,7 @@ export function useHidService(settings: Settings) {
   const [reachable, setReachable] = useState(false);
   const [authError, setAuthError] = useState(false);
   const [queue, setQueue] = useState<QueuedText[]>([]);
-  const pollRef = useRef<ReturnType<typeof setInterval>>();
+  const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
   const flushingRef = useRef(false);
 
   // Poll HID service status every 3 seconds

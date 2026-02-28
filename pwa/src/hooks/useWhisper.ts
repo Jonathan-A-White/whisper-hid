@@ -7,7 +7,7 @@ export function useWhisper() {
   const [recording, setRecording] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval>>();
+  const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   // Poll whisper server status every 3 seconds
   useEffect(() => {

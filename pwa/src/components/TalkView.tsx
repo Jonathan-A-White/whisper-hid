@@ -11,7 +11,7 @@ interface TalkViewProps {
   };
   hid: {
     sendText: (text: string) => Promise<boolean>;
-    status: { bluetooth: string } | null;
+    status: { bluetooth: string; device?: string } | null;
     queue: { id: string; text: string; status: string }[];
   };
   store: {
