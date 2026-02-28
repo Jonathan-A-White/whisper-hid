@@ -6,3 +6,5 @@ local.properties
 *.iml
 .idea/
 .DS_Store
+__pycache__/
+.pytest_cache/
