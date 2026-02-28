@@ -45,6 +45,8 @@ recording_lock = threading.Lock()
 transcribe_lock = threading.Lock()
 log_buffer = deque(maxlen=200)
 start_time = time.time()
+audio_format = "aac"       # detected at startup: "aac" or "amr_wb"
+audio_ext = "aac"          # file extension for recordings
 
 
 def add_log(level: str, msg: str):
@@ -61,6 +63,76 @@ def find_whisper_bin() -> str:
         if os.path.isfile(c) and os.access(c, os.X_OK):
             return c
     return ""
+
+
+def detect_audio_format():
+    """Detect whether AAC or AMR-WB recording works on this device.
+
+    Mirrors the pipeline test in start-stt.sh — try AAC first (default
+    encoder), fall back to AMR-WB if ffmpeg can't convert the output.
+    """
+    global audio_format, audio_ext
+
+    with tempfile.TemporaryDirectory() as td:
+        # Try AAC first (termux-microphone-record default)
+        test_raw = os.path.join(td, "test.aac")
+        test_wav = os.path.join(td, "test.wav")
+        try:
+            subprocess.run(
+                ["termux-microphone-record", "-f", test_raw, "-l", "1"],
+                timeout=5,
+            )
+            time.sleep(2)
+            subprocess.run(
+                ["termux-microphone-record", "-q"], timeout=5,
+            )
+            time.sleep(0.5)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            add_log("warn", "termux-microphone-record not available, defaulting to AAC")
+            return
+
+        if os.path.isfile(test_raw) and os.path.getsize(test_raw) > 0:
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-i", test_raw, "-ar", "16000", "-ac", "1",
+                 "-c:a", "pcm_s16le", test_wav],
+                capture_output=True, timeout=10,
+            )
+            if r.returncode == 0 and os.path.isfile(test_wav) and os.path.getsize(test_wav) > 0:
+                audio_format = "aac"
+                audio_ext = "aac"
+                add_log("info", "Audio format: AAC (default)")
+                return
+
+        # AAC failed — try AMR-WB
+        test_raw = os.path.join(td, "test.amr")
+        test_wav = os.path.join(td, "test_amr.wav")
+        try:
+            subprocess.run(
+                ["termux-microphone-record", "-f", test_raw, "-l", "1",
+                 "-e", "amr_wb", "-b", "23850"],
+                timeout=5,
+            )
+            time.sleep(2)
+            subprocess.run(
+                ["termux-microphone-record", "-q"], timeout=5,
+            )
+            time.sleep(0.5)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            pass
+
+        if os.path.isfile(test_raw) and os.path.getsize(test_raw) > 0:
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-i", test_raw, "-ar", "16000", "-ac", "1",
+                 "-c:a", "pcm_s16le", test_wav],
+                capture_output=True, timeout=10,
+            )
+            if r.returncode == 0 and os.path.isfile(test_wav) and os.path.getsize(test_wav) > 0:
+                audio_format = "amr_wb"
+                audio_ext = "amr"
+                add_log("info", "Audio format: AMR-WB (fallback)")
+                return
+
+    add_log("warn", "Could not detect audio format, defaulting to AAC")
 
 
 def load_model():
@@ -83,15 +155,21 @@ def load_model():
 def transcode_to_wav(input_path: str, output_path: str) -> bool:
     """Transcode any audio format to 16kHz mono WAV using ffmpeg."""
     try:
-        subprocess.run(
+        result = subprocess.run(
             [
                 "ffmpeg", "-y", "-i", input_path,
-                "-ar", "16000", "-ac", "1", "-f", "wav", output_path,
+                "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", output_path,
             ],
             capture_output=True,
             timeout=30,
         )
-        return os.path.isfile(output_path) and os.path.getsize(output_path) > 0
+        if result.returncode != 0:
+            add_log("warn", f"ffmpeg exited {result.returncode}: {result.stderr[-200:]}")
+            return False
+        if not os.path.isfile(output_path) or os.path.getsize(output_path) < 1000:
+            add_log("warn", f"WAV too small after transcode ({os.path.getsize(output_path) if os.path.isfile(output_path) else 0}B)")
+            return False
+        return True
     except (subprocess.TimeoutExpired, FileNotFoundError):
         return False
 
@@ -212,15 +290,16 @@ def transcribe_start():
         if recording_process is not None:
             return jsonify({"ok": False, "error": "already_recording", "message": "Already recording."}), 409
 
-        recording_file = tempfile.mktemp(suffix=".amr")
+        recording_file = tempfile.mktemp(suffix=f".{audio_ext}")
         try:
-            recording_process = subprocess.Popen(
-                [
-                    "termux-microphone-record",
-                    "-f", recording_file,
-                    "-l", "0",     # unlimited duration
-                ],
-            )
+            rec_cmd = [
+                "termux-microphone-record",
+                "-f", recording_file,
+                "-l", "0",     # unlimited duration
+            ]
+            if audio_format == "amr_wb":
+                rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+            recording_process = subprocess.Popen(rec_cmd)
             add_log("info", "Recording started (PTT)")
             return jsonify({"ok": True, "message": "Recording started"})
         except FileNotFoundError:
@@ -244,6 +323,11 @@ def transcribe_stop():
             subprocess.run(["termux-microphone-record", "-q"], timeout=5)
         except (subprocess.TimeoutExpired, FileNotFoundError):
             pass
+
+        # Wait for the audio file to be fully flushed/finalized.
+        # Without this delay the file may be truncated when ffmpeg reads it,
+        # producing a WAV with no audible content → "no speech detected".
+        time.sleep(1)
 
         recording_process = None
         audio_file = recording_file
@@ -305,6 +389,7 @@ def logs():
 
 if __name__ == "__main__":
     load_model()
+    detect_audio_format()
 
     whisper_bin = WHISPER_BIN or find_whisper_bin()
     if whisper_bin:
