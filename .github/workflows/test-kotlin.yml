@@ -1,10 +1,22 @@
-name: Tests
+name: Kotlin Tests
 
 on:
   push:
     branches: [main, "claude/**"]
+    paths:
+      - "app/**"
+      - "*.gradle"
+      - "*.gradle.kts"
+      - "gradle/**"
+      - "gradlew"
   pull_request:
     branches: [main]
+    paths:
+      - "app/**"
+      - "*.gradle"
+      - "*.gradle.kts"
+      - "gradle/**"
+      - "gradlew"
 
 jobs:
   kotlin-tests:
@@ -28,21 +40,3 @@ jobs:
 
       - name: Run unit tests
         run: ./gradlew test
-
-  python-tests:
-    name: Python Whisper Server Tests
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install flask pytest
-
-      - name: Run tests
-        run: pytest scripts/tests/ -v
