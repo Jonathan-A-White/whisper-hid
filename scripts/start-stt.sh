@@ -90,7 +90,7 @@ mkdir -p "$AUDIO_DIR"
 # --- Test audio pipeline at startup ---
 # Try AAC first (default encoder, most compatible), fall back to AMR-WB
 echo "Testing audio pipeline..."
-RECORD_ARGS="-s 7"  # AudioSource.VOICE_COMMUNICATION — routes through Bluetooth headset mic when SCO is active
+RECORD_ARGS=""  # termux-microphone-record does not support audio source selection
 RECORD_EXT="aac"
 
 TEST_RAW="$AUDIO_DIR/pipeline_test.aac"
@@ -114,7 +114,7 @@ else
     # AAC conversion failed — try AMR-WB as fallback
     rm -f "$TEST_RAW" "$TEST_WAV"
     TEST_RAW="$AUDIO_DIR/pipeline_test.amr"
-    RECORD_ARGS="-s 7 -e amr_wb -b 23850"
+    RECORD_ARGS="-e amr_wb -b 23850"
     # shellcheck disable=SC2086
     termux-microphone-record -f "$TEST_RAW" -l 1 $RECORD_ARGS 2>/dev/null
     sleep 2
