@@ -38,3 +38,40 @@ sends keystrokes via Bluetooth HID.
 - Python: `pytest scripts/tests/` — Whisper server API tests
 - PWA: Playwright E2E tests (future)
 - Full pipeline: Start Whisper server in Termux, open PWA, speak, verify text on laptop
+
+## Whisper server debugging
+
+The Whisper server (scripts/whisper-server.py) wraps whisper.cpp via subprocess.
+Most "no speech detected" bugs are NOT mic problems — check the full pipeline:
+
+### Diagnostic endpoints
+- `GET /logs` — circular buffer of recent events with timestamps
+- `POST /debug/test-pipeline` — records 3s of audio and returns diagnostics
+  for every pipeline stage (recording, transcode, audio energy, whisper output)
+
+### Pipeline stages (each can fail independently)
+1. **Mic capture**: `termux-microphone-record` → raw AAC/AMR file
+   - Check: file size > 100B in logs ("Recording finished: ... size=NB")
+   - Failure mode: 0-byte file = Termux:API not installed or mic permission denied
+2. **Transcode**: `ffmpeg` converts to 16kHz mono WAV
+   - Check: WAV size should be ~(duration × 32000) bytes
+   - Failure mode: small WAV (<1000B) = corrupt input or wrong codec
+3. **Whisper inference**: whisper-cli processes WAV → text
+   - Check: processing time should be proportional to audio length (seconds, not milliseconds)
+   - Failure mode: **if whisper finishes in <100ms for multi-second audio, it didn't
+     process the file** — it printed help text and exited. This means a CLI flag is wrong.
+
+### whisper.cpp CLI flag compatibility
+**Critical**: whisper.cpp CLI flags change between versions. The server and stt-loop.sh
+both use dynamic flag detection — probing `whisper-cli --help` output before building
+the command. When adding new whisper flags:
+- Boolean flags (--no-timestamps, --no-gpu) take NO argument — never pass "true"/"false"
+- Always check `--help` output before assuming a flag exists
+- See `_detect_whisper_flags()` in whisper-server.py and `init_whisper_flags()` in stt-loop.sh
+- The bash and Python implementations must stay in sync on which flags they use
+
+### Common "no speech" causes (ranked by likelihood)
+1. Wrong whisper CLI flags → whisper prints help and exits instantly (check timing)
+2. Audio file not flushed → add sleep after `termux-microphone-record -q` (currently 2s)
+3. AAC codec mismatch → server auto-detects AAC vs AMR-WB at startup
+4. Actual silence → check audio_analysis step in /debug/test-pipeline (max_amplitude < 100)
