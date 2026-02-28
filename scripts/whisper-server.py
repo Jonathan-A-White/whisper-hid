@@ -219,7 +219,6 @@ def transcribe_start():
                     "termux-microphone-record",
                     "-f", recording_file,
                     "-l", "0",     # unlimited duration
-                    "-s", "7",     # VOICE_COMMUNICATION source (enables SCO)
                 ],
             )
             add_log("info", "Recording started (PTT)")
