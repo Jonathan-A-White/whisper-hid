@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import type { Settings } from "../types";
+import type { TranscriptionResult } from "../hooks/useWhisper";
 import { EditBuffer } from "./EditBuffer";
 
 interface TalkViewProps {
@@ -7,7 +8,7 @@ interface TalkViewProps {
     recording: boolean;
     transcribing: boolean;
     startRecording: () => Promise<void>;
-    stopRecording: () => Promise<string | null>;
+    stopRecording: () => Promise<TranscriptionResult>;
   };
   hid: {
     sendText: (text: string) => Promise<boolean>;
@@ -23,12 +24,14 @@ interface TalkViewProps {
 
 export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
   const [lastText, setLastText] = useState<string | null>(null);
+  const [lastError, setLastError] = useState<string | null>(null);
   const [editText, setEditText] = useState<string | null>(null);
 
   const handlePtt = useCallback(async () => {
     if (whisper.recording) {
-      const text = await whisper.stopRecording();
+      const { text, error } = await whisper.stopRecording();
       if (text) {
+        setLastError(null);
         if (settings.editBeforeSend) {
           setEditText(text);
         } else {
@@ -36,8 +39,11 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
           await store.addEntry(text);
           await hid.sendText(text);
         }
+      } else {
+        setLastError(error);
       }
     } else {
+      setLastError(null);
       await whisper.startRecording();
     }
   }, [whisper, hid, store, settings.editBeforeSend]);
@@ -118,9 +124,16 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
           </p>
 
           {/* Last transcription */}
-          {lastText && (
+          {lastText && !lastError && (
             <p className="mt-4 text-gray-400 text-sm max-w-xs text-center">
               Last: &quot;{lastText}&quot;
+            </p>
+          )}
+
+          {/* Transcription error */}
+          {lastError && (
+            <p className="mt-4 text-red-400 text-sm max-w-xs text-center">
+              {lastError}
             </p>
           )}
 
