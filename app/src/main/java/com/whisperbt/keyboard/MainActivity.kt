@@ -1,166 +1,111 @@
 package com.whisperbt.keyboard
 
 import android.Manifest
-import android.media.AudioManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
-import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.widget.Button
+import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.fragment.app.Fragment
-import com.google.android.material.bottomnavigation.BottomNavigationView
 
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val PERM_REQUEST_CODE = 1001
-        const val PREFS_NAME = "whisper_keyboard_prefs"
-        const val KEY_DELAY = "keystroke_delay"
-        const val KEY_PORT = "socket_port"
-        const val KEY_NEWLINE = "append_newline"
-        const val KEY_SPACE = "append_space"
-        const val KEY_AUTO_START = "auto_start_boot"
+        private const val PWA_BASE_URL = "https://jonathan-a-white.github.io/whisper-hid/"
     }
 
-    interface ServiceListener {
-        fun onConnectionStateChanged(connected: Boolean, deviceName: String?) {}
-        fun onTranscription(text: String) {}
-        fun onStatusChanged(status: String) {}
-        fun onMicReady() {}
-    }
-
-    var hidService: BluetoothHidService? = null
-    var socketService: SocketListenerService? = null
-    lateinit var db: TranscriptionDatabase
-
-    private lateinit var prefs: SharedPreferences
-    private lateinit var bottomNav: BottomNavigationView
-
-    var talkFragment: TalkFragment? = null
-        private set
-    private var historyFragment: HistoryFragment? = null
-    private var settingsFragment: SettingsFragment? = null
-
+    private var hidService: BluetoothHidService? = null
     private var hidBound = false
-    private var socketBound = false
-    private var activeFragment: Fragment? = null
-    private var serviceListener: ServiceListener? = null
-    private val logBuffer = StringBuilder()
+
+    private lateinit var statusService: TextView
+    private lateinit var statusBluetooth: TextView
+    private lateinit var btnOpenPwa: Button
+    private lateinit var btnStopService: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        db = TranscriptionDatabase(this)
+        statusService = findViewById(R.id.statusService)
+        statusBluetooth = findViewById(R.id.statusBluetooth)
+        btnOpenPwa = findViewById(R.id.btnOpenPwa)
+        btnStopService = findViewById(R.id.btnStopService)
 
-        bottomNav = findViewById(R.id.bottomNav)
-
-        // Create or restore fragments using show/hide for state preservation
-        if (savedInstanceState == null) {
-            talkFragment = TalkFragment()
-            historyFragment = HistoryFragment()
-            settingsFragment = SettingsFragment()
-
-            supportFragmentManager.beginTransaction()
-                .add(R.id.fragmentContainer, settingsFragment!!, "settings")
-                .hide(settingsFragment!!)
-                .add(R.id.fragmentContainer, historyFragment!!, "history")
-                .hide(historyFragment!!)
-                .add(R.id.fragmentContainer, talkFragment!!, "talk")
-                .commit()
-            activeFragment = talkFragment
-        } else {
-            talkFragment = supportFragmentManager.findFragmentByTag("talk") as? TalkFragment
-            historyFragment =
-                supportFragmentManager.findFragmentByTag("history") as? HistoryFragment
-            settingsFragment =
-                supportFragmentManager.findFragmentByTag("settings") as? SettingsFragment
-            activeFragment = talkFragment
-        }
-
-        bottomNav.setOnItemSelectedListener { item ->
-            val selected: Fragment = when (item.itemId) {
-                R.id.nav_talk -> talkFragment ?: return@setOnItemSelectedListener false
-                R.id.nav_history -> historyFragment ?: return@setOnItemSelectedListener false
-                R.id.nav_settings -> settingsFragment ?: return@setOnItemSelectedListener false
-                else -> return@setOnItemSelectedListener false
-            }
-            if (selected != activeFragment) {
-                supportFragmentManager.beginTransaction().apply {
-                    activeFragment?.let { hide(it) }
-                    show(selected)
-                }.commit()
-                activeFragment = selected
-            }
-            true
-        }
-
-        // Back press returns to Talk tab first
-        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() {
-                if (bottomNav.selectedItemId != R.id.nav_talk) {
-                    bottomNav.selectedItemId = R.id.nav_talk
-                } else {
-                    isEnabled = false
-                    onBackPressedDispatcher.onBackPressed()
-                }
-            }
-        })
+        btnOpenPwa.setOnClickListener { openPwa() }
+        btnStopService.setOnClickListener { stopHidService() }
 
         requestPermissions()
-        startServices()
-    }
-
-    override fun onDestroy() {
-        stopServices()
-        db.close()
-        super.onDestroy()
+        startHidService()
     }
 
     override fun onStart() {
         super.onStart()
-        bindServices()
+        bindHidService()
     }
 
     override fun onStop() {
-        unbindServices()
+        unbindHidService()
         super.onStop()
     }
 
-    fun setServiceListener(listener: ServiceListener?) {
-        serviceListener = listener
+    override fun onResume() {
+        super.onResume()
+        updateStatus()
     }
 
-    fun getPrefs(): SharedPreferences = prefs
-
-    fun appendLog(message: String) {
-        logBuffer.append(message).append('\n')
-        runOnUiThread {
-            settingsFragment?.appendLog(message)
+    private fun openPwa() {
+        val token = hidService?.authToken
+        if (token.isNullOrEmpty()) {
+            Toast.makeText(this, "Service not ready yet", Toast.LENGTH_SHORT).show()
+            return
         }
+        val url = "$PWA_BASE_URL?token=$token"
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
     }
 
-    fun getLogText(): String = logBuffer.toString()
-
-    fun clearLogs() {
-        logBuffer.clear()
+    private fun stopHidService() {
+        unbindHidService()
+        stopService(Intent(this, BluetoothHidService::class.java))
+        statusService.text = "Service: Stopped"
+        statusBluetooth.text = ""
     }
 
-    fun applySettings() {
-        hidService?.keystrokeDelayMs = prefs.getInt(KEY_DELAY, 10).toLong()
-        socketService?.setPort(prefs.getInt(KEY_PORT, 9876))
-        socketService?.appendNewline = prefs.getBoolean(KEY_NEWLINE, false)
-        socketService?.appendSpace = prefs.getBoolean(KEY_SPACE, true)
+    private fun updateStatus() {
+        val service = hidService
+        if (service == null) {
+            statusService.text = "Service: Starting..."
+            statusBluetooth.text = ""
+            return
+        }
+
+        statusService.text = "Service: Running"
+
+        when (service.getBtState()) {
+            BluetoothHidService.BtState.CONNECTED -> {
+                val name = service.getConnectedDeviceName() ?: "Unknown"
+                statusBluetooth.text = "Bluetooth: Connected to \"$name\""
+            }
+            BluetoothHidService.BtState.REGISTERED ->
+                statusBluetooth.text = "Bluetooth: Waiting for connection..."
+            BluetoothHidService.BtState.RECONNECTING ->
+                statusBluetooth.text = "Bluetooth: Reconnecting..."
+            BluetoothHidService.BtState.FAILED ->
+                statusBluetooth.text = "Bluetooth: Connection failed"
+            BluetoothHidService.BtState.IDLE ->
+                statusBluetooth.text = "Bluetooth: Initializing..."
+        }
     }
 
     // --- Permissions ---
@@ -200,129 +145,34 @@ class MainActivity : AppCompatActivity() {
 
     // --- Service lifecycle ---
 
-    private fun startServices() {
-        // Enable Bluetooth SCO so termux-microphone-record can use the headset mic
-        @Suppress("DEPRECATION")
-        (getSystemService(Context.AUDIO_SERVICE) as AudioManager).startBluetoothSco()
-
-        val hidIntent = Intent(this, BluetoothHidService::class.java)
-        ContextCompat.startForegroundService(this, hidIntent)
-
-        val socketIntent = Intent(this, SocketListenerService::class.java)
-        startService(socketIntent)
-
-        bindServices()
-        appendLog("Services started")
+    private fun startHidService() {
+        val intent = Intent(this, BluetoothHidService::class.java)
+        ContextCompat.startForegroundService(this, intent)
     }
 
-    private fun stopServices() {
-        socketService?.stop()
-        unbindServices()
-
-        @Suppress("DEPRECATION")
-        (getSystemService(Context.AUDIO_SERVICE) as AudioManager).stopBluetoothSco()
-
-        stopService(Intent(this, SocketListenerService::class.java))
-        stopService(Intent(this, BluetoothHidService::class.java))
-
-        appendLog("Services stopped")
+    private fun bindHidService() {
+        val intent = Intent(this, BluetoothHidService::class.java)
+        bindService(intent, hidConnection, Context.BIND_AUTO_CREATE)
     }
 
-    private fun bindServices() {
-        val hidIntent = Intent(this, BluetoothHidService::class.java)
-        bindService(hidIntent, hidConnection, Context.BIND_AUTO_CREATE)
-
-        val socketIntent = Intent(this, SocketListenerService::class.java)
-        bindService(socketIntent, socketConnection, Context.BIND_AUTO_CREATE)
-    }
-
-    private fun unbindServices() {
+    private fun unbindHidService() {
         if (hidBound) {
-            hidService?.connectionCallback = null
             unbindService(hidConnection)
             hidBound = false
-        }
-        if (socketBound) {
-            socketService?.transcriptionCallback = null
-            unbindService(socketConnection)
-            socketBound = false
+            hidService = null
         }
     }
-
-    // --- Service connections ---
 
     private val hidConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             hidService = (service as BluetoothHidService.LocalBinder).getService()
             hidBound = true
-
-            hidService?.keystrokeDelayMs = prefs.getInt(KEY_DELAY, 10).toLong()
-
-            hidService?.connectionCallback = object : BluetoothHidService.ConnectionCallback {
-                override fun onConnectionStateChanged(connected: Boolean, deviceName: String?) {
-                    runOnUiThread {
-                        if (connected) {
-                            appendLog("Bluetooth connected: $deviceName")
-                            socketService?.flushBuffer()
-                        } else {
-                            appendLog("Bluetooth disconnected")
-                        }
-                        serviceListener?.onConnectionStateChanged(connected, deviceName)
-                    }
-                }
-
-                override fun onHidReady(ready: Boolean) {
-                    runOnUiThread {
-                        if (ready) {
-                            appendLog("HID profile registered — ready for pairing")
-                            socketService?.start()
-                        } else {
-                            appendLog("HID profile registration failed")
-                        }
-                    }
-                }
-            }
+            updateStatus()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             hidService = null
             hidBound = false
-        }
-    }
-
-    private val socketConnection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            socketService = (service as SocketListenerService.LocalBinder).getService()
-            socketBound = true
-
-            socketService?.setPort(prefs.getInt(KEY_PORT, 9876))
-            socketService?.appendNewline = prefs.getBoolean(KEY_NEWLINE, false)
-            socketService?.appendSpace = prefs.getBoolean(KEY_SPACE, true)
-            socketService?.pttMode = true
-
-            socketService?.transcriptionCallback =
-                object : SocketListenerService.TranscriptionCallback {
-                    override fun onTranscription(text: String) {
-                        db.insert(text)
-                        runOnUiThread {
-                            appendLog("> $text")
-                            serviceListener?.onTranscription(text)
-                        }
-                    }
-
-                    override fun onStatusChanged(status: String) {
-                        runOnUiThread { appendLog("[Socket] $status") }
-                    }
-
-                    override fun onMicReady() {
-                        runOnUiThread { serviceListener?.onMicReady() }
-                    }
-                }
-        }
-
-        override fun onServiceDisconnected(name: ComponentName?) {
-            socketService = null
-            socketBound = false
         }
     }
 }

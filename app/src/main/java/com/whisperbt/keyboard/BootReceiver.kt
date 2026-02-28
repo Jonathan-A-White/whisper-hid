@@ -17,9 +17,6 @@ class BootReceiver : BroadcastReceiver() {
 
             val hidIntent = Intent(context, BluetoothHidService::class.java)
             ContextCompat.startForegroundService(context, hidIntent)
-
-            val socketIntent = Intent(context, SocketListenerService::class.java)
-            context.startService(socketIntent)
         }
     }
 }

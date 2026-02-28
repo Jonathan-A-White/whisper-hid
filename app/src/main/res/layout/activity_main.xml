@@ -1,24 +1,52 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
+    android:gravity="center"
+    android:padding="32dp"
     android:background="@color/background_dark">
 
-    <FrameLayout
-        android:id="@+id/fragmentContainer"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
-
-    <com.google.android.material.bottomnavigation.BottomNavigationView
-        android:id="@+id/bottomNav"
-        android:layout_width="match_parent"
+    <TextView
+        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:background="@color/bottom_nav_bg"
-        app:itemIconTint="@color/bottom_nav_color"
-        app:itemTextColor="@color/bottom_nav_color"
-        app:menu="@menu/bottom_nav_menu" />
+        android:text="@string/app_name"
+        android:textSize="24sp"
+        android:textColor="@color/on_surface"
+        android:layout_marginBottom="32dp" />
+
+    <TextView
+        android:id="@+id/statusService"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Service: Starting..."
+        android:textSize="16sp"
+        android:textColor="@color/on_surface"
+        android:layout_marginBottom="8dp" />
+
+    <TextView
+        android:id="@+id/statusBluetooth"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text=""
+        android:textSize="16sp"
+        android:textColor="@color/on_surface_secondary"
+        android:layout_marginBottom="48dp" />
+
+    <Button
+        android:id="@+id/btnOpenPwa"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/open_pwa"
+        android:textSize="16sp"
+        android:layout_marginBottom="16dp" />
+
+    <Button
+        android:id="@+id/btnStopService"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/stop_service"
+        android:textSize="14sp"
+        style="@style/Widget.MaterialComponents.Button.OutlinedButton" />
 
 </LinearLayout>

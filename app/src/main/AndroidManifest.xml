@@ -32,10 +32,6 @@
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
-        <service
-            android:name=".SocketListenerService"
-            android:exported="false" />
-
         <receiver
             android:name=".BootReceiver"
             android:exported="true">

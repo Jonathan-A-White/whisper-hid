@@ -13,15 +13,16 @@ echo "=== Whisper Bluetooth Keyboard — Termux Setup ==="
 echo ""
 
 # 1. Update packages
-echo "[1/6] Updating Termux packages..."
+echo "[1/7] Updating Termux packages..."
 pkg update -y && pkg upgrade -y
 
-# 2. Install build tools
-echo "[2/6] Installing build tools..."
-pkg install -y clang cmake make git tmux termux-api socat ffmpeg
+# 2. Install build tools and Python
+echo "[2/7] Installing build tools and Python..."
+pkg install -y clang cmake make git tmux termux-api socat ffmpeg python
+pip install flask
 
 # 3. Clone whisper.cpp
-echo "[3/6] Cloning whisper.cpp..."
+echo "[3/7] Cloning whisper.cpp..."
 mkdir -p "$INSTALL_DIR"
 if [ -d "$INSTALL_DIR/whisper.cpp" ]; then
     echo "  whisper.cpp already cloned, pulling latest..."
@@ -31,7 +32,7 @@ else
 fi
 
 # 4. Build whisper.cpp with ARM64 NEON flags
-echo "[4/6] Building whisper.cpp (this may take a few minutes)..."
+echo "[4/7] Building whisper.cpp (this may take a few minutes)..."
 cd "$INSTALL_DIR/whisper.cpp"
 WHISPER_BIN_CLI="$INSTALL_DIR/whisper.cpp/build/bin/whisper-cli"
 WHISPER_BIN_MAIN="$INSTALL_DIR/whisper.cpp/build/bin/main"
@@ -66,7 +67,7 @@ else
 fi
 
 # 5. Download default model
-echo "[5/6] Downloading default model ($DEFAULT_MODEL)..."
+echo "[5/7] Downloading default model ($DEFAULT_MODEL)..."
 mkdir -p "$INSTALL_DIR/models"
 if [ -f "$INSTALL_DIR/models/$DEFAULT_MODEL" ]; then
     echo "  Model already exists, skipping download."
@@ -76,9 +77,9 @@ else
 fi
 
 # 6. Copy scripts
-echo "[6/6] Setting up scripts..."
+echo "[6/7] Setting up scripts..."
 MISSING_SCRIPTS=()
-for script in start-stt.sh stt-loop.sh stop-stt.sh update-model.sh; do
+for script in whisper-server.py start-whisper-server.sh stop-whisper-server.sh update-model.sh diagnose-sigill.sh; do
     if [ -f "$SCRIPT_DIR/$script" ]; then
         cp "$SCRIPT_DIR/$script" "$INSTALL_DIR/$script"
         chmod +x "$INSTALL_DIR/$script"
@@ -101,6 +102,22 @@ if [ ${#MISSING_SCRIPTS[@]} -gt 0 ]; then
     exit 1
 fi
 
+# 7. Set up Termux:Boot auto-start (optional)
+echo "[7/7] Setting up Termux:Boot auto-start..."
+BOOT_DIR="$HOME/.termux/boot"
+mkdir -p "$BOOT_DIR"
+cat > "$BOOT_DIR/start-whisper-server" << 'BOOTEOF'
+#!/data/data/com.termux/files/usr/bin/bash
+# Auto-start Whisper server on boot
+sleep 5  # Wait for system to settle
+INSTALL_DIR="$HOME/whisper-stt"
+if [ -f "$INSTALL_DIR/start-whisper-server.sh" ]; then
+    cd "$INSTALL_DIR" && bash start-whisper-server.sh
+fi
+BOOTEOF
+chmod +x "$BOOT_DIR/start-whisper-server"
+echo "  Termux:Boot script installed at $BOOT_DIR/start-whisper-server"
+
 echo ""
 echo "=== Setup Complete ==="
 echo ""
@@ -114,8 +131,10 @@ fi
 echo ""
 echo "Next steps:"
 echo "  1. Grant Termux:API microphone permission"
-echo "  2. Start the Whisper Keyboard Android app"
-echo "  3. Run: cd $INSTALL_DIR && ./start-stt.sh"
+echo "  2. Start the Whisper HID Service Android app"
+echo "  3. Run: cd $INSTALL_DIR && ./start-whisper-server.sh"
+echo "  4. Open the PWA from the Android app's 'Open Whisper Keyboard' button"
 echo ""
 echo "To swap models: ./update-model.sh <model-name>"
 echo "  Available: tiny.en, base.en, small.en, distil-small.en"
+echo "  Note: Restart the Whisper server after swapping models."
