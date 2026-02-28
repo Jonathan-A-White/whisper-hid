@@ -21,10 +21,12 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
-import com.sun.net.httpserver.HttpExchange
-import com.sun.net.httpserver.HttpServer
+import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.net.InetSocketAddress
+import java.io.OutputStream
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentLinkedDeque
 import java.util.concurrent.Executors
@@ -102,7 +104,9 @@ class BluetoothHidService : Service() {
 
     private val executor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
-    private var httpServer: HttpServer? = null
+    private var serverSocket: ServerSocket? = null
+    private var httpThread: Thread? = null
+    private val httpExecutor = Executors.newFixedThreadPool(4)
 
     // Auth token
     var authToken: String = ""
@@ -169,8 +173,15 @@ class BluetoothHidService : Service() {
         addLog("info", "Auth token generated")
     }
 
-    private fun validateToken(exchange: HttpExchange): Boolean {
-        val authHeader = exchange.requestHeaders.getFirst("Authorization") ?: ""
+    private data class HttpRequest(
+        val method: String,
+        val path: String,
+        val headers: Map<String, String>,
+        val body: String
+    )
+
+    private fun validateToken(request: HttpRequest): Boolean {
+        val authHeader = request.headers["authorization"] ?: ""
         if (authHeader.startsWith("Bearer ")) {
             return authHeader.substring(7) == authToken
         }
@@ -485,18 +496,22 @@ class BluetoothHidService : Service() {
         logBuffer.addLast(LogEntry(System.currentTimeMillis() / 1000, level, msg))
     }
 
-    // --- HTTP Server ---
+    // --- HTTP Server (raw ServerSocket — Android has no com.sun.net.httpserver) ---
 
     private fun startHttpServer() {
         try {
-            httpServer = HttpServer.create(InetSocketAddress("127.0.0.1", HTTP_PORT), 0)
-            httpServer?.apply {
-                createContext("/type", ::handleType)
-                createContext("/backspace", ::handleBackspace)
-                createContext("/status", ::handleStatus)
-                createContext("/logs", ::handleLogs)
-                createContext("/restart", ::handleRestart)
-                executor = Executors.newFixedThreadPool(4)
+            serverSocket = ServerSocket(HTTP_PORT, 50, InetAddress.getByName("127.0.0.1"))
+            httpThread = Thread {
+                while (!Thread.currentThread().isInterrupted) {
+                    try {
+                        val socket = serverSocket?.accept() ?: break
+                        httpExecutor.execute { handleConnection(socket) }
+                    } catch (_: Exception) {
+                        break
+                    }
+                }
+            }.apply {
+                isDaemon = true
                 start()
             }
             addLog("info", "HTTP server started on port $HTTP_PORT")
@@ -506,63 +521,129 @@ class BluetoothHidService : Service() {
     }
 
     private fun stopHttpServer() {
-        httpServer?.stop(0)
-        httpServer = null
+        try { serverSocket?.close() } catch (_: Exception) {}
+        httpThread?.interrupt()
+        serverSocket = null
+        httpThread = null
     }
 
-    private fun sendJson(exchange: HttpExchange, code: Int, json: JSONObject) {
-        val body = json.toString().toByteArray()
-        addCorsHeaders(exchange)
-        exchange.responseHeaders["Content-Type"] = listOf("application/json")
-        exchange.sendResponseHeaders(code, body.size.toLong())
-        exchange.responseBody.use { it.write(body) }
-    }
+    private fun handleConnection(socket: Socket) {
+        try {
+            socket.soTimeout = 10000
+            val input = BufferedReader(InputStreamReader(socket.getInputStream()))
+            val output = socket.getOutputStream()
 
-    private fun addCorsHeaders(exchange: HttpExchange) {
-        exchange.responseHeaders["Access-Control-Allow-Origin"] = listOf(ALLOWED_ORIGIN)
-        exchange.responseHeaders["Access-Control-Allow-Methods"] = listOf("GET, POST, OPTIONS")
-        exchange.responseHeaders["Access-Control-Allow-Headers"] = listOf("Authorization, Content-Type")
-        exchange.responseHeaders["Access-Control-Allow-Private-Network"] = listOf("true")
-    }
+            val requestLine = input.readLine() ?: return
+            val parts = requestLine.split(" ", limit = 3)
+            if (parts.size < 2) return
+            val method = parts[0]
+            val path = parts[1]
 
-    private fun handlePreflight(exchange: HttpExchange): Boolean {
-        if (exchange.requestMethod == "OPTIONS") {
-            addCorsHeaders(exchange)
-            exchange.sendResponseHeaders(204, -1)
-            exchange.close()
-            return true
+            val headers = mutableMapOf<String, String>()
+            var line = input.readLine()
+            while (line != null && line.isNotEmpty()) {
+                val colonIdx = line.indexOf(':')
+                if (colonIdx > 0) {
+                    headers[line.substring(0, colonIdx).trim().lowercase()] =
+                        line.substring(colonIdx + 1).trim()
+                }
+                line = input.readLine()
+            }
+
+            val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
+            val body = if (contentLength > 0) {
+                val buf = CharArray(contentLength)
+                var read = 0
+                while (read < contentLength) {
+                    val n = input.read(buf, read, contentLength - read)
+                    if (n == -1) break
+                    read += n
+                }
+                String(buf, 0, read)
+            } else ""
+
+            val request = HttpRequest(method, path, headers, body)
+
+            when (path) {
+                "/type" -> handleType(request, output)
+                "/backspace" -> handleBackspace(request, output)
+                "/status" -> handleStatus(request, output)
+                "/logs" -> handleLogs(request, output)
+                "/restart" -> handleRestart(request, output)
+                else -> sendResponse(output, 404, JSONObject().put("error", "not_found"))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "HTTP connection error", e)
+        } finally {
+            try { socket.close() } catch (_: Exception) {}
         }
-        return false
     }
 
-    private fun readJsonBody(exchange: HttpExchange): JSONObject {
-        val body = InputStreamReader(exchange.requestBody).use { it.readText() }
+    private fun statusText(code: Int): String = when (code) {
+        200 -> "OK"; 204 -> "No Content"; 400 -> "Bad Request"
+        403 -> "Forbidden"; 404 -> "Not Found"; 405 -> "Method Not Allowed"
+        500 -> "Internal Server Error"; 503 -> "Service Unavailable"
+        else -> "OK"
+    }
+
+    private fun sendResponse(output: OutputStream, code: Int, json: JSONObject) {
+        val body = json.toString().toByteArray()
+        val sb = StringBuilder()
+        sb.append("HTTP/1.1 $code ${statusText(code)}\r\n")
+        sb.append("Content-Type: application/json\r\n")
+        sb.append("Content-Length: ${body.size}\r\n")
+        sb.append("Access-Control-Allow-Origin: $ALLOWED_ORIGIN\r\n")
+        sb.append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+        sb.append("Access-Control-Allow-Headers: Authorization, Content-Type\r\n")
+        sb.append("Access-Control-Allow-Private-Network: true\r\n")
+        sb.append("Connection: close\r\n")
+        sb.append("\r\n")
+        output.write(sb.toString().toByteArray())
+        output.write(body)
+        output.flush()
+    }
+
+    private fun sendPreflight(output: OutputStream) {
+        val sb = StringBuilder()
+        sb.append("HTTP/1.1 204 No Content\r\n")
+        sb.append("Access-Control-Allow-Origin: $ALLOWED_ORIGIN\r\n")
+        sb.append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+        sb.append("Access-Control-Allow-Headers: Authorization, Content-Type\r\n")
+        sb.append("Access-Control-Allow-Private-Network: true\r\n")
+        sb.append("Content-Length: 0\r\n")
+        sb.append("Connection: close\r\n")
+        sb.append("\r\n")
+        output.write(sb.toString().toByteArray())
+        output.flush()
+    }
+
+    private fun parseJsonBody(body: String): JSONObject {
         return if (body.isNotBlank()) JSONObject(body) else JSONObject()
     }
 
-    private fun handleType(exchange: HttpExchange) {
-        if (handlePreflight(exchange)) return
-        if (!validateToken(exchange)) {
-            sendJson(exchange, 403, JSONObject().put("error", "forbidden").put("message", "Invalid or missing auth token"))
+    private fun handleType(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (!validateToken(request)) {
+            sendResponse(output, 403, JSONObject().put("error", "forbidden").put("message", "Invalid or missing auth token"))
             return
         }
-        if (exchange.requestMethod != "POST") {
-            sendJson(exchange, 405, JSONObject().put("error", "method_not_allowed"))
+        if (request.method != "POST") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
             return
         }
 
         try {
-            val json = readJsonBody(exchange)
+            val json = parseJsonBody(request.body)
             val text = json.optString("text", "")
             val append = json.optString("append", " ")
 
             if (text.isEmpty()) {
-                sendJson(exchange, 400, JSONObject().put("ok", false).put("error", "empty_text"))
+                sendResponse(output, 400, JSONObject().put("ok", false).put("error", "empty_text"))
                 return
             }
 
             if (btState != BtState.CONNECTED) {
-                sendJson(exchange, 503, JSONObject()
+                sendResponse(output, 503, JSONObject()
                     .put("ok", false)
                     .put("error", "bluetooth_disconnected")
                     .put("message", "No Bluetooth device connected."))
@@ -570,45 +651,45 @@ class BluetoothHidService : Service() {
             }
 
             sendString(text + append)
-            sendJson(exchange, 200, JSONObject().put("ok", true))
+            sendResponse(output, 200, JSONObject().put("ok", true))
         } catch (e: Exception) {
-            sendJson(exchange, 500, JSONObject().put("ok", false).put("error", e.message ?: "unknown"))
+            sendResponse(output, 500, JSONObject().put("ok", false).put("error", e.message ?: "unknown"))
         }
     }
 
-    private fun handleBackspace(exchange: HttpExchange) {
-        if (handlePreflight(exchange)) return
-        if (!validateToken(exchange)) {
-            sendJson(exchange, 403, JSONObject().put("error", "forbidden"))
+    private fun handleBackspace(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (!validateToken(request)) {
+            sendResponse(output, 403, JSONObject().put("error", "forbidden"))
             return
         }
-        if (exchange.requestMethod != "POST") {
-            sendJson(exchange, 405, JSONObject().put("error", "method_not_allowed"))
+        if (request.method != "POST") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
             return
         }
 
         try {
-            val json = readJsonBody(exchange)
+            val json = parseJsonBody(request.body)
             val count = json.optInt("count", 1)
 
             if (btState != BtState.CONNECTED) {
-                sendJson(exchange, 503, JSONObject()
+                sendResponse(output, 503, JSONObject()
                     .put("ok", false)
                     .put("error", "bluetooth_disconnected"))
                 return
             }
 
             sendBackspace(count)
-            sendJson(exchange, 200, JSONObject().put("ok", true))
+            sendResponse(output, 200, JSONObject().put("ok", true))
         } catch (e: Exception) {
-            sendJson(exchange, 500, JSONObject().put("ok", false).put("error", e.message ?: "unknown"))
+            sendResponse(output, 500, JSONObject().put("ok", false).put("error", e.message ?: "unknown"))
         }
     }
 
-    private fun handleStatus(exchange: HttpExchange) {
-        if (handlePreflight(exchange)) return
-        if (exchange.requestMethod != "GET") {
-            sendJson(exchange, 405, JSONObject().put("error", "method_not_allowed"))
+    private fun handleStatus(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (request.method != "GET") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
             return
         }
 
@@ -642,13 +723,13 @@ class BluetoothHidService : Service() {
             }
         }
 
-        sendJson(exchange, 200, json)
+        sendResponse(output, 200, json)
     }
 
-    private fun handleLogs(exchange: HttpExchange) {
-        if (handlePreflight(exchange)) return
-        if (exchange.requestMethod != "GET") {
-            sendJson(exchange, 405, JSONObject().put("error", "method_not_allowed"))
+    private fun handleLogs(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (request.method != "GET") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
             return
         }
 
@@ -660,22 +741,22 @@ class BluetoothHidService : Service() {
                 .put("msg", entry.msg))
         }
 
-        sendJson(exchange, 200, JSONObject().put("logs", logsArray))
+        sendResponse(output, 200, JSONObject().put("logs", logsArray))
     }
 
-    private fun handleRestart(exchange: HttpExchange) {
-        if (handlePreflight(exchange)) return
-        if (!validateToken(exchange)) {
-            sendJson(exchange, 403, JSONObject().put("error", "forbidden"))
+    private fun handleRestart(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (!validateToken(request)) {
+            sendResponse(output, 403, JSONObject().put("error", "forbidden"))
             return
         }
-        if (exchange.requestMethod != "POST") {
-            sendJson(exchange, 405, JSONObject().put("error", "method_not_allowed"))
+        if (request.method != "POST") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
             return
         }
 
         restart()
-        sendJson(exchange, 200, JSONObject()
+        sendResponse(output, 200, JSONObject()
             .put("ok", true)
             .put("message", "HID service restarting. Re-registering Bluetooth HID device."))
     }
