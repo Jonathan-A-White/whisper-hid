@@ -98,28 +98,30 @@ export function WordCorrections() {
           )}
 
           {/* Add new entry */}
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={newFrom}
-              onChange={(e) => setNewFrom(e.target.value)}
-              placeholder="Wrong word"
-              className="flex-1 bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600"
-            />
-            <input
-              type="text"
-              value={newTo}
-              onChange={(e) => setNewTo(e.target.value)}
-              placeholder="Correct word"
-              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-              className="flex-1 bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600"
-            />
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newFrom}
+                onChange={(e) => setNewFrom(e.target.value)}
+                placeholder="Wrong word"
+                className="flex-1 bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600"
+              />
+              <input
+                type="text"
+                value={newTo}
+                onChange={(e) => setNewTo(e.target.value)}
+                placeholder="Correct word"
+                onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+                className="flex-1 bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600"
+              />
+            </div>
             <button
               onClick={handleAdd}
               disabled={!newFrom.trim() || !newTo.trim()}
-              className="px-3 py-1.5 bg-sky-600 text-white rounded text-sm disabled:opacity-40 hover:bg-sky-500"
+              className="w-full py-2 bg-sky-600 text-white rounded text-sm font-medium disabled:opacity-40 hover:bg-sky-500"
             >
-              Add
+              Add correction
             </button>
           </div>
         </>

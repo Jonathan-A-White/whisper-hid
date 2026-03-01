@@ -75,3 +75,39 @@ the command. When adding new whisper flags:
 2. Audio file not flushed → add sleep after `termux-microphone-record -q` (currently 2s)
 3. AAC codec mismatch → server auto-detects AAC vs AMR-WB at startup
 4. Actual silence → check audio_analysis step in /debug/test-pipeline (max_amplitude < 100)
+
+## Word corrections (auto-correct dictionary)
+
+Whisper often misrecognizes proper nouns (e.g., "quad" instead of "Claude").
+A post-transcription word correction system fixes these automatically.
+
+### How it works
+- `scripts/word-corrections.json` stores a `{"wrong": "correct"}` dictionary
+- After Whisper returns text, `apply_corrections()` does case-insensitive
+  whole-word replacement using `\b` regex boundaries
+- Implemented in both Python (whisper-server.py) and Bash (stt-loop.sh) —
+  both pipelines must apply the same corrections
+
+### API endpoints
+- `GET /corrections` — returns the current dictionary
+- `PUT /corrections` — replaces the entire dictionary (body = JSON object)
+- Tests: `pytest scripts/tests/test_corrections.py`
+
+### PWA UI
+- `WordCorrections` component in `pwa/src/components/WordCorrections.tsx`
+- Shown in Settings view — lets users add/remove correction entries
+- Calls `getCorrections()` / `putCorrections()` from `pwa/src/lib/api.ts`
+
+### CORS gotcha
+The CORS `Access-Control-Allow-Methods` header in `cors_headers()` must
+include every HTTP method used by the PWA. When the corrections PUT endpoint
+was added, the CORS header had to be updated to include PUT — otherwise
+browsers block the preflight request silently. If adding new HTTP methods
+to any endpoint, update `cors_headers()` in whisper-server.py.
+
+## PWA UI conventions
+- The PWA runs on a phone screen — all layouts must work on narrow viewports
+  (~360px wide) without horizontal scrolling
+- Form inputs should stack vertically on mobile rather than sit in a single row
+- Action buttons (Add, Save, etc.) should be full-width or visually prominent,
+  never hidden off-screen to the right
