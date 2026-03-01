@@ -74,6 +74,22 @@ export async function transcribeStop() {
   return res.json();
 }
 
+export async function getCorrections(): Promise<Record<string, string>> {
+  const res = await whisperFetch("/corrections");
+  return res.json();
+}
+
+export async function putCorrections(
+  corrections: Record<string, string>
+): Promise<Record<string, string>> {
+  const res = await whisperFetch("/corrections", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(corrections),
+  });
+  return res.json();
+}
+
 // --- HID Service API ---
 
 export async function hidStatus() {

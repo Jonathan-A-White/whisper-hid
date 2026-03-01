@@ -29,6 +29,53 @@ echo "Client connected" >&2
 # Stop any stale recording from a previous connection
 termux-microphone-record -q 0</dev/null 1>&2 2>/dev/null || true
 
+# --- Word corrections ---
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CORRECTIONS_FILE="${SCRIPT_DIR}/word-corrections.json"
+
+# Build sed expression from word-corrections.json (run once)
+init_corrections() {
+    if [ -z "${CORRECTIONS_SED+x}" ]; then
+        CORRECTIONS_SED=""
+        if [ -f "$CORRECTIONS_FILE" ] && command -v python3 >/dev/null 2>&1; then
+            # Parse JSON and generate sed word-boundary replacements
+            CORRECTIONS_SED=$(python3 -c '
+import json, sys, re
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    for wrong, right in d.items():
+        # Use \b word boundaries for sed (GNU sed supports \b)
+        w = re.escape(wrong)
+        r = right.replace("&", "\\\\&")
+        # Case-insensitive: generate patterns for common case variants
+        # lowercase, Capitalized, UPPERCASE
+        wl = wrong.lower()
+        wu = wrong.upper()
+        wc = wrong.capitalize()
+        print(f"s/\\b{re.escape(wl)}\\b/{r}/gI")
+    if not d:
+        pass
+except Exception:
+    pass
+' "$CORRECTIONS_FILE" 2>/dev/null || true)
+        fi
+        if [ -n "$CORRECTIONS_SED" ]; then
+            echo "  [corrections] Loaded from $CORRECTIONS_FILE" >&2
+        fi
+    fi
+}
+
+apply_corrections() {
+    local text="$1"
+    if [ -n "$CORRECTIONS_SED" ]; then
+        echo "$text" | sed "$CORRECTIONS_SED"
+    else
+        echo "$text"
+    fi
+}
+
 # --- Shared transcription helpers ---
 
 # Detect supported whisper flags once (lazy, on first transcription)
@@ -116,6 +163,12 @@ transcribe_and_send() {
     result=$(echo "$raw_whisper" | \
         sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | \
         grep -vE "$SILENCE_PATTERNS" || true)
+
+    # Apply word corrections
+    if [ -n "$result" ]; then
+        init_corrections
+        result=$(apply_corrections "$result")
+    fi
 
     # Send non-empty transcription to stdout (piped to socket by socat).
     # Check echo's exit status: bash builtins don't reliably trigger the

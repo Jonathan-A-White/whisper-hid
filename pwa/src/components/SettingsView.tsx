@@ -1,4 +1,5 @@
 import type { Settings } from "../types";
+import { WordCorrections } from "./WordCorrections";
 
 interface SettingsViewProps {
   settings: Settings;
@@ -95,6 +96,11 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
           <option value="en">English</option>
           <option value="auto">Auto-detect</option>
         </select>
+      </div>
+
+      {/* Word corrections */}
+      <div className="pt-4 border-t border-gray-800">
+        <WordCorrections />
       </div>
 
       <div className="pt-4 border-t border-gray-800">
