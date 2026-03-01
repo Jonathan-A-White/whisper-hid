@@ -69,6 +69,19 @@ When adding new whisper flags:
 - Always check `--help` output before assuming a flag exists
 - See `_detect_whisper_flags()` in whisper-server.py
 
+### Persistent whisper-server mode
+The server can use a long-running `whisper-server` process (from whisper.cpp) that
+loads the model once and serves inference requests via HTTP on port 9878. This
+eliminates the ~1-3s model load overhead on every transcription.
+
+- **Binary**: built with `-DWHISPER_BUILD_SERVER=ON` in setup-termux.sh
+- **Startup**: launched automatically if the binary exists; falls back to
+  subprocess mode (whisper-cli per request) if not
+- **Model switching**: `PUT /model` restarts the whisper-server with the new model
+- **Status**: `GET /status` includes `"whisper_server_mode": true/false`
+- **Benchmarks**: still use one-shot subprocess mode (tests multiple models)
+- **Config**: `WHISPER_SERVER_PORT` env var (default 9878)
+
 ### Common "no speech" causes (ranked by likelihood)
 1. Wrong whisper CLI flags → whisper prints help and exits instantly (check timing)
 2. Audio file not flushed → add sleep after `termux-microphone-record -q` (currently 2s)

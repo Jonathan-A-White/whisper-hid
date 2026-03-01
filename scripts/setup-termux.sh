@@ -36,6 +36,7 @@ echo "[4/7] Building whisper.cpp (this may take a few minutes)..."
 cd "$INSTALL_DIR/whisper.cpp"
 WHISPER_BIN_CLI="$INSTALL_DIR/whisper.cpp/build/bin/whisper-cli"
 WHISPER_BIN_MAIN="$INSTALL_DIR/whisper.cpp/build/bin/main"
+WHISPER_BIN_SERVER="$INSTALL_DIR/whisper.cpp/build/bin/whisper-server"
 if [ -x "$WHISPER_BIN_CLI" ] || [ -x "$WHISPER_BIN_MAIN" ]; then
     echo "  whisper.cpp already built, skipping compile step."
     echo "  (Delete $INSTALL_DIR/whisper.cpp/build to force rebuild)"
@@ -62,6 +63,7 @@ else
         -DGGML_NATIVE=OFF \
         -DGGML_FLASH_ATTN=OFF \
         -DWHISPER_NO_ACCELERATE=ON \
+        -DWHISPER_BUILD_SERVER=ON \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
     cmake --build build --config Release -j"$(nproc)"
 fi
@@ -127,6 +129,11 @@ if [ -x "$INSTALL_DIR/whisper.cpp/build/bin/whisper-cli" ]; then
     echo "Whisper binary: $INSTALL_DIR/whisper.cpp/build/bin/whisper-cli"
 else
     echo "Whisper binary: $INSTALL_DIR/whisper.cpp/build/bin/main"
+fi
+if [ -x "$WHISPER_BIN_SERVER" ]; then
+    echo "Whisper server: $WHISPER_BIN_SERVER (persistent mode — model loaded once)"
+else
+    echo "Whisper server: not built (will use subprocess mode)"
 fi
 echo ""
 echo "Next steps:"

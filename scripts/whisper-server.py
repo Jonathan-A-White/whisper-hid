@@ -12,13 +12,17 @@ Endpoints:
   POST /models/benchmark  — Benchmark models against a test audio clip
 """
 
+import atexit
 import json
 import os
 import re
+import socket
 import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -26,7 +30,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 
 # --- Configuration ---
 
@@ -38,6 +42,7 @@ ALLOWED_ORIGIN = os.environ.get(
     "CORS_ORIGIN", "https://jonathan-a-white.github.io"
 )
 PORT = int(os.environ.get("WHISPER_PORT", "9876"))
+WHISPER_SERVER_PORT = int(os.environ.get("WHISPER_SERVER_PORT", "9878"))
 NOISE_REDUCTION = os.environ.get("WHISPER_NOISE_REDUCTION", "0").lower() in ("1", "true", "yes")
 
 # --- Runtime settings (mutable via /settings API) ---
@@ -130,6 +135,165 @@ def find_whisper_bin() -> str:
         if os.path.isfile(c) and os.access(c, os.X_OK):
             return c
     return ""
+
+
+# --- Persistent whisper-server (model loaded once) ---
+
+_whisper_server_proc: subprocess.Popen | None = None
+_whisper_server_mode = False
+
+
+def find_whisper_server_bin() -> str:
+    """Locate the whisper.cpp HTTP server binary."""
+    candidates = [
+        os.path.join(INSTALL_DIR, "whisper.cpp", "build", "bin", "whisper-server"),
+        os.path.join(INSTALL_DIR, "whisper.cpp", "build", "bin", "server"),
+    ]
+    for c in candidates:
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return ""
+
+
+def _wait_for_whisper_server(timeout: int = 60) -> bool:
+    """Wait for the whisper-server to accept connections.
+
+    whisper-server binds to its port after loading the model, so a
+    successful connection means the model is ready for inference.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _whisper_server_proc and _whisper_server_proc.poll() is not None:
+            return False  # process exited
+        try:
+            s = socket.create_connection(("127.0.0.1", WHISPER_SERVER_PORT), timeout=1)
+            s.close()
+            return True
+        except (ConnectionRefusedError, OSError):
+            time.sleep(0.5)
+    return False
+
+
+def start_whisper_server(model_file: str) -> bool:
+    """Start a persistent whisper-server process with the given model.
+
+    Returns True if the server started successfully, False otherwise.
+    On failure, transcription falls back to one-shot subprocess mode.
+    """
+    global _whisper_server_proc, _whisper_server_mode, _whisper_extra_flags
+
+    server_bin = find_whisper_server_bin()
+    if not server_bin:
+        add_log("info", "whisper-server binary not found — using subprocess mode")
+        return False
+
+    if _whisper_extra_flags is None:
+        _whisper_extra_flags = _detect_whisper_flags()
+
+    cmd = [
+        server_bin,
+        "--model", model_file,
+        "--host", "127.0.0.1",
+        "--port", str(WHISPER_SERVER_PORT),
+        "--language", "en",
+    ]
+    # Add compatible flags (detected from whisper-cli --help)
+    for flag in (_whisper_extra_flags or []):
+        cmd.append(flag)
+
+    add_log("info", f"Starting whisper-server: {' '.join(cmd)}")
+
+    try:
+        _whisper_server_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, OSError) as e:
+        add_log("error", f"Failed to start whisper-server: {e}")
+        return False
+
+    if _wait_for_whisper_server(timeout=60):
+        _whisper_server_mode = True
+        add_log("info", f"whisper-server ready on port {WHISPER_SERVER_PORT} (pid={_whisper_server_proc.pid})")
+        return True
+
+    add_log("error", "whisper-server failed to become ready within 60s — falling back to subprocess mode")
+    stop_whisper_server()
+    return False
+
+
+def stop_whisper_server():
+    """Stop the persistent whisper-server process."""
+    global _whisper_server_proc, _whisper_server_mode
+
+    if _whisper_server_proc is not None:
+        add_log("info", f"Stopping whisper-server (pid={_whisper_server_proc.pid})")
+        try:
+            _whisper_server_proc.terminate()
+            _whisper_server_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _whisper_server_proc.kill()
+            _whisper_server_proc.wait(timeout=3)
+        except Exception:
+            pass
+        _whisper_server_proc = None
+
+    _whisper_server_mode = False
+
+
+def restart_whisper_server(model_file: str) -> bool:
+    """Restart the whisper-server with a new model."""
+    stop_whisper_server()
+    return start_whisper_server(model_file)
+
+
+def _is_whisper_server_alive() -> bool:
+    """Check if the persistent whisper-server process is still running."""
+    return (
+        _whisper_server_mode
+        and _whisper_server_proc is not None
+        and _whisper_server_proc.poll() is None
+    )
+
+
+def _transcribe_via_server(wav_path: str) -> tuple[str, int]:
+    """Send a WAV file to the persistent whisper-server for transcription.
+
+    Returns (text, duration_ms).
+    """
+    boundary = f"whisper{int(time.time() * 1000)}"
+    filename = os.path.basename(wav_path)
+
+    with open(wav_path, "rb") as f:
+        file_data = f.read()
+
+    # Build multipart/form-data body
+    body = b""
+    body += f"--{boundary}\r\n".encode()
+    body += f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
+    body += b"Content-Type: audio/wav\r\n\r\n"
+    body += file_data
+    body += b"\r\n"
+    body += f"--{boundary}\r\n".encode()
+    body += b'Content-Disposition: form-data; name="response_format"\r\n\r\n'
+    body += b"json\r\n"
+    body += f"--{boundary}--\r\n".encode()
+
+    url = f"http://127.0.0.1:{WHISPER_SERVER_PORT}/inference"
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+
+    t0 = time.time()
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read())
+    duration_ms = int((time.time() - t0) * 1000)
+
+    text = result.get("text", "").strip()
+    return text, duration_ms
+
+
+atexit.register(stop_whisper_server)
 
 
 def detect_audio_format():
@@ -334,18 +498,48 @@ _whisper_extra_flags: list[str] | None = None
 
 
 def run_whisper(wav_path: str) -> tuple[str, int]:
-    """Run whisper.cpp on a WAV file. Returns (text, duration_ms)."""
+    """Run whisper.cpp on a WAV file. Returns (text, duration_ms).
+
+    Prefers the persistent whisper-server (model already loaded, fast).
+    Falls back to one-shot subprocess if the server isn't available.
+    """
     global _whisper_extra_flags
 
+    wav_size = os.path.getsize(wav_path) if os.path.isfile(wav_path) else 0
+    add_log("info", f"Whisper: input={wav_path} size={wav_size}B")
+
+    # --- Try persistent server mode first ---
+    if _is_whisper_server_alive():
+        try:
+            text, duration_ms = _transcribe_via_server(wav_path)
+            add_log("info", f"Whisper (server): took={duration_ms}ms")
+
+            # Filter silence markers
+            for marker in ["[BLANK_AUDIO]", "(silence)", "[silence]"]:
+                text = text.replace(marker, "")
+            text = text.strip()
+
+            if not text:
+                add_log("warn", "Whisper (server): no speech detected")
+
+            # Apply word corrections
+            if text and word_corrections:
+                corrected = apply_corrections(text)
+                if corrected != text:
+                    add_log("info", f"Corrections applied: {repr(text)} -> {repr(corrected)}")
+                    text = corrected
+
+            return text, duration_ms
+        except Exception as e:
+            add_log("warn", f"Whisper server request failed ({e}), falling back to subprocess")
+
+    # --- Fallback: one-shot subprocess ---
     whisper_bin = WHISPER_BIN or find_whisper_bin()
     if not whisper_bin:
         raise RuntimeError("whisper.cpp binary not found")
 
     if _whisper_extra_flags is None:
         _whisper_extra_flags = _detect_whisper_flags()
-
-    wav_size = os.path.getsize(wav_path) if os.path.isfile(wav_path) else 0
-    add_log("info", f"Whisper: input={wav_path} size={wav_size}B")
 
     vad_flags = _get_vad_flags()
 
@@ -573,6 +767,7 @@ def status():
             "model": model_name,
             "model_size_mb": model_size_mb,
             "recording": is_recording,
+            "whisper_server_mode": _is_whisper_server_alive(),
         })
     else:
         return jsonify({
@@ -1052,6 +1247,10 @@ def put_model():
     model_loaded = True
     add_log("info", f"Model switched to: {model_name} ({model_size_mb} MB)")
 
+    # Restart the persistent whisper-server with the new model
+    if _whisper_server_mode or _whisper_server_proc is not None:
+        restart_whisper_server(new_path)
+
     return jsonify({
         "ok": True,
         "model": model_name,
@@ -1072,6 +1271,14 @@ if __name__ == "__main__":
         add_log("info", f"Whisper binary: {whisper_bin}")
     else:
         add_log("error", "Whisper binary not found — transcription will fail")
+
+    # Try to start persistent whisper-server (model loaded once, fast inference).
+    # Falls back to one-shot subprocess mode if the binary isn't available.
+    if model_loaded:
+        if start_whisper_server(model_path):
+            add_log("info", "Using persistent whisper-server mode (model loaded once)")
+        else:
+            add_log("info", "Using subprocess mode (model loaded per request)")
 
     add_log("info", f"Server starting on port {PORT}")
     app.run(host="127.0.0.1", port=PORT, threaded=True)
