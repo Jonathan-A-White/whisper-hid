@@ -47,6 +47,7 @@ export interface Settings {
   editBeforeSend: boolean;
   appendNewline: boolean;
   appendSpace: boolean;
+  newlineAfterEnd: boolean;
   keystrokeDelay: number;
   whisperModel: string;
   language: string;
@@ -56,6 +57,7 @@ export const DEFAULT_SETTINGS: Settings = {
   editBeforeSend: false,
   appendNewline: false,
   appendSpace: true,
+  newlineAfterEnd: false,
   keystrokeDelay: 10,
   whisperModel: "base.en",
   language: "en",
