@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ModelInfo, Settings } from "../types";
-import { whisperStatus, hidStatus, getModels, switchModel } from "../lib/api";
+import { whisperStatus, hidStatus, getModels, switchModel, getWhisperSettings, putWhisperSettings } from "../lib/api";
 import { WordCorrections } from "./WordCorrections";
 import { ModelBenchmark } from "./ModelBenchmark";
 
@@ -16,6 +16,7 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
   const [activeModel, setActiveModel] = useState<string>(settings.whisperModel);
   const [modelSwitching, setModelSwitching] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
+  const [noiseReduction, setNoiseReduction] = useState(false);
 
   useEffect(() => {
     whisperStatus()
@@ -33,6 +34,9 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
     getModels()
       .then((d) => setModels(d.models))
       .catch(() => setModels([]));
+    getWhisperSettings()
+      .then((s) => setNoiseReduction(s.noise_reduction))
+      .catch(() => {});
   }, []);
 
   return (
@@ -102,6 +106,26 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
           className="w-full accent-sky-500"
         />
       </div>
+
+      {/* Toggle: Noise reduction */}
+      <label className="flex items-center justify-between">
+        <span className="text-sm text-gray-300">Noise reduction</span>
+        <input
+          type="checkbox"
+          checked={noiseReduction}
+          onChange={async (e) => {
+            const enabled = e.target.checked;
+            setNoiseReduction(enabled);
+            try {
+              const updated = await putWhisperSettings({ noise_reduction: enabled });
+              setNoiseReduction(updated.noise_reduction);
+            } catch {
+              setNoiseReduction(!enabled);
+            }
+          }}
+          className="w-5 h-5 accent-sky-500"
+        />
+      </label>
 
       {/* Whisper model selector */}
       <div>

@@ -148,6 +148,28 @@ export async function putCorrections(
   return res.json();
 }
 
+// --- Whisper Server Settings ---
+
+export interface WhisperSettings {
+  noise_reduction: boolean;
+}
+
+export async function getWhisperSettings(): Promise<WhisperSettings> {
+  const res = await whisperFetch("/settings");
+  return res.json();
+}
+
+export async function putWhisperSettings(
+  settings: Partial<WhisperSettings>
+): Promise<WhisperSettings> {
+  const res = await whisperFetch("/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  return res.json();
+}
+
 // --- HID Service API ---
 
 export async function hidStatus() {
