@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { Settings } from "../types";
-import { whisperStatus, hidStatus } from "../lib/api";
+import type { ModelInfo, Settings } from "../types";
+import { whisperStatus, hidStatus, getModels, switchModel } from "../lib/api";
 import { WordCorrections } from "./WordCorrections";
 
 interface SettingsViewProps {
@@ -11,14 +11,27 @@ interface SettingsViewProps {
 export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
   const [whisperVersion, setWhisperVersion] = useState<string | null>(null);
   const [hidVersion, setHidVersion] = useState<string | null>(null);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [activeModel, setActiveModel] = useState<string>(settings.whisperModel);
+  const [modelSwitching, setModelSwitching] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
 
   useEffect(() => {
     whisperStatus()
-      .then((d) => setWhisperVersion(d.version ?? null))
+      .then((d) => {
+        setWhisperVersion(d.version ?? null);
+        if (d.model) {
+          setActiveModel(d.model);
+          onUpdate({ whisperModel: d.model });
+        }
+      })
       .catch(() => setWhisperVersion(null));
     hidStatus()
       .then((d) => setHidVersion(d.version ?? null))
       .catch(() => setHidVersion(null));
+    getModels()
+      .then((d) => setModels(d.models))
+      .catch(() => setModels([]));
   }, []);
 
   return (
@@ -89,14 +102,54 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
         />
       </div>
 
-      {/* Whisper model (display only) */}
+      {/* Whisper model selector */}
       <div>
         <label className="text-sm text-gray-300 block mb-1">
-          Whisper model (change via Termux)
+          Whisper model
         </label>
-        <p className="text-sm text-gray-500 bg-gray-900 rounded px-3 py-2">
-          {settings.whisperModel}
-        </p>
+        {models.length > 0 ? (
+          <select
+            value={activeModel}
+            disabled={modelSwitching}
+            onChange={async (e) => {
+              const name = e.target.value;
+              setModelError(null);
+              setModelSwitching(true);
+              try {
+                await switchModel(name);
+                setActiveModel(name);
+                onUpdate({ whisperModel: name });
+                // Refresh model list to update active flags
+                getModels()
+                  .then((d) => setModels(d.models))
+                  .catch(() => {});
+              } catch (err) {
+                setModelError(
+                  err instanceof Error ? err.message : "Failed to switch model"
+                );
+              } finally {
+                setModelSwitching(false);
+              }
+            }}
+            className="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm disabled:opacity-50"
+          >
+            {models.map((m) => (
+              <option key={m.name} value={m.name}>
+                {m.name} ({m.size_mb} MB)
+              </option>
+            ))}
+          </select>
+        ) : (
+          <p className="text-sm text-gray-500 bg-gray-900 rounded px-3 py-2">
+            {activeModel}
+          </p>
+        )}
+        {modelSwitching && (
+          <p className="text-xs text-sky-400 mt-1">Switching model...</p>
+        )}
+        {modelError && (
+          <p className="text-xs text-red-400 mt-1">{modelError}</p>
+        )}
       </div>
 
       {/* Language */}

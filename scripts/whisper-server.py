@@ -7,6 +7,8 @@ Endpoints:
   POST /transcribe/stop  — PTT: stop recording, transcribe, return text
   GET  /status           — Server health and loaded model
   GET  /logs             — Recent log entries (circular buffer, 200 max)
+  GET  /models           — List available models on disk
+  PUT  /model            — Switch the active model
 """
 
 import json
@@ -649,6 +651,84 @@ def put_corrections():
     save_corrections()
     add_log("info", f"Word corrections updated: {len(word_corrections)} entries")
     return jsonify(word_corrections)
+
+
+# --- Model management ---
+
+def list_available_models() -> list[dict]:
+    """Scan MODEL_DIR for ggml-*.bin files and return model info."""
+    models = []
+    if not os.path.isdir(MODEL_DIR):
+        return models
+    for fname in sorted(os.listdir(MODEL_DIR)):
+        if fname.startswith("ggml-") and fname.endswith(".bin"):
+            fpath = os.path.join(MODEL_DIR, fname)
+            name = fname.replace("ggml-", "").replace(".bin", "")
+            size_mb = round(os.path.getsize(fpath) / (1024 * 1024))
+            models.append({
+                "name": name,
+                "file": fname,
+                "size_mb": size_mb,
+                "active": fpath == model_path,
+            })
+    return models
+
+
+@app.route("/models", methods=["GET"])
+def get_models():
+    """List available Whisper models on disk."""
+    return jsonify({"models": list_available_models()})
+
+
+@app.route("/model", methods=["PUT"])
+def put_model():
+    """Switch the active Whisper model.
+
+    Body: {"model": "small.en"}  (the model name, not the filename)
+    """
+    global model_path, model_name, model_size_mb, model_loaded
+
+    if recording_process is not None:
+        return jsonify({
+            "error": "recording_active",
+            "message": "Cannot switch models while recording is active.",
+        }), 409
+
+    data = request.get_json(silent=True)
+    if data is None or "model" not in data:
+        return jsonify({
+            "error": "invalid_body",
+            "message": "Request body must be JSON with a 'model' field.",
+        }), 400
+
+    requested = data["model"]
+    if not isinstance(requested, str) or not requested.strip():
+        return jsonify({
+            "error": "invalid_model",
+            "message": "Model name must be a non-empty string.",
+        }), 400
+
+    requested = requested.strip()
+    new_file = f"ggml-{requested}.bin"
+    new_path = os.path.join(MODEL_DIR, new_file)
+
+    if not os.path.isfile(new_path):
+        return jsonify({
+            "error": "model_not_found",
+            "message": f"Model file not found: {new_file}",
+        }), 404
+
+    model_path = new_path
+    model_name = requested
+    model_size_mb = round(os.path.getsize(new_path) / (1024 * 1024))
+    model_loaded = True
+    add_log("info", f"Model switched to: {model_name} ({model_size_mb} MB)")
+
+    return jsonify({
+        "ok": True,
+        "model": model_name,
+        "model_size_mb": model_size_mb,
+    })
 
 
 # --- Main ---
