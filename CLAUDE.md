@@ -105,6 +105,13 @@ was added, the CORS header had to be updated to include PUT — otherwise
 browsers block the preflight request silently. If adding new HTTP methods
 to any endpoint, update `cors_headers()` in whisper-server.py.
 
+## PWA versioning
+- Version is auto-generated at build time from git: `1.0.<commit-count>+<short-hash>`
+- Defined in `pwa/vite.config.ts` via Vite `define` — injects `__APP_VERSION__`
+- Displayed at the bottom of SettingsView
+- Every merge to main produces a new version automatically — no manual bumps needed
+- Type declaration for `__APP_VERSION__` lives in `pwa/src/vite-env.d.ts`
+
 ## PWA UI conventions
 - The PWA runs on a phone screen — all layouts must work on narrow viewports
   (~360px wide) without horizontal scrolling

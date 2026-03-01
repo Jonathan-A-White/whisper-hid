@@ -1,9 +1,23 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+import { execSync } from "child_process";
+
+function gitVersion(): string {
+  try {
+    const count = execSync("git rev-list --count HEAD").toString().trim();
+    const hash = execSync("git rev-parse --short HEAD").toString().trim();
+    return `1.0.${count}+${hash}`;
+  } catch {
+    return "1.0.0-dev";
+  }
+}
 
 export default defineConfig({
   base: "/whisper-hid/",
+  define: {
+    __APP_VERSION__: JSON.stringify(gitVersion()),
+  },
   plugins: [
     react(),
     VitePWA({

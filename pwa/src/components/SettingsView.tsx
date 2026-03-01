@@ -105,8 +105,8 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
 
       <div className="pt-4 border-t border-gray-800">
         <p className="text-xs text-gray-600">
-          Whisper Keyboard PWA v1.0. Settings are stored locally in your
-          browser.
+          Whisper Keyboard PWA v{__APP_VERSION__}. Settings are stored locally
+          in your browser.
         </p>
       </div>
     </div>
