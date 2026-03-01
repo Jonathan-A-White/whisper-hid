@@ -23,6 +23,8 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
+SERVER_VERSION = "1.0.0"
+
 # --- Configuration ---
 
 INSTALL_DIR = os.environ.get("WHISPER_INSTALL_DIR", os.path.expanduser("~/whisper-stt"))
@@ -495,6 +497,7 @@ def status():
         is_recording = recording_process is not None
         return jsonify({
             "status": "ready",
+            "version": SERVER_VERSION,
             "model": model_name,
             "model_size_mb": model_size_mb,
             "recording": is_recording,
@@ -502,6 +505,7 @@ def status():
     else:
         return jsonify({
             "status": "error",
+            "version": SERVER_VERSION,
             "model": None,
             "message": "Model not loaded",
         })

@@ -105,6 +105,27 @@ was added, the CORS header had to be updated to include PUT — otherwise
 browsers block the preflight request silently. If adding new HTTP methods
 to any endpoint, update `cors_headers()` in whisper-server.py.
 
+## Component versioning
+All three components expose version info, displayed together in PWA Settings.
+Versions use the format `1.0.<commit-count>+<short-hash>` and are auto-generated
+at build time from git — no manual bumps needed.
+
+### PWA
+- Generated in `pwa/vite.config.ts` via Vite `define` → `__APP_VERSION__`
+- Type declaration in `pwa/src/vite-env.d.ts`
+- Auto-bumps when CI deploys (triggered by `pwa/**` changes on main)
+
+### Kotlin app (HID service)
+- Generated in `app/build.gradle.kts` via `gitVersionName()` → `BuildConfig.APP_VERSION`
+- Exposed in `/status` response as `"version"` field
+- Auto-bumps when CI builds APK (triggered by `app/**` changes on main)
+
+### Whisper server (Termux)
+- `SERVER_VERSION` constant at top of `scripts/whisper-server.py`
+- Exposed in `/status` response as `"version"` field
+- Manually maintained — bump when making changes to the server script
+  (not built by CI, just copied to the phone)
+
 ## PWA UI conventions
 - The PWA runs on a phone screen — all layouts must work on narrow viewports
   (~360px wide) without horizontal scrolling

@@ -695,6 +695,7 @@ class BluetoothHidService : Service() {
 
         val json = JSONObject()
         json.put("service", "running")
+        json.put("version", BuildConfig.APP_VERSION)
         json.put("uptime_seconds", (System.currentTimeMillis() - startTime) / 1000)
 
         val deviceName = getConnectedDeviceName()
