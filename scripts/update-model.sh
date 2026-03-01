@@ -19,16 +19,29 @@ usage() {
     echo "  tiny.en                 75 MB   ~10x real-time   Basic accuracy"
     echo "  base.en                142 MB   ~5x real-time    Good accuracy"
     echo "  small.en               466 MB   ~2x real-time    Better accuracy"
+    echo "  medium.en             1500 MB   ~0.5x real-time  Great accuracy"
+    echo ""
+    echo "Quantized (smaller + faster, minimal quality loss):"
+    echo "  tiny.en-q5_1            31 MB   ~10x real-time   Basic accuracy"
+    echo "  base.en-q5_1            60 MB   ~5x real-time    Good accuracy"
+    echo "  small.en-q5_1          190 MB   ~2x real-time    Best speed/accuracy for phone"
+    echo "  medium.en-q5_0         515 MB   ~0.5x real-time  Great accuracy, quantized"
+    echo ""
+    echo "Turbo (distilled large model):"
     echo "  large-v3-turbo        1500 MB                    6x faster than large"
     echo "  large-v3-turbo-q5_0    547 MB                    Best speed/accuracy"
     echo "  large-v3-turbo-q8_0    810 MB                    Near-full accuracy"
+    echo ""
+    echo "Distilled (knowledge-distilled, English-only):"
     echo "  distil-small.en       ~350 MB   ~2-3x real-time  Better (optimized)"
+    echo "  distil-medium.en      ~750 MB   ~1-2x real-time  Great (optimized)"
     echo ""
     echo "Special:"
     echo "  vad                    ~2 MB                     Silero VAD model"
     echo ""
     echo "Examples:"
     echo "  $0 base.en"
+    echo "  $0 small.en-q5_1           # recommended for phone"
     echo "  $0 large-v3-turbo-q5_0"
     echo "  $0 vad"
     echo ""
@@ -73,14 +86,23 @@ case "$MODEL_NAME" in
     tiny.en|base.en|small.en|medium.en|large|large-v2|large-v3)
         URL="${WHISPER_CPP_REPO}/${FILENAME}"
         ;;
+    tiny.en-q5_1|base.en-q5_1|small.en-q5_1|medium.en-q5_0)
+        URL="${WHISPER_CPP_REPO}/${FILENAME}"
+        ;;
     large-v3-turbo)
         URL="${TURBO_QUANTS_REPO}/${FILENAME}"
         ;;
     large-v3-turbo-q5_0|large-v3-turbo-q8_0)
         URL="${TURBO_QUANTS_REPO}/${FILENAME}"
         ;;
-    distil-small.en|distil-medium.en)
+    distil-small.en)
         URL="https://huggingface.co/distil-whisper/${MODEL_NAME}/resolve/main/${FILENAME}"
+        ;;
+    distil-medium.en)
+        # The distil-medium.en repo stores the GGML file as ggml-medium-32-2.en.bin,
+        # not ggml-distil-medium.en.bin. Download with correct source name, save locally
+        # as ggml-distil-medium.en.bin for consistency.
+        URL="https://huggingface.co/distil-whisper/${MODEL_NAME}/resolve/main/ggml-medium-32-2.en.bin"
         ;;
     distil-large-v2)
         URL="https://huggingface.co/distil-whisper/${MODEL_NAME}/resolve/main/${FILENAME}"

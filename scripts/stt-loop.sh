@@ -96,6 +96,16 @@ init_whisper_flags() {
         if echo "$WHISPER_HELP" | grep -q -- '--no-flash-attn'; then
             WHISPER_FLAGS="$WHISPER_FLAGS -nfa"
         fi
+        # Disable previous-text conditioning to reduce hallucination propagation
+        if echo "$WHISPER_HELP" | grep -q -- '--no-context'; then
+            WHISPER_FLAGS="$WHISPER_FLAGS --no-context"
+        fi
+        # Use Silero VAD if supported and model is present
+        VAD_MODEL_FILE="${INSTALL_DIR:-$HOME/whisper-stt}/models/silero-v5.1.2.ggml.bin"
+        if echo "$WHISPER_HELP" | grep -q -- '--vad-model' && [ -f "$VAD_MODEL_FILE" ]; then
+            WHISPER_FLAGS="$WHISPER_FLAGS --vad --vad-model $VAD_MODEL_FILE"
+            echo "  [whisper-flags] VAD enabled" >&2
+        fi
         # -f must be last (takes the filename argument)
         WHISPER_FLAGS="$WHISPER_FLAGS -f"
         echo "  [whisper-flags] $WHISPER_FLAGS" >&2
@@ -119,7 +129,13 @@ transcribe_and_send() {
     echo "  [rec] raw=${raw_size}B" >&2
 
     # Convert to 16kHz 16-bit mono WAV (required by whisper.cpp)
-    if ! ffmpeg -y -i "$raw_file" -ar 16000 -ac 1 -c:a pcm_s16le "$audio_file" </dev/null >/dev/null 2>&1; then
+    # When WHISPER_NOISE_REDUCTION=1, apply FFT-based noise reduction
+    local ffmpeg_filter=""
+    if [ "${WHISPER_NOISE_REDUCTION:-0}" = "1" ]; then
+        ffmpeg_filter="-af afftdn=nr=20:nf=-20:tn=1"
+    fi
+    # shellcheck disable=SC2086
+    if ! ffmpeg -y -i "$raw_file" $ffmpeg_filter -ar 16000 -ac 1 -c:a pcm_s16le "$audio_file" </dev/null >/dev/null 2>&1; then
         echo "  [error] ffmpeg conversion failed" >&2
         rm -f "$raw_file" "$audio_file"
         return 0

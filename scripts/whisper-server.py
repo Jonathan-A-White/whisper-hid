@@ -38,6 +38,7 @@ ALLOWED_ORIGIN = os.environ.get(
     "CORS_ORIGIN", "https://jonathan-a-white.github.io"
 )
 PORT = int(os.environ.get("WHISPER_PORT", "9876"))
+NOISE_REDUCTION = os.environ.get("WHISPER_NOISE_REDUCTION", "0").lower() in ("1", "true", "yes")
 
 # --- State ---
 
@@ -202,15 +203,21 @@ def load_model():
 
 
 def transcode_to_wav(input_path: str, output_path: str) -> bool:
-    """Transcode any audio format to 16kHz mono WAV using ffmpeg."""
+    """Transcode any audio format to 16kHz mono WAV using ffmpeg.
+
+    When WHISPER_NOISE_REDUCTION=1 is set, applies FFT-based noise reduction
+    (afftdn) before transcoding. This helps with noisy environments but adds
+    ~100-200ms of processing time.
+    """
     input_size = os.path.getsize(input_path) if os.path.isfile(input_path) else 0
-    add_log("info", f"Transcode: input={input_path} size={input_size}B")
+    add_log("info", f"Transcode: input={input_path} size={input_size}B denoise={NOISE_REDUCTION}")
     try:
+        cmd = ["ffmpeg", "-y", "-i", input_path]
+        if NOISE_REDUCTION:
+            cmd += ["-af", "afftdn=nr=20:nf=-20:tn=1"]
+        cmd += ["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", output_path]
         result = subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", input_path,
-                "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", output_path,
-            ],
+            cmd,
             capture_output=True,
             text=True,
             timeout=30,
@@ -322,11 +329,14 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
     wav_size = os.path.getsize(wav_path) if os.path.isfile(wav_path) else 0
     add_log("info", f"Whisper: input={wav_path} size={wav_size}B")
 
+    vad_flags = _get_vad_flags()
+
     cmd = [
         whisper_bin,
         "--model", model_path,
         "--language", "en",
         *_whisper_extra_flags,
+        *vad_flags,
         "--file", wav_path,
     ]
     add_log("info", f"Whisper cmd: {' '.join(cmd)}")
@@ -884,14 +894,18 @@ def _do_benchmark():
 # Keep in sync with update-model.sh.
 MODEL_CATALOG = [
     {"name": "tiny.en",              "size_mb": 75,   "description": "Fastest, basic accuracy"},
+    {"name": "tiny.en-q5_1",         "size_mb": 31,   "description": "Fastest quantized, basic accuracy"},
     {"name": "base.en",              "size_mb": 142,  "description": "Fast, good accuracy"},
+    {"name": "base.en-q5_1",         "size_mb": 60,   "description": "Fast quantized, good accuracy"},
     {"name": "small.en",             "size_mb": 466,  "description": "Slower, better accuracy"},
+    {"name": "small.en-q5_1",        "size_mb": 190,  "description": "Best speed/accuracy for phone"},
     {"name": "medium.en",            "size_mb": 1500, "description": "Slow, great accuracy"},
+    {"name": "medium.en-q5_0",       "size_mb": 515,  "description": "Great accuracy, quantized"},
     {"name": "large-v3-turbo",       "size_mb": 1500, "description": "6x faster than large, excellent accuracy"},
     {"name": "large-v3-turbo-q5_0",  "size_mb": 547,  "description": "Turbo quantized — best speed/accuracy tradeoff"},
     {"name": "large-v3-turbo-q8_0",  "size_mb": 810,  "description": "Turbo quantized — near-full accuracy"},
     {"name": "distil-small.en",      "size_mb": 350,  "description": "Optimized small model"},
-    {"name": "distil-medium.en",     "size_mb": 1000, "description": "Optimized medium model"},
+    {"name": "distil-medium.en",     "size_mb": 750,  "description": "Optimized medium model"},
 ]
 
 
