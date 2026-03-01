@@ -28,6 +28,8 @@ export interface ModelInfo {
   name: string;
   file: string;
   size_mb: number;
+  description: string;
+  downloaded: boolean;
   active: boolean;
 }
 
