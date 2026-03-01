@@ -2,9 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { transcribeStart, transcribeStop, whisperStatus } from "../lib/api";
 import type { WhisperStatus } from "../types";
 
+export interface TranscriptionStats {
+  audioDuration: number; // seconds
+  processingMs: number;
+  speedRatio: number;
+}
+
 export interface TranscriptionResult {
   text: string | null;
   error: string | null;
+  stats?: TranscriptionStats;
 }
 
 export function useWhisper() {
@@ -61,7 +68,15 @@ export function useWhisper() {
         if (result.text !== undefined) {
           const text = (result.text as string).trim();
           if (text.length > 0) {
-            return { text, error: null };
+            const stats: TranscriptionStats | undefined =
+              result.audio_duration_sec != null && result.duration_ms != null
+                ? {
+                    audioDuration: result.audio_duration_sec,
+                    processingMs: result.duration_ms,
+                    speedRatio: result.speed_ratio ?? 0,
+                  }
+                : undefined;
+            return { text, error: null, stats };
           }
           const msg = "No speech detected";
           setError(msg);

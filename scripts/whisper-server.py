@@ -642,8 +642,16 @@ def transcribe():
                     wav_path = input_path
 
                 text, duration_ms = run_whisper(wav_path)
-                add_log("info", f'Transcribed {duration_ms}ms -> "{text[:80]}"')
-                return jsonify({"text": text, "duration_ms": duration_ms})
+                wav_size = os.path.getsize(wav_path)
+                audio_duration_sec = round((wav_size - 44) / 32000, 1)  # 16kHz mono PCM
+                speed_ratio = round(audio_duration_sec / (duration_ms / 1000), 1) if duration_ms > 0 else 0
+                add_log("info", f'Transcribed {duration_ms}ms ({speed_ratio}x) -> "{text[:80]}"')
+                return jsonify({
+                    "text": text,
+                    "duration_ms": duration_ms,
+                    "audio_duration_sec": audio_duration_sec,
+                    "speed_ratio": speed_ratio,
+                })
             finally:
                 for p in [input_path, input_path + ".wav"]:
                     try:
@@ -741,8 +749,16 @@ def transcribe_stop():
                 return jsonify({"error": "transcode_failed", "message": "Failed to convert audio to WAV."}), 500
 
             text, duration_ms = run_whisper(wav_path)
-            add_log("info", f'PTT transcribed {duration_ms}ms -> "{text[:80]}"')
-            return jsonify({"text": text, "duration_ms": duration_ms})
+            wav_size = os.path.getsize(wav_path)
+            audio_duration_sec = round((wav_size - 44) / 32000, 1)  # 16kHz mono PCM
+            speed_ratio = round(audio_duration_sec / (duration_ms / 1000), 1) if duration_ms > 0 else 0
+            add_log("info", f'PTT transcribed {duration_ms}ms ({speed_ratio}x) -> "{text[:80]}"')
+            return jsonify({
+                "text": text,
+                "duration_ms": duration_ms,
+                "audio_duration_sec": audio_duration_sec,
+                "speed_ratio": speed_ratio,
+            })
         except RuntimeError as e:
             add_log("error", f"PTT transcription failed: {e}")
             return jsonify({"error": "transcription_failed", "message": str(e)}), 500
