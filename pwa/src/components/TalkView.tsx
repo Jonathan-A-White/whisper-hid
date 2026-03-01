@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { Settings } from "../types";
+import type { Settings, WhisperStatus } from "../types";
 import type { TranscriptionResult } from "../hooks/useWhisper";
 import { EditBuffer } from "./EditBuffer";
 
@@ -7,6 +7,7 @@ interface TalkViewProps {
   whisper: {
     recording: boolean;
     transcribing: boolean;
+    status: WhisperStatus | null;
     startRecording: () => Promise<void>;
     stopRecording: () => Promise<TranscriptionResult>;
   };
@@ -17,7 +18,7 @@ interface TalkViewProps {
   };
   store: {
     pinnedEntries: { id: string; text: string }[];
-    addEntry: (text: string) => Promise<unknown>;
+    addEntry: (text: string, stats?: { model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number }) => Promise<unknown>;
   };
   settings: Settings;
 }
@@ -33,6 +34,7 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastStats, setLastStats] = useState<TranscriptionStats | null>(null);
   const [editText, setEditText] = useState<string | null>(null);
+  const [lastEntryStats, setLastEntryStats] = useState<{ model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number } | null>(null);
 
   const handlePtt = useCallback(async () => {
     if (whisper.recording) {
@@ -40,11 +42,20 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
       if (text) {
         setLastError(null);
         setLastStats(stats ?? null);
+        const entryStats = stats
+          ? {
+              model: whisper.status?.model,
+              speedRatio: stats.speedRatio,
+              audioDuration: stats.audioDuration,
+              processingMs: stats.processingMs,
+            }
+          : undefined;
         if (settings.editBeforeSend) {
           setEditText(text);
+          setLastEntryStats(entryStats ?? null);
         } else {
           setLastText(text);
-          await store.addEntry(text);
+          await store.addEntry(text, entryStats);
           await hid.sendText(text);
         }
       } else {
@@ -61,10 +72,11 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
     async (text: string) => {
       setEditText(null);
       setLastText(text);
-      await store.addEntry(text);
+      await store.addEntry(text, lastEntryStats ?? undefined);
+      setLastEntryStats(null);
       await hid.sendText(text);
     },
-    [hid, store]
+    [hid, store, lastEntryStats]
   );
 
   const handlePinnedTap = useCallback(
