@@ -53,13 +53,17 @@ export function useTranscriptStore() {
   }, [refresh]);
 
   const addEntry = useCallback(
-    async (text: string) => {
+    async (text: string, stats?: { model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number }) => {
       if (!text.trim()) return;
       const entry: TranscriptEntry = {
         id: crypto.randomUUID(),
         text: text.trim(),
         timestamp: Date.now(),
         pinned: false,
+        ...(stats?.model != null && { model: stats.model }),
+        ...(stats?.speedRatio != null && { speedRatio: stats.speedRatio }),
+        ...(stats?.audioDuration != null && { audioDuration: stats.audioDuration }),
+        ...(stats?.processingMs != null && { processingMs: stats.processingMs }),
       };
       const db = await openDB();
       const tx = db.transaction(STORE_NAME, "readwrite");

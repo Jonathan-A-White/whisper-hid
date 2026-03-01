@@ -3,6 +3,10 @@ export interface TranscriptEntry {
   text: string;
   timestamp: number;
   pinned: boolean;
+  model?: string;
+  speedRatio?: number;
+  audioDuration?: number;
+  processingMs?: number;
 }
 
 export interface HidStatus {

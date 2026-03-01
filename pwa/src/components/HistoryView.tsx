@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 
 interface HistoryViewProps {
   store: {
-    entries: { id: string; text: string; timestamp: number; pinned: boolean }[];
+    entries: { id: string; text: string; timestamp: number; pinned: boolean; model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number }[];
     searchQuery: string;
     setSearchQuery: (q: string) => void;
     deleteEntry: (id: string) => Promise<void>;
@@ -306,6 +306,12 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
                     </div>
                     <p className="text-xs text-gray-600 mt-1">
                       {formatTime(entry.timestamp)}
+                      {entry.model && (
+                        <span className="text-gray-500"> · {entry.model}</span>
+                      )}
+                      {entry.speedRatio != null && (
+                        <span className={entry.speedRatio >= 1 ? "text-green-600" : "text-yellow-600"}> · {entry.speedRatio.toFixed(1)}x</span>
+                      )}
                     </p>
                   </>
                 )}
