@@ -3,6 +3,18 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+fun gitVersionName(): String {
+    return try {
+        val count = providers.exec { commandLine("git", "rev-list", "--count", "HEAD") }
+            .standardOutput.asText.get().trim()
+        val hash = providers.exec { commandLine("git", "rev-parse", "--short", "HEAD") }
+            .standardOutput.asText.get().trim()
+        "1.0.$count+$hash"
+    } catch (_: Exception) {
+        "1.0.0-dev"
+    }
+}
+
 android {
     namespace = "com.whisperbt.keyboard"
     compileSdk = 34
@@ -12,7 +24,12 @@ android {
         minSdk = 28
         targetSdk = 34
         versionCode = 1
-        versionName = "1.0"
+        versionName = gitVersionName()
+        buildConfigField("String", "APP_VERSION", "\"${gitVersionName()}\"")
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {

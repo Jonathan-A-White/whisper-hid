@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import type { Settings } from "../types";
+import { whisperStatus, hidStatus } from "../lib/api";
 import { WordCorrections } from "./WordCorrections";
 
 interface SettingsViewProps {
@@ -7,6 +9,18 @@ interface SettingsViewProps {
 }
 
 export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
+  const [whisperVersion, setWhisperVersion] = useState<string | null>(null);
+  const [hidVersion, setHidVersion] = useState<string | null>(null);
+
+  useEffect(() => {
+    whisperStatus()
+      .then((d) => setWhisperVersion(d.version ?? null))
+      .catch(() => setWhisperVersion(null));
+    hidStatus()
+      .then((d) => setHidVersion(d.version ?? null))
+      .catch(() => setHidVersion(null));
+  }, []);
+
   return (
     <div className="p-4 space-y-6">
       <h2 className="text-lg font-semibold text-white">Settings</h2>
@@ -103,10 +117,18 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
         <WordCorrections />
       </div>
 
-      <div className="pt-4 border-t border-gray-800">
+      <div className="pt-4 border-t border-gray-800 space-y-1">
         <p className="text-xs text-gray-600">
-          Whisper Keyboard PWA v{__APP_VERSION__}. Settings are stored locally
-          in your browser.
+          PWA v{__APP_VERSION__}
+        </p>
+        <p className="text-xs text-gray-600">
+          Whisper server {whisperVersion ? `v${whisperVersion}` : "(not connected)"}
+        </p>
+        <p className="text-xs text-gray-600">
+          HID service {hidVersion ? `v${hidVersion}` : "(not connected)"}
+        </p>
+        <p className="text-xs text-gray-700 mt-2">
+          Settings are stored locally in your browser.
         </p>
       </div>
     </div>
