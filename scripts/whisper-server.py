@@ -326,7 +326,7 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
 def cors_headers() -> dict:
     return {
         "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
         "Access-Control-Allow-Headers": "Authorization, Content-Type",
         "Access-Control-Allow-Private-Network": "true",
     }
