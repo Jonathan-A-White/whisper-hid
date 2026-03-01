@@ -24,6 +24,13 @@ export interface WhisperStatus {
   message?: string;
 }
 
+export interface ModelInfo {
+  name: string;
+  file: string;
+  size_mb: number;
+  active: boolean;
+}
+
 export interface LogEntry {
   ts: number;
   level: string;

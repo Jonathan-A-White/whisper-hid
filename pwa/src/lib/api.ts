@@ -74,6 +74,33 @@ export async function transcribeStop() {
   return res.json();
 }
 
+export async function getModels(): Promise<{
+  models: Array<{
+    name: string;
+    file: string;
+    size_mb: number;
+    active: boolean;
+  }>;
+}> {
+  const res = await whisperFetch("/models");
+  return res.json();
+}
+
+export async function switchModel(
+  modelName: string
+): Promise<{ ok: boolean; model: string; model_size_mb: number }> {
+  const res = await whisperFetch("/model", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: modelName }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || "Failed to switch model");
+  }
+  return res.json();
+}
+
 export async function getCorrections(): Promise<Record<string, string>> {
   const res = await whisperFetch("/corrections");
   return res.json();

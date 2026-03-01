@@ -45,3 +45,5 @@ def test_cors_headers():
     assert "/transcribe" in content
     assert "/status" in content
     assert "/logs" in content
+    assert "/models" in content
+    assert "/model" in content
