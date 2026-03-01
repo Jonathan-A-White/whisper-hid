@@ -11,6 +11,7 @@ Endpoints:
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import threading
@@ -47,6 +48,49 @@ log_buffer = deque(maxlen=200)
 start_time = time.time()
 audio_format = "aac"       # detected at startup: "aac" or "amr_wb"
 audio_ext = "aac"          # file extension for recordings
+
+
+CORRECTIONS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "word-corrections.json"
+)
+word_corrections: dict[str, str] = {}
+
+
+def load_corrections():
+    """Load word corrections from JSON file."""
+    global word_corrections
+    if not os.path.isfile(CORRECTIONS_FILE):
+        word_corrections = {}
+        return
+    try:
+        with open(CORRECTIONS_FILE, "r") as f:
+            word_corrections = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        word_corrections = {}
+
+
+def save_corrections():
+    """Save word corrections to JSON file."""
+    try:
+        with open(CORRECTIONS_FILE, "w") as f:
+            json.dump(word_corrections, f, indent=2)
+            f.write("\n")
+    except OSError as e:
+        add_log("error", f"Failed to save corrections: {e}")
+
+
+def apply_corrections(text: str) -> str:
+    """Apply word corrections to transcribed text.
+
+    Does case-insensitive whole-word matching, replacing with the exact
+    value from the corrections dictionary.
+    """
+    if not word_corrections:
+        return text
+    for wrong, right in word_corrections.items():
+        pattern = re.compile(r'\b' + re.escape(wrong) + r'\b', re.IGNORECASE)
+        text = pattern.sub(right, text)
+    return text
 
 
 def add_log(level: str, msg: str):
@@ -266,6 +310,13 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
         add_log("warn", f"Whisper returned only silence markers: {repr(raw_text)}")
     elif not text:
         add_log("warn", "Whisper returned empty output — no speech detected")
+
+    # Apply word corrections
+    if text and word_corrections:
+        corrected = apply_corrections(text)
+        if corrected != text:
+            add_log("info", f"Corrections applied: {repr(text)} -> {repr(corrected)}")
+            text = corrected
 
     return text, duration_ms
 
@@ -573,9 +624,33 @@ def debug_test_pipeline():
     return jsonify(diag)
 
 
+@app.route("/corrections", methods=["GET"])
+def get_corrections():
+    """Return the current word corrections dictionary."""
+    return jsonify(word_corrections)
+
+
+@app.route("/corrections", methods=["PUT"])
+def put_corrections():
+    """Replace the entire word corrections dictionary."""
+    data = request.get_json(silent=True)
+    if data is None or not isinstance(data, dict):
+        return jsonify({"error": "invalid_body", "message": "Request body must be a JSON object."}), 400
+    # Validate: all keys and values must be non-empty strings
+    for k, v in data.items():
+        if not isinstance(k, str) or not isinstance(v, str) or not k.strip() or not v.strip():
+            return jsonify({"error": "invalid_entry", "message": "All keys and values must be non-empty strings."}), 400
+    global word_corrections
+    word_corrections = {k.strip(): v.strip() for k, v in data.items()}
+    save_corrections()
+    add_log("info", f"Word corrections updated: {len(word_corrections)} entries")
+    return jsonify(word_corrections)
+
+
 # --- Main ---
 
 if __name__ == "__main__":
+    load_corrections()
     load_model()
     detect_audio_format()
 
