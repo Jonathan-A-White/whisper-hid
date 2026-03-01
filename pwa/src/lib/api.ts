@@ -79,6 +79,8 @@ export async function getModels(): Promise<{
     name: string;
     file: string;
     size_mb: number;
+    description: string;
+    downloaded: boolean;
     active: boolean;
   }>;
 }> {

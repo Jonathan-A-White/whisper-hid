@@ -108,37 +108,74 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
           Whisper model
         </label>
         {models.length > 0 ? (
-          <select
-            value={activeModel}
-            disabled={modelSwitching}
-            onChange={async (e) => {
-              const name = e.target.value;
-              setModelError(null);
-              setModelSwitching(true);
-              try {
-                await switchModel(name);
-                setActiveModel(name);
-                onUpdate({ whisperModel: name });
-                // Refresh model list to update active flags
-                getModels()
-                  .then((d) => setModels(d.models))
-                  .catch(() => {});
-              } catch (err) {
-                setModelError(
-                  err instanceof Error ? err.message : "Failed to switch model"
-                );
-              } finally {
-                setModelSwitching(false);
-              }
-            }}
-            className="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm disabled:opacity-50"
-          >
-            {models.map((m) => (
-              <option key={m.name} value={m.name}>
-                {m.name} ({m.size_mb} MB)
-              </option>
-            ))}
-          </select>
+          <>
+            <select
+              value={activeModel}
+              disabled={modelSwitching}
+              onChange={async (e) => {
+                const name = e.target.value;
+                setModelError(null);
+                setModelSwitching(true);
+                try {
+                  await switchModel(name);
+                  setActiveModel(name);
+                  onUpdate({ whisperModel: name });
+                  getModels()
+                    .then((d) => setModels(d.models))
+                    .catch(() => {});
+                } catch (err) {
+                  setModelError(
+                    err instanceof Error ? err.message : "Failed to switch model"
+                  );
+                } finally {
+                  setModelSwitching(false);
+                }
+              }}
+              className="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm disabled:opacity-50"
+            >
+              {models
+                .filter((m) => m.downloaded)
+                .map((m) => (
+                  <option key={m.name} value={m.name}>
+                    {m.name} ({m.size_mb} MB)
+                  </option>
+                ))}
+            </select>
+            {models.some((m) => !m.downloaded) && (
+              <div className="mt-3">
+                <p className="text-xs text-gray-500 mb-1">
+                  Available to download via Termux:
+                </p>
+                <div className="space-y-1">
+                  {models
+                    .filter((m) => !m.downloaded)
+                    .map((m) => (
+                      <div
+                        key={m.name}
+                        className="flex items-center justify-between bg-gray-900 rounded px-3 py-1.5"
+                      >
+                        <div>
+                          <span className="text-sm text-gray-400">
+                            {m.name}
+                          </span>
+                          {m.description && (
+                            <span className="text-xs text-gray-600 ml-2">
+                              {m.description}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-xs text-gray-600 whitespace-nowrap ml-2">
+                          ~{m.size_mb} MB
+                        </span>
+                      </div>
+                    ))}
+                </div>
+                <p className="text-xs text-gray-600 mt-1.5">
+                  Run: ./update-model.sh &lt;name&gt;
+                </p>
+              </div>
+            )}
+          </>
         ) : (
           <p className="text-sm text-gray-500 bg-gray-900 rounded px-3 py-2">
             {activeModel}

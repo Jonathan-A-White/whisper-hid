@@ -655,29 +655,64 @@ def put_corrections():
 
 # --- Model management ---
 
-def list_available_models() -> list[dict]:
-    """Scan MODEL_DIR for ggml-*.bin files and return model info."""
+# Known models that update-model.sh can download.
+# Keep in sync with update-model.sh.
+MODEL_CATALOG = [
+    {"name": "tiny.en",          "size_mb": 75,  "description": "Fastest, basic accuracy"},
+    {"name": "base.en",          "size_mb": 142, "description": "Fast, good accuracy"},
+    {"name": "small.en",         "size_mb": 466, "description": "Slower, better accuracy"},
+    {"name": "medium.en",        "size_mb": 1500, "description": "Slow, great accuracy"},
+    {"name": "distil-small.en",  "size_mb": 350, "description": "Optimized small model"},
+    {"name": "distil-medium.en", "size_mb": 1000, "description": "Optimized medium model"},
+]
+
+
+def list_models() -> list[dict]:
+    """Return catalog of known models, annotated with download/active status."""
+    # Scan disk for downloaded models
+    on_disk: dict[str, int] = {}
+    if os.path.isdir(MODEL_DIR):
+        for fname in os.listdir(MODEL_DIR):
+            if fname.startswith("ggml-") and fname.endswith(".bin"):
+                fpath = os.path.join(MODEL_DIR, fname)
+                name = fname.replace("ggml-", "").replace(".bin", "")
+                on_disk[name] = round(os.path.getsize(fpath) / (1024 * 1024))
+
+    # Build result from catalog, marking downloaded/active
     models = []
-    if not os.path.isdir(MODEL_DIR):
-        return models
-    for fname in sorted(os.listdir(MODEL_DIR)):
-        if fname.startswith("ggml-") and fname.endswith(".bin"):
-            fpath = os.path.join(MODEL_DIR, fname)
-            name = fname.replace("ggml-", "").replace(".bin", "")
-            size_mb = round(os.path.getsize(fpath) / (1024 * 1024))
+    seen = set()
+    for entry in MODEL_CATALOG:
+        name = entry["name"]
+        seen.add(name)
+        downloaded = name in on_disk
+        models.append({
+            "name": name,
+            "file": f"ggml-{name}.bin",
+            "size_mb": on_disk[name] if downloaded else entry["size_mb"],
+            "description": entry["description"],
+            "downloaded": downloaded,
+            "active": downloaded and os.path.join(MODEL_DIR, f"ggml-{name}.bin") == model_path,
+        })
+
+    # Append any downloaded models not in the catalog (e.g. large, custom)
+    for name, size in sorted(on_disk.items()):
+        if name not in seen:
             models.append({
                 "name": name,
-                "file": fname,
-                "size_mb": size_mb,
-                "active": fpath == model_path,
+                "file": f"ggml-{name}.bin",
+                "size_mb": size,
+                "description": "",
+                "downloaded": True,
+                "active": os.path.join(MODEL_DIR, f"ggml-{name}.bin") == model_path,
             })
+
     return models
 
 
 @app.route("/models", methods=["GET"])
 def get_models():
-    """List available Whisper models on disk."""
-    return jsonify({"models": list_available_models()})
+    """List known Whisper models with download and active status."""
+    return jsonify({"models": list_models()})
 
 
 @app.route("/model", methods=["PUT"])
