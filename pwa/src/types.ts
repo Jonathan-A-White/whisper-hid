@@ -57,6 +57,22 @@ export const DEFAULT_SETTINGS: Settings = {
   language: "en",
 };
 
+export interface BenchmarkResult {
+  model: string;
+  size_mb: number;
+  text: string;
+  inference_ms: number;
+  speed_ratio: number;
+  error: string | null;
+}
+
+export interface BenchmarkResponse {
+  audio_duration_sec: number;
+  use_vad: boolean;
+  vad_available: boolean;
+  results: BenchmarkResult[];
+}
+
 export type Tab = "talk" | "history" | "settings";
 
 export interface QueuedText {

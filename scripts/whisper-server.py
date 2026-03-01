@@ -2,13 +2,14 @@
 """Whisper HTTP API server — wraps whisper.cpp with Flask.
 
 Endpoints:
-  POST /transcribe       — One-shot: accept audio bytes, return transcription
-  POST /transcribe/start — PTT: start mic recording
-  POST /transcribe/stop  — PTT: stop recording, transcribe, return text
-  GET  /status           — Server health and loaded model
-  GET  /logs             — Recent log entries (circular buffer, 200 max)
-  GET  /models           — List available models on disk
-  PUT  /model            — Switch the active model
+  POST /transcribe        — One-shot: accept audio bytes, return transcription
+  POST /transcribe/start  — PTT: start mic recording
+  POST /transcribe/stop   — PTT: stop recording, transcribe, return text
+  GET  /status            — Server health and loaded model
+  GET  /logs              — Recent log entries (circular buffer, 200 max)
+  GET  /models            — List available models on disk
+  PUT  /model             — Switch the active model
+  POST /models/benchmark  — Benchmark models against a test audio clip
 """
 
 import json
@@ -260,6 +261,47 @@ def _detect_whisper_flags() -> list[str]:
 
     add_log("info", f"Whisper detected flags: {' '.join(flags)}")
     return flags
+
+
+# VAD model path — Silero VAD is optional, improves accuracy by skipping silence.
+VAD_MODEL_DIR = os.path.join(INSTALL_DIR, "models")
+VAD_MODEL_FILE = "silero-v5.1.2.ggml.bin"
+_vad_available: bool | None = None
+
+
+def _detect_vad_support() -> bool:
+    """Check if whisper-cli supports --vad and the VAD model is present."""
+    global _vad_available
+    if _vad_available is not None:
+        return _vad_available
+
+    whisper_bin = WHISPER_BIN or find_whisper_bin()
+    if not whisper_bin:
+        _vad_available = False
+        return False
+
+    try:
+        r = subprocess.run([whisper_bin, "--help"], capture_output=True, text=True, timeout=10)
+        help_text = r.stdout + r.stderr
+    except Exception:
+        _vad_available = False
+        return False
+
+    has_flag = "--vad-model" in help_text
+    vad_path = os.path.join(VAD_MODEL_DIR, VAD_MODEL_FILE)
+    has_model = os.path.isfile(vad_path)
+
+    _vad_available = has_flag and has_model
+    add_log("info", f"VAD support: flag={'yes' if has_flag else 'no'} model={'yes' if has_model else 'no'} -> {'enabled' if _vad_available else 'disabled'}")
+    return _vad_available
+
+
+def _get_vad_flags() -> list[str]:
+    """Return VAD-related CLI flags if available."""
+    if not _detect_vad_support():
+        return []
+    vad_path = os.path.join(VAD_MODEL_DIR, VAD_MODEL_FILE)
+    return ["--vad", "--vad-model", vad_path]
 
 
 # Cache detected flags (populated on first call)
@@ -653,17 +695,203 @@ def put_corrections():
     return jsonify(word_corrections)
 
 
+# --- Benchmark ---
+
+# Lock to prevent concurrent benchmarks (they're resource-heavy)
+benchmark_lock = threading.Lock()
+benchmark_running = False
+
+
+def run_whisper_on_model(model_file: str, wav_path: str, use_vad: bool = False) -> tuple[str, int]:
+    """Run whisper.cpp on a WAV file with a specific model. Returns (text, duration_ms)."""
+    global _whisper_extra_flags
+
+    whisper_bin = WHISPER_BIN or find_whisper_bin()
+    if not whisper_bin:
+        raise RuntimeError("whisper.cpp binary not found")
+
+    if _whisper_extra_flags is None:
+        _whisper_extra_flags = _detect_whisper_flags()
+
+    vad_flags = _get_vad_flags() if use_vad else []
+
+    cmd = [
+        whisper_bin,
+        "--model", model_file,
+        "--language", "en",
+        *_whisper_extra_flags,
+        *vad_flags,
+        "--file", wav_path,
+    ]
+
+    t0 = time.time()
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    duration_ms = int((time.time() - t0) * 1000)
+
+    raw_text = result.stdout.strip()
+    text = raw_text
+    for marker in ["[BLANK_AUDIO]", "(silence)", "[silence]"]:
+        text = text.replace(marker, "")
+    text = text.strip()
+
+    return text, duration_ms
+
+
+@app.route("/models/benchmark", methods=["POST"])
+def benchmark_models():
+    """Benchmark downloaded models against a test audio clip.
+
+    This records a short audio clip (or accepts one), then runs it through
+    each requested model and returns timing + transcription results.
+
+    Body (optional):
+      {
+        "models": ["base.en", "small.en"],  // defaults to all downloaded
+        "duration": 3,                       // recording duration (2-10 sec, default 3)
+        "use_vad": false                     // use VAD if available
+      }
+
+    Or POST raw audio bytes with Content-Type: audio/* to benchmark
+    against uploaded audio.
+    """
+    global benchmark_running
+
+    if not model_loaded:
+        return jsonify({"error": "model_not_loaded"}), 503
+
+    if recording_process is not None:
+        return jsonify({"error": "recording_active", "message": "Cannot benchmark while recording."}), 409
+
+    if benchmark_running:
+        return jsonify({"error": "benchmark_running", "message": "A benchmark is already in progress."}), 409
+
+    with benchmark_lock:
+        benchmark_running = True
+        try:
+            return _do_benchmark()
+        finally:
+            benchmark_running = False
+
+
+def _do_benchmark():
+    """Execute the benchmark (called under lock)."""
+    # Parse request
+    content_type = request.content_type or ""
+    use_uploaded_audio = content_type.startswith("audio/")
+
+    if use_uploaded_audio:
+        requested_models = None
+        duration = 0
+        use_vad = False
+    else:
+        data = request.get_json(silent=True) or {}
+        requested_models = data.get("models")
+        duration = data.get("duration", 3)
+        use_vad = data.get("use_vad", False)
+        duration = max(2, min(10, int(duration)))
+
+    # Determine which models to benchmark
+    all_models = list_models()
+    downloaded = [m for m in all_models if m["downloaded"]]
+    if not downloaded:
+        return jsonify({"error": "no_models", "message": "No models downloaded."}), 400
+
+    if requested_models:
+        targets = [m for m in downloaded if m["name"] in requested_models]
+        if not targets:
+            return jsonify({"error": "no_matching_models", "message": "None of the requested models are downloaded."}), 400
+    else:
+        targets = downloaded
+
+    add_log("info", f"Benchmark starting: {len(targets)} models, duration={duration}s, vad={use_vad}")
+
+    with tempfile.TemporaryDirectory() as td:
+        wav_path = os.path.join(td, "benchmark.wav")
+
+        if use_uploaded_audio:
+            # Save uploaded audio, transcode to WAV
+            input_path = os.path.join(td, "uploaded.audio")
+            with open(input_path, "wb") as f:
+                f.write(request.get_data())
+            if not transcode_to_wav(input_path, wav_path):
+                return jsonify({"error": "transcode_failed", "message": "Failed to convert uploaded audio."}), 400
+        else:
+            # Record audio from mic
+            raw_file = os.path.join(td, f"benchmark.{audio_ext}")
+            rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", str(duration)]
+            if audio_format == "amr_wb":
+                rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+            try:
+                subprocess.run(rec_cmd, timeout=duration + 5)
+                time.sleep(duration + 1)
+                subprocess.run(["termux-microphone-record", "-q"], timeout=5)
+                time.sleep(1)
+            except Exception as e:
+                return jsonify({"error": "recording_failed", "message": str(e)}), 500
+
+            raw_size = os.path.getsize(raw_file) if os.path.isfile(raw_file) else 0
+            if raw_size < 100:
+                return jsonify({"error": "recording_empty", "message": "Recording produced no audio."}), 500
+
+            if not transcode_to_wav(raw_file, wav_path):
+                return jsonify({"error": "transcode_failed", "message": "Failed to transcode recording."}), 500
+
+        # Get WAV info
+        wav_size = os.path.getsize(wav_path)
+        audio_duration_sec = round((wav_size - 44) / 32000, 1)  # 16kHz × 2 bytes
+
+        # Benchmark each model
+        results = []
+        for m in targets:
+            model_file = os.path.join(MODEL_DIR, m["file"])
+            add_log("info", f"Benchmarking {m['name']}...")
+            try:
+                text, inference_ms = run_whisper_on_model(model_file, wav_path, use_vad)
+                speed_ratio = round(audio_duration_sec / (inference_ms / 1000), 1) if inference_ms > 0 else 0
+                results.append({
+                    "model": m["name"],
+                    "size_mb": m["size_mb"],
+                    "text": text,
+                    "inference_ms": inference_ms,
+                    "speed_ratio": speed_ratio,
+                    "error": None,
+                })
+                add_log("info", f"Benchmark {m['name']}: {inference_ms}ms, {speed_ratio}x, \"{text[:60]}\"")
+            except Exception as e:
+                results.append({
+                    "model": m["name"],
+                    "size_mb": m["size_mb"],
+                    "text": "",
+                    "inference_ms": 0,
+                    "speed_ratio": 0,
+                    "error": str(e),
+                })
+                add_log("error", f"Benchmark {m['name']} failed: {e}")
+
+        add_log("info", f"Benchmark complete: {len(results)} models tested")
+
+        return jsonify({
+            "audio_duration_sec": audio_duration_sec,
+            "use_vad": use_vad,
+            "vad_available": _detect_vad_support(),
+            "results": results,
+        })
+
+
 # --- Model management ---
 
 # Known models that update-model.sh can download.
 # Keep in sync with update-model.sh.
 MODEL_CATALOG = [
-    {"name": "tiny.en",          "size_mb": 75,  "description": "Fastest, basic accuracy"},
-    {"name": "base.en",          "size_mb": 142, "description": "Fast, good accuracy"},
-    {"name": "small.en",         "size_mb": 466, "description": "Slower, better accuracy"},
-    {"name": "medium.en",        "size_mb": 1500, "description": "Slow, great accuracy"},
-    {"name": "distil-small.en",  "size_mb": 350, "description": "Optimized small model"},
-    {"name": "distil-medium.en", "size_mb": 1000, "description": "Optimized medium model"},
+    {"name": "tiny.en",              "size_mb": 75,   "description": "Fastest, basic accuracy"},
+    {"name": "base.en",              "size_mb": 142,  "description": "Fast, good accuracy"},
+    {"name": "small.en",             "size_mb": 466,  "description": "Slower, better accuracy"},
+    {"name": "medium.en",            "size_mb": 1500, "description": "Slow, great accuracy"},
+    {"name": "large-v3-turbo",       "size_mb": 1500, "description": "6x faster than large, excellent accuracy"},
+    {"name": "large-v3-turbo-q5_0",  "size_mb": 547,  "description": "Turbo quantized — best speed/accuracy tradeoff"},
+    {"name": "large-v3-turbo-q8_0",  "size_mb": 810,  "description": "Turbo quantized — near-full accuracy"},
+    {"name": "distil-small.en",      "size_mb": 350,  "description": "Optimized small model"},
+    {"name": "distil-medium.en",     "size_mb": 1000, "description": "Optimized medium model"},
 ]
 
 

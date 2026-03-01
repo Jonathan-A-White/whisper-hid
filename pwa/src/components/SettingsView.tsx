@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ModelInfo, Settings } from "../types";
 import { whisperStatus, hidStatus, getModels, switchModel } from "../lib/api";
 import { WordCorrections } from "./WordCorrections";
+import { ModelBenchmark } from "./ModelBenchmark";
 
 interface SettingsViewProps {
   settings: Settings;
@@ -188,6 +189,13 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
           <p className="text-xs text-red-400 mt-1">{modelError}</p>
         )}
       </div>
+
+      {/* Model benchmark */}
+      {models.length > 0 && (
+        <div className="pt-4 border-t border-gray-800">
+          <ModelBenchmark models={models} />
+        </div>
+      )}
 
       {/* Language */}
       <div>
