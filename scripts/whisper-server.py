@@ -118,8 +118,8 @@ def find_whisper_bin() -> str:
 def detect_audio_format():
     """Detect whether AAC or AMR-WB recording works on this device.
 
-    Mirrors the pipeline test in start-stt.sh — try AAC first (default
-    encoder), fall back to AMR-WB if ffmpeg can't convert the output.
+    Try AAC first (default encoder), fall back to AMR-WB if ffmpeg
+    can't convert the output.
     """
     global audio_format, audio_ext
 

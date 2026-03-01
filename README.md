@@ -5,34 +5,34 @@ Turn your Android phone into a speech-to-text Bluetooth keyboard. Whisper runs l
 ## How It Works
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Android Phone                                  │
-│                                                 │
-│  ┌───────────────────────┐                      │
-│  │  Termux               │                      │
-│  │  whisper.cpp process  │                      │
-│  │  - Captures mic audio │                      │
-│  │  - Runs Whisper model │                      │
-│  │  - Outputs text via   │                      │
-│  │    localhost TCP :9876 │                      │
-│  └──────────┬────────────┘                      │
-│             │ TCP socket                        │
-│  ┌──────────▼────────────┐    Bluetooth HID     │
-│  │  Kotlin App           │ ──────────────────►  │
-│  │  - Reads from socket  │    Keyboard profile  │
-│  │  - Sends keystrokes   │                      │
-│  │    via BT HID API     │         ┌──────────┐ │
-│  └───────────────────────┘  ────►  │ Laptop   │ │
-│                                    │ sees a   │ │
-│                                    │ keyboard │ │
-│                                    └──────────┘ │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  Android Phone                                       │
+│                                                      │
+│  ┌─────────────────┐  HTTP :9876  ┌───────────────┐  │
+│  │  Termux          │◄────────────│  PWA           │  │
+│  │  whisper-server  │             │  (Browser)     │  │
+│  │  - Captures mic  │────────────►│  - UI          │  │
+│  │  - Runs Whisper  │  JSON text  │  - Orchestrates│  │
+│  └─────────────────┘              └───────┬───────┘  │
+│                                           │          │
+│  ┌─────────────────┐  HTTP :9877          │          │
+│  │  Kotlin App      │◄───────────────────┘           │
+│  │  BT HID service  │                               │
+│  │  - Sends keys    │         Bluetooth HID          │
+│  │    via BT HID    │ ──────────────────────►        │
+│  └─────────────────┘                      ┌────────┐ │
+│                                           │ Laptop │ │
+│                                           │ sees a │ │
+│                                           │keyboard│ │
+│                                           └────────┘ │
+└──────────────────────────────────────────────────────┘
 ```
 
-Two components running on the same phone:
+Three components running on the same phone:
 
-1. **Termux (whisper.cpp)** — Captures mic audio, runs Whisper speech-to-text, writes transcribed text to a localhost TCP socket
-2. **Android App (Kotlin)** — Reads text from the socket and sends it as Bluetooth HID keyboard keystrokes to the paired laptop
+1. **PWA (Browser)** — UI and orchestration, hosted on GitHub Pages, saved to homescreen
+2. **Termux (whisper-server.py)** — Python+Flask HTTP server on localhost:9876, captures mic audio and runs Whisper speech-to-text
+3. **Kotlin App (BT HID)** — Headless Bluetooth HID service with HTTP API on localhost:9877, sends keystrokes to the paired laptop
 
 ## Requirements
 
@@ -69,10 +69,8 @@ bash scripts/setup-termux.sh
 
 ### 3. Pair and Connect
 
-1. Open the **Whisper Keyboard** app
-2. Tap **Pair / Discoverable** to make the phone visible
-3. On your laptop, go to Bluetooth settings and pair with "Whisper Keyboard"
-4. Tap **Start** in the app
+1. Open the **Whisper Keyboard** app — it runs as a headless service
+2. On your laptop, go to Bluetooth settings and pair with "Whisper Keyboard"
 
 ### 4. Start Transcription
 
@@ -80,18 +78,16 @@ In Termux:
 
 ```bash
 cd ~/whisper-stt
-./start-stt.sh
+./start-whisper-server.sh
 ```
 
-Speak into your microphone — text will appear on your laptop as keyboard input.
+Then open the PWA in your phone's browser. Speak into your microphone — text will appear on your laptop as keyboard input.
 
 ### 5. Stop
 
 ```bash
-./stop-stt.sh
+./stop-whisper-server.sh
 ```
-
-Or tap **Stop** in the Android app.
 
 ## Whisper Models
 
@@ -110,38 +106,29 @@ Swap models for different speed/accuracy trade-offs:
 
 Default model is `base.en`.
 
-## App Settings
-
-- **Keystroke delay (ms)** — Delay between keystrokes to prevent dropped keys (default: 10ms)
-- **Socket port** — TCP port for Termux communication (default: 9876)
-- **Add newline after segment** — Adds Enter after each transcription chunk
-- **Add space between segments** — Adds a space between consecutive chunks (default: on)
-
 ## Project Structure
 
 ```
 whisper-hid/
-├── app/                          # Android Kotlin app
+├── app/                          # Android Kotlin app (BT HID service)
 │   ├── build.gradle.kts
 │   └── src/main/
 │       ├── AndroidManifest.xml
-│       ├── java/com/whisperbt/keyboard/
-│       │   ├── MainActivity.kt
-│       │   ├── BluetoothHidService.kt
-│       │   ├── SocketListenerService.kt
-│       │   ├── HidKeyMapper.kt
-│       │   └── BootReceiver.kt
-│       └── res/
+│       └── java/com/whisperbt/keyboard/
+├── pwa/                          # PWA (React + TypeScript)
+│   ├── src/
+│   └── vite.config.ts
 ├── scripts/                      # Termux scripts
 │   ├── setup-termux.sh
-│   ├── start-stt.sh
-│   ├── stop-stt.sh
+│   ├── whisper-server.py
+│   ├── start-whisper-server.sh
+│   ├── stop-whisper-server.sh
 │   └── update-model.sh
 ├── .github/workflows/
-│   └── build-apk.yml            # CI: build APK on push
+│   ├── build-apk.yml            # CI: build APK on push
+│   └── deploy-pwa.yml           # CI: deploy PWA to GitHub Pages
 ├── build.gradle.kts
-├── settings.gradle.kts
-└── SPEC-1.md                    # Full project specification
+└── settings.gradle.kts
 ```
 
 ## CI/CD
