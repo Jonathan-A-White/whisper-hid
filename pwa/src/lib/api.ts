@@ -103,6 +103,35 @@ export async function switchModel(
   return res.json();
 }
 
+export async function benchmarkModels(options?: {
+  models?: string[];
+  duration?: number;
+  use_vad?: boolean;
+}): Promise<{
+  audio_duration_sec: number;
+  use_vad: boolean;
+  vad_available: boolean;
+  results: Array<{
+    model: string;
+    size_mb: number;
+    text: string;
+    inference_ms: number;
+    speed_ratio: number;
+    error: string | null;
+  }>;
+}> {
+  const res = await whisperFetch("/models/benchmark", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(options ?? {}),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || "Benchmark failed");
+  }
+  return res.json();
+}
+
 export async function getCorrections(): Promise<Record<string, string>> {
   const res = await whisperFetch("/corrections");
   return res.json();
