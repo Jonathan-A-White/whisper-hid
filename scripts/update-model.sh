@@ -45,7 +45,7 @@ usage() {
     echo "  $0 large-v3-turbo-q5_0"
     echo "  $0 vad"
     echo ""
-    echo "After downloading, set WHISPER_MODEL env var or update start-stt.sh."
+    echo "After downloading, set WHISPER_MODEL env var or restart whisper-server."
     exit 1
 }
 

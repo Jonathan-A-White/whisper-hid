@@ -62,13 +62,12 @@ Most "no speech detected" bugs are NOT mic problems — check the full pipeline:
      process the file** — it printed help text and exited. This means a CLI flag is wrong.
 
 ### whisper.cpp CLI flag compatibility
-**Critical**: whisper.cpp CLI flags change between versions. The server and stt-loop.sh
-both use dynamic flag detection — probing `whisper-cli --help` output before building
-the command. When adding new whisper flags:
+**Critical**: whisper.cpp CLI flags change between versions. The server uses dynamic
+flag detection — probing `whisper-cli --help` output before building the command.
+When adding new whisper flags:
 - Boolean flags (--no-timestamps, --no-gpu) take NO argument — never pass "true"/"false"
 - Always check `--help` output before assuming a flag exists
-- See `_detect_whisper_flags()` in whisper-server.py and `init_whisper_flags()` in stt-loop.sh
-- The bash and Python implementations must stay in sync on which flags they use
+- See `_detect_whisper_flags()` in whisper-server.py
 
 ### Common "no speech" causes (ranked by likelihood)
 1. Wrong whisper CLI flags → whisper prints help and exits instantly (check timing)
@@ -85,8 +84,7 @@ A post-transcription word correction system fixes these automatically.
 - `scripts/word-corrections.json` stores a `{"wrong": "correct"}` dictionary
 - After Whisper returns text, `apply_corrections()` does case-insensitive
   whole-word replacement using `\b` regex boundaries
-- Implemented in both Python (whisper-server.py) and Bash (stt-loop.sh) —
-  both pipelines must apply the same corrections
+- Implemented in whisper-server.py — applied automatically after each transcription
 
 ### API endpoints
 - `GET /corrections` — returns the current dictionary
