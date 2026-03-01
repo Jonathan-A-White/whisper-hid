@@ -107,6 +107,18 @@ export function useHidService(settings: Settings) {
     flushingRef.current = false;
   }, [queue, getAppendString]);
 
+  const sendNewline = useCallback(async () => {
+    if (status?.bluetooth !== "connected") return;
+    try {
+      await hidType("\n", "");
+    } catch (e) {
+      if (e instanceof Error && e.message === "AUTH_FAILED") {
+        setAuthError(true);
+        clearToken();
+      }
+    }
+  }, [status?.bluetooth]);
+
   const restart = useCallback(async () => {
     try {
       await hidRestart();
@@ -124,6 +136,7 @@ export function useHidService(settings: Settings) {
     authError,
     queue,
     sendText,
+    sendNewline,
     restart,
   };
 }

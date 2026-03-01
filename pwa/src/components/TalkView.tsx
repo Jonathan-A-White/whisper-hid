@@ -13,6 +13,7 @@ interface TalkViewProps {
   };
   hid: {
     sendText: (text: string) => Promise<boolean>;
+    sendNewline: () => Promise<void>;
     status: { bluetooth: string; device?: string } | null;
     queue: { id: string; text: string; status: string }[];
   };
@@ -57,6 +58,7 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
           setLastText(text);
           await store.addEntry(text, entryStats);
           await hid.sendText(text);
+          if (settings.newlineAfterEnd) await hid.sendNewline();
         }
       } else {
         setLastError(error);
@@ -66,7 +68,7 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
       setLastError(null);
       await whisper.startRecording();
     }
-  }, [whisper, hid, store, settings.editBeforeSend]);
+  }, [whisper, hid, store, settings.editBeforeSend, settings.newlineAfterEnd]);
 
   const handleSendEdit = useCallback(
     async (text: string) => {
@@ -75,8 +77,9 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
       await store.addEntry(text, lastEntryStats ?? undefined);
       setLastEntryStats(null);
       await hid.sendText(text);
+      if (settings.newlineAfterEnd) await hid.sendNewline();
     },
-    [hid, store, lastEntryStats]
+    [hid, store, lastEntryStats, settings.newlineAfterEnd]
   );
 
   const handlePinnedTap = useCallback(

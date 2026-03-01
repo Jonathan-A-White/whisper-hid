@@ -90,6 +90,19 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
         />
       </label>
 
+      {/* Toggle: Newline after end of recording */}
+      <label className="flex items-center justify-between">
+        <span className="text-sm text-gray-300">
+          Newline after end of recording
+        </span>
+        <input
+          type="checkbox"
+          checked={settings.newlineAfterEnd}
+          onChange={(e) => onUpdate({ newlineAfterEnd: e.target.checked })}
+          className="w-5 h-5 accent-sky-500"
+        />
+      </label>
+
       {/* Keystroke delay */}
       <div>
         <label className="text-sm text-gray-300 block mb-1">
