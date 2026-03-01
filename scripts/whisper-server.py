@@ -40,6 +40,23 @@ ALLOWED_ORIGIN = os.environ.get(
 PORT = int(os.environ.get("WHISPER_PORT", "9876"))
 NOISE_REDUCTION = os.environ.get("WHISPER_NOISE_REDUCTION", "0").lower() in ("1", "true", "yes")
 
+# --- Runtime settings (mutable via /settings API) ---
+
+runtime_settings: dict[str, bool | int | str] = {}
+
+
+def _init_runtime_settings():
+    """Initialize runtime settings from environment/defaults."""
+    global runtime_settings
+    runtime_settings = {
+        "noise_reduction": NOISE_REDUCTION,
+    }
+
+
+def get_noise_reduction() -> bool:
+    """Return current noise reduction setting."""
+    return bool(runtime_settings.get("noise_reduction", NOISE_REDUCTION))
+
 # --- State ---
 
 model_path = ""
@@ -210,10 +227,11 @@ def transcode_to_wav(input_path: str, output_path: str) -> bool:
     ~100-200ms of processing time.
     """
     input_size = os.path.getsize(input_path) if os.path.isfile(input_path) else 0
-    add_log("info", f"Transcode: input={input_path} size={input_size}B denoise={NOISE_REDUCTION}")
+    denoise = get_noise_reduction()
+    add_log("info", f"Transcode: input={input_path} size={input_size}B denoise={denoise}")
     try:
         cmd = ["ffmpeg", "-y", "-i", input_path]
-        if NOISE_REDUCTION:
+        if denoise:
             cmd += ["-af", "afftdn=nr=20:nf=-20:tn=1"]
         cmd += ["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", output_path]
         result = subprocess.run(
@@ -705,6 +723,39 @@ def put_corrections():
     return jsonify(word_corrections)
 
 
+# --- Settings ---
+
+@app.route("/settings", methods=["GET"])
+def get_settings():
+    """Return current runtime settings."""
+    return jsonify(runtime_settings)
+
+
+@app.route("/settings", methods=["PUT"])
+def put_settings():
+    """Update runtime settings.
+
+    Body: {"noise_reduction": true}
+    Only known keys are accepted; unknown keys are ignored.
+    """
+    data = request.get_json(silent=True)
+    if data is None or not isinstance(data, dict):
+        return jsonify({"error": "invalid_body", "message": "Request body must be a JSON object."}), 400
+
+    known_keys = {"noise_reduction": bool}
+    for key, expected_type in known_keys.items():
+        if key in data:
+            if not isinstance(data[key], expected_type):
+                return jsonify({
+                    "error": "invalid_value",
+                    "message": f"'{key}' must be {expected_type.__name__}.",
+                }), 400
+            runtime_settings[key] = data[key]
+
+    add_log("info", f"Settings updated: {runtime_settings}")
+    return jsonify(runtime_settings)
+
+
 # --- Benchmark ---
 
 # Lock to prevent concurrent benchmarks (they're resource-heavy)
@@ -1011,6 +1062,7 @@ def put_model():
 # --- Main ---
 
 if __name__ == "__main__":
+    _init_runtime_settings()
     load_corrections()
     load_model()
     detect_audio_format()
