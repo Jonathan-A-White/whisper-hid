@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -76,6 +77,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun stopHidService() {
+        stopBluetoothSco()
         unbindHidService()
         stopService(Intent(this, BluetoothHidService::class.java))
         statusService.text = "Service: Stopped"
@@ -148,6 +150,21 @@ class MainActivity : AppCompatActivity() {
     private fun startHidService() {
         val intent = Intent(this, BluetoothHidService::class.java)
         ContextCompat.startForegroundService(this, intent)
+        startBluetoothSco()
+    }
+
+    private fun startBluetoothSco() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+        audioManager.startBluetoothSco()
+        audioManager.isBluetoothScoOn = true
+    }
+
+    private fun stopBluetoothSco() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.isBluetoothScoOn = false
+        audioManager.stopBluetoothSco()
+        audioManager.mode = AudioManager.MODE_NORMAL
     }
 
     private fun bindHidService() {
