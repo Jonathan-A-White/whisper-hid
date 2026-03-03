@@ -182,15 +182,44 @@ export async function hidLogs() {
   return res.json();
 }
 
+const HID_TYPE_CHUNK_SIZE = 500;
+
 export async function hidType(text: string, append: string = " ") {
-  const res = await hidFetch("/type", {
-    method: "POST",
-    body: JSON.stringify({ text, append }),
-  });
-  if (res.status === 403) {
-    throw new Error("AUTH_FAILED");
+  // Break large text into chunks to avoid overwhelming the HID service's
+  // simple HTTP server. Send chunks sequentially; only the last chunk
+  // gets the append suffix.
+  if (text.length <= HID_TYPE_CHUNK_SIZE) {
+    const res = await hidFetch("/type", {
+      method: "POST",
+      body: JSON.stringify({ text, append }),
+    });
+    if (res.status === 403) {
+      throw new Error("AUTH_FAILED");
+    }
+    return res.json();
   }
-  return res.json();
+
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += HID_TYPE_CHUNK_SIZE) {
+    chunks.push(text.slice(i, i + HID_TYPE_CHUNK_SIZE));
+  }
+
+  let lastResult: unknown;
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const res = await hidFetch("/type", {
+      method: "POST",
+      body: JSON.stringify({
+        text: chunks[i],
+        append: isLast ? append : "",
+      }),
+    });
+    if (res.status === 403) {
+      throw new Error("AUTH_FAILED");
+    }
+    lastResult = await res.json();
+  }
+  return lastResult;
 }
 
 export async function hidBackspace(count: number) {
