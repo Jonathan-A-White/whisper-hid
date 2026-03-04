@@ -310,8 +310,7 @@ def detect_audio_format():
         test_wav = os.path.join(td, "test.wav")
         try:
             subprocess.run(
-                ["termux-microphone-record", "-f", test_raw, "-l", "1",
-                 "-s", "7"],  # VOICE_COMMUNICATION — routes through BT SCO
+                ["termux-microphone-record", "-f", test_raw, "-l", "1"],
                 timeout=5,
             )
             time.sleep(2)
@@ -341,8 +340,7 @@ def detect_audio_format():
         try:
             subprocess.run(
                 ["termux-microphone-record", "-f", test_raw, "-l", "1",
-                 "-e", "amr_wb", "-b", "23850",
-                 "-s", "7"],  # VOICE_COMMUNICATION — routes through BT SCO
+                 "-e", "amr_wb", "-b", "23850"],
                 timeout=5,
             )
             time.sleep(2)
@@ -689,7 +687,6 @@ def transcribe_start():
                 "termux-microphone-record",
                 "-f", recording_file,
                 "-l", "0",     # unlimited duration
-                "-s", "7",     # VOICE_COMMUNICATION — routes through BT SCO
             ]
             if audio_format == "amr_wb":
                 rec_cmd += ["-e", "amr_wb", "-b", "23850"]
@@ -821,8 +818,7 @@ def debug_test_pipeline():
         wav_file = os.path.join(td, "test.wav")
 
         # Step 1: Record 3 seconds
-        rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", "3",
-                   "-s", "7"]  # VOICE_COMMUNICATION — routes through BT SCO
+        rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", "3"]
         if audio_format == "amr_wb":
             rec_cmd += ["-e", "amr_wb", "-b", "23850"]
         diag["rec_cmd"] = " ".join(rec_cmd)
@@ -1096,8 +1092,7 @@ def _do_benchmark():
         else:
             # Record audio from mic
             raw_file = os.path.join(td, f"benchmark.{audio_ext}")
-            rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", str(duration),
-                       "-s", "7"]  # VOICE_COMMUNICATION — routes through BT SCO
+            rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", str(duration)]
             if audio_format == "amr_wb":
                 rec_cmd += ["-e", "amr_wb", "-b", "23850"]
             try:
