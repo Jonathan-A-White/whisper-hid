@@ -519,7 +519,8 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
             # Filter silence markers
             for marker in ["[BLANK_AUDIO]", "(silence)", "[silence]"]:
                 text = text.replace(marker, "")
-            text = text.strip()
+            # Collapse all whitespace (including newlines between segments) into single spaces
+            text = " ".join(text.split())
 
             if not text:
                 add_log("warn", "Whisper (server): no speech detected")
@@ -574,7 +575,8 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
     silence_markers = ["[BLANK_AUDIO]", "(silence)", "[silence]"]
     for marker in silence_markers:
         text = text.replace(marker, "")
-    text = text.strip()
+    # Collapse all whitespace (including newlines between segments) into single spaces
+    text = " ".join(text.split())
 
     if not text and raw_text:
         add_log("warn", f"Whisper returned only silence markers: {repr(raw_text)}")
