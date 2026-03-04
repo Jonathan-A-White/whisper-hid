@@ -296,6 +296,57 @@ def _transcribe_via_server(wav_path: str) -> tuple[str, int]:
 atexit.register(stop_whisper_server)
 
 
+# --- Mic recording helpers ---
+
+# Path to termux-api binary (allows passing audio source via intent extras).
+# Detected once at startup; falls back to termux-microphone-record wrapper.
+_termux_api_bin: str | None = None
+
+
+def _detect_termux_api_bin():
+    """Find the termux-api binary so we can pass --ei source 7."""
+    global _termux_api_bin
+    prefix = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
+    candidate = os.path.join(prefix, "libexec", "termux-api")
+    if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        _termux_api_bin = candidate
+        add_log("info", f"termux-api binary found: {candidate}")
+    else:
+        _termux_api_bin = None
+        add_log("info", "termux-api binary not found, using termux-microphone-record wrapper")
+
+
+def _mic_record_cmd(file: str, limit: int = 0, encoder: str | None = None,
+                    bitrate: str | None = None) -> list[str]:
+    """Build a mic recording command that routes through BT SCO when possible.
+
+    If the termux-api binary is available, calls it directly with
+    --ei source 7 (VOICE_COMMUNICATION) so that audio is captured from
+    the Bluetooth headset mic.  Otherwise falls back to the
+    termux-microphone-record wrapper (which uses AudioSource.MIC).
+    """
+    if _termux_api_bin:
+        cmd = [
+            _termux_api_bin, "MicRecorder",
+            "--ei", "source", "7",     # VOICE_COMMUNICATION — routes through BT SCO
+            "--es", "file", file,
+            "--ei", "limit", str(limit),
+        ]
+        if encoder:
+            cmd += ["--es", "encoder", encoder]
+        if bitrate:
+            cmd += ["--ei", "bitrate", bitrate]
+        return cmd
+
+    # Fallback: wrapper script (no audio source control)
+    cmd = ["termux-microphone-record", "-f", file, "-l", str(limit)]
+    if encoder:
+        cmd += ["-e", encoder]
+    if bitrate:
+        cmd += ["-b", bitrate]
+    return cmd
+
+
 def detect_audio_format():
     """Detect whether AAC or AMR-WB recording works on this device.
 
@@ -310,7 +361,7 @@ def detect_audio_format():
         test_wav = os.path.join(td, "test.wav")
         try:
             subprocess.run(
-                ["termux-microphone-record", "-f", test_raw, "-l", "1"],
+                _mic_record_cmd(test_raw, limit=1),
                 timeout=5,
             )
             time.sleep(2)
@@ -339,8 +390,7 @@ def detect_audio_format():
         test_wav = os.path.join(td, "test_amr.wav")
         try:
             subprocess.run(
-                ["termux-microphone-record", "-f", test_raw, "-l", "1",
-                 "-e", "amr_wb", "-b", "23850"],
+                _mic_record_cmd(test_raw, limit=1, encoder="amr_wb", bitrate="23850"),
                 timeout=5,
             )
             time.sleep(2)
@@ -683,13 +733,11 @@ def transcribe_start():
 
         recording_file = tempfile.mktemp(suffix=f".{audio_ext}")
         try:
-            rec_cmd = [
-                "termux-microphone-record",
-                "-f", recording_file,
-                "-l", "0",     # unlimited duration
-            ]
             if audio_format == "amr_wb":
-                rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+                rec_cmd = _mic_record_cmd(recording_file, limit=0,
+                                          encoder="amr_wb", bitrate="23850")
+            else:
+                rec_cmd = _mic_record_cmd(recording_file, limit=0)
             add_log("info", f"Recording cmd: {' '.join(rec_cmd)}")
             recording_process = subprocess.Popen(rec_cmd)
             add_log("info", f"Recording started: {recording_file}")
@@ -818,9 +866,10 @@ def debug_test_pipeline():
         wav_file = os.path.join(td, "test.wav")
 
         # Step 1: Record 3 seconds
-        rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", "3"]
         if audio_format == "amr_wb":
-            rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+            rec_cmd = _mic_record_cmd(raw_file, limit=3, encoder="amr_wb", bitrate="23850")
+        else:
+            rec_cmd = _mic_record_cmd(raw_file, limit=3)
         diag["rec_cmd"] = " ".join(rec_cmd)
 
         try:
@@ -1092,9 +1141,10 @@ def _do_benchmark():
         else:
             # Record audio from mic
             raw_file = os.path.join(td, f"benchmark.{audio_ext}")
-            rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", str(duration)]
             if audio_format == "amr_wb":
-                rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+                rec_cmd = _mic_record_cmd(raw_file, limit=duration, encoder="amr_wb", bitrate="23850")
+            else:
+                rec_cmd = _mic_record_cmd(raw_file, limit=duration)
             try:
                 subprocess.run(rec_cmd, timeout=duration + 5)
                 time.sleep(duration + 1)
@@ -1282,6 +1332,7 @@ if __name__ == "__main__":
     _init_runtime_settings()
     load_corrections()
     load_model()
+    _detect_termux_api_bin()
     detect_audio_format()
 
     whisper_bin = WHISPER_BIN or find_whisper_bin()
