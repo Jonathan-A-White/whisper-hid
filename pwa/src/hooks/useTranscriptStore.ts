@@ -26,21 +26,27 @@ export function useTranscriptStore() {
   const [searchQuery, setSearchQuery] = useState("");
 
   const loadEntries = useCallback(async () => {
-    const db = await openDB();
-    const tx = db.transaction(STORE_NAME, "readonly");
-    const store = tx.objectStore(STORE_NAME);
-    const request = store.getAll();
-    return new Promise<TranscriptEntry[]>((resolve) => {
-      request.onsuccess = () => {
-        const all = request.result as TranscriptEntry[];
-        // Sort: pinned first, then by timestamp descending
-        all.sort((a, b) => {
-          if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-          return b.timestamp - a.timestamp;
-        });
-        resolve(all);
-      };
-    });
+    try {
+      const db = await openDB();
+      const tx = db.transaction(STORE_NAME, "readonly");
+      const store = tx.objectStore(STORE_NAME);
+      const request = store.getAll();
+      return new Promise<TranscriptEntry[]>((resolve, reject) => {
+        request.onsuccess = () => {
+          const all = request.result as TranscriptEntry[];
+          // Sort: pinned first, then by timestamp descending
+          all.sort((a, b) => {
+            if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+            return b.timestamp - a.timestamp;
+          });
+          resolve(all);
+        };
+        request.onerror = () => reject(request.error);
+      });
+    } catch (err) {
+      console.error("Failed to load transcripts:", err);
+      return [];
+    }
   }, []);
 
   const refresh = useCallback(async () => {
@@ -65,12 +71,17 @@ export function useTranscriptStore() {
         ...(stats?.audioDuration != null && { audioDuration: stats.audioDuration }),
         ...(stats?.processingMs != null && { processingMs: stats.processingMs }),
       };
-      const db = await openDB();
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      tx.objectStore(STORE_NAME).add(entry);
-      await new Promise<void>((resolve) => {
-        tx.oncomplete = () => resolve();
-      });
+      try {
+        const db = await openDB();
+        const tx = db.transaction(STORE_NAME, "readwrite");
+        tx.objectStore(STORE_NAME).add(entry);
+        await new Promise<void>((resolve, reject) => {
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch (err) {
+        console.error("Failed to save transcript:", err);
+      }
       await refresh();
       return entry;
     },
