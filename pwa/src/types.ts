@@ -20,6 +20,12 @@ export interface HidStatus {
   failure_reason?: string;
 }
 
+export interface BtDevice {
+  address: string;
+  name: string;
+  connected: boolean;
+}
+
 export interface WhisperStatus {
   status: "ready" | "error";
   model?: string;

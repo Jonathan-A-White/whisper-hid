@@ -233,6 +233,22 @@ export async function hidBackspace(count: number) {
   return res.json();
 }
 
+export async function hidDevices(): Promise<{ devices: Array<{ address: string; name: string; connected: boolean }> }> {
+  const res = await hidFetch("/devices");
+  return res.json();
+}
+
+export async function hidConnect(address: string) {
+  const res = await hidFetch("/connect", {
+    method: "POST",
+    body: JSON.stringify({ address }),
+  });
+  if (res.status === 403) {
+    throw new Error("AUTH_FAILED");
+  }
+  return res.json();
+}
+
 export async function hidRestart() {
   const res = await hidFetch("/restart", { method: "POST" });
   if (res.status === 403) {
