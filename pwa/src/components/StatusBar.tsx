@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { HidStatus, WhisperStatus } from "../types";
+import { DevicePicker } from "./DevicePicker";
 
 interface StatusBarProps {
   hidStatus: HidStatus | null;
@@ -17,6 +19,7 @@ export function StatusBar({
   onRestart,
   onShowDebug,
 }: StatusBarProps) {
+  const [showDevicePicker, setShowDevicePicker] = useState(false);
   const btState = hidStatus?.bluetooth;
   const showBanner =
     btState === "reconnecting" || btState === "failed" || !hidReachable;
@@ -41,8 +44,11 @@ export function StatusBar({
                 : whisperError || "offline"}
             </span>
           </span>
-          {/* BT status dot */}
-          <span className="flex items-center gap-1">
+          {/* BT status dot — tap to switch device */}
+          <button
+            className="flex items-center gap-1"
+            onClick={() => hidReachable && setShowDevicePicker(true)}
+          >
             <span
               className={`w-2 h-2 rounded-full ${
                 btState === "connected"
@@ -61,7 +67,7 @@ export function StatusBar({
                     ? `Retry ${hidStatus?.reconnect_attempt}`
                     : btState || "idle"}
             </span>
-          </span>
+          </button>
         </div>
       </div>
 
@@ -99,6 +105,13 @@ export function StatusBar({
             </div>
           ) : null}
         </div>
+      )}
+
+      {showDevicePicker && (
+        <DevicePicker
+          onClose={() => setShowDevicePicker(false)}
+          onConnected={() => setShowDevicePicker(false)}
+        />
       )}
     </div>
   );

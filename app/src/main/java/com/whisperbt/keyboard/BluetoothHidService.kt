@@ -573,6 +573,8 @@ class BluetoothHidService : Service() {
                 "/status" -> handleStatus(request, output)
                 "/logs" -> handleLogs(request, output)
                 "/restart" -> handleRestart(request, output)
+                "/devices" -> handleDevices(request, output)
+                "/connect" -> handleConnect(request, output)
                 else -> sendResponse(output, 404, JSONObject().put("error", "not_found"))
             }
         } catch (e: Exception) {
@@ -596,7 +598,7 @@ class BluetoothHidService : Service() {
         sb.append("Content-Type: application/json\r\n")
         sb.append("Content-Length: ${body.size}\r\n")
         sb.append("Access-Control-Allow-Origin: $ALLOWED_ORIGIN\r\n")
-        sb.append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+        sb.append("Access-Control-Allow-Methods: GET, POST, PUT, OPTIONS\r\n")
         sb.append("Access-Control-Allow-Headers: Authorization, Content-Type\r\n")
         sb.append("Access-Control-Allow-Private-Network: true\r\n")
         sb.append("Connection: close\r\n")
@@ -610,7 +612,7 @@ class BluetoothHidService : Service() {
         val sb = StringBuilder()
         sb.append("HTTP/1.1 204 No Content\r\n")
         sb.append("Access-Control-Allow-Origin: $ALLOWED_ORIGIN\r\n")
-        sb.append("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+        sb.append("Access-Control-Allow-Methods: GET, POST, PUT, OPTIONS\r\n")
         sb.append("Access-Control-Allow-Headers: Authorization, Content-Type\r\n")
         sb.append("Access-Control-Allow-Private-Network: true\r\n")
         sb.append("Content-Length: 0\r\n")
@@ -763,6 +765,116 @@ class BluetoothHidService : Service() {
         sendResponse(output, 200, JSONObject()
             .put("ok", true)
             .put("message", "HID service restarting. Re-registering Bluetooth HID device."))
+    }
+
+    private fun handleDevices(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (request.method != "GET") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
+            return
+        }
+
+        val adapter = btAdapter
+        if (adapter == null) {
+            sendResponse(output, 500, JSONObject().put("error", "bluetooth_unavailable"))
+            return
+        }
+
+        val bondedDevices = try {
+            adapter.bondedDevices
+        } catch (_: SecurityException) {
+            sendResponse(output, 500, JSONObject().put("error", "missing_permission"))
+            return
+        }
+
+        val devicesArray = JSONArray()
+        val connectedAddr = connectedDevice?.address
+        for (device in bondedDevices ?: emptySet()) {
+            val name = try { device.name } catch (_: SecurityException) { null }
+            devicesArray.put(JSONObject()
+                .put("address", device.address)
+                .put("name", name ?: device.address)
+                .put("connected", device.address == connectedAddr))
+        }
+
+        sendResponse(output, 200, JSONObject().put("devices", devicesArray))
+    }
+
+    private fun handleConnect(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (!validateToken(request)) {
+            sendResponse(output, 403, JSONObject().put("error", "forbidden"))
+            return
+        }
+        if (request.method != "POST") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
+            return
+        }
+
+        try {
+            val json = parseJsonBody(request.body)
+            val address = json.optString("address", "")
+            if (address.isEmpty()) {
+                sendResponse(output, 400, JSONObject().put("ok", false).put("error", "missing_address"))
+                return
+            }
+
+            val adapter = btAdapter
+            if (adapter == null) {
+                sendResponse(output, 500, JSONObject().put("ok", false).put("error", "bluetooth_unavailable"))
+                return
+            }
+
+            val bondedDevices = try {
+                adapter.bondedDevices
+            } catch (_: SecurityException) {
+                sendResponse(output, 500, JSONObject().put("ok", false).put("error", "missing_permission"))
+                return
+            }
+
+            val targetDevice = bondedDevices?.firstOrNull { it.address == address }
+            if (targetDevice == null) {
+                sendResponse(output, 404, JSONObject().put("ok", false).put("error", "device_not_found"))
+                return
+            }
+
+            val hid = hidDevice
+            if (hid == null) {
+                sendResponse(output, 503, JSONObject().put("ok", false).put("error", "hid_not_registered"))
+                return
+            }
+
+            // Disconnect current device first
+            if (connectedDevice != null) {
+                try {
+                    hid.disconnect(connectedDevice)
+                } catch (_: SecurityException) {
+                    addLog("error", "Missing permission for disconnect")
+                }
+            }
+            cancelReconnect()
+
+            // Set as preferred device and connect
+            lastKnownDevice = targetDevice
+            val initiated = try {
+                hid.connect(targetDevice)
+            } catch (e: SecurityException) {
+                addLog("error", "Missing permission for connect")
+                sendResponse(output, 500, JSONObject().put("ok", false).put("error", "missing_permission"))
+                return
+            }
+
+            val name = try { targetDevice.name } catch (_: SecurityException) { targetDevice.address }
+            if (initiated) {
+                addLog("info", "Switching to device: $name")
+                sendResponse(output, 200, JSONObject().put("ok", true).put("device", name))
+            } else {
+                addLog("error", "Failed to initiate connection to $name")
+                sendResponse(output, 500, JSONObject().put("ok", false).put("error", "connect_failed"))
+            }
+        } catch (e: Exception) {
+            sendResponse(output, 500, JSONObject().put("ok", false).put("error", e.message ?: "unknown"))
+        }
     }
 
     // --- Notification helpers ---
