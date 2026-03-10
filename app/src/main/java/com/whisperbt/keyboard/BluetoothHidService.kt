@@ -193,6 +193,7 @@ class BluetoothHidService : Service() {
     private fun enableSco() {
         try {
             val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 val devices = audioManager.availableCommunicationDevices
                 val btDevice = devices.firstOrNull {
@@ -225,6 +226,7 @@ class BluetoothHidService : Service() {
                 @Suppress("DEPRECATION")
                 audioManager.stopBluetoothSco()
             }
+            audioManager.mode = AudioManager.MODE_NORMAL
         } catch (e: Exception) {
             Log.w(TAG, "Failed to disable SCO", e)
         }
@@ -314,6 +316,7 @@ class BluetoothHidService : Service() {
                     btState = BtState.CONNECTED
                     cancelReconnect()
                     reconnectAttempt = 0
+                    enableSco()
                     val name = try { device?.name } catch (_: SecurityException) { "Unknown" }
                     addLog("info", "BT connected to $name")
                     updateNotification("Connected to $name")
