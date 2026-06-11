@@ -10,6 +10,7 @@ on:
       - "*.gradle.kts"
       - "gradle/**"
       - "gradlew"
+      - ".github/workflows/build-apk.yml"
   pull_request:
     branches: [main]
     paths:
@@ -18,6 +19,7 @@ on:
       - "*.gradle.kts"
       - "gradle/**"
       - "gradlew"
+      - ".github/workflows/build-apk.yml"
 
 permissions:
   contents: write
