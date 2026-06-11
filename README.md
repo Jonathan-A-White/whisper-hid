@@ -41,53 +41,62 @@ Three components running on the same phone:
 - [Termux:API](https://f-droid.org/en/packages/com.termux.api/) from F-Droid
 - Any Bluetooth-capable laptop
 
-## Quick Start
+## Quick Start (new phone)
 
-### 1. Install the Android App
+### 1. Install Termux and Termux:API
 
-Download the latest APK from [GitHub Actions](../../actions) artifacts and sideload it on your phone.
+Install [Termux](https://f-droid.org/en/packages/com.termux/) and
+[Termux:API](https://f-droid.org/en/packages/com.termux.api/) from F-Droid
+(NOT Google Play), then grant Termux:API microphone permission
+(Android Settings > Apps > Termux:API > Permissions).
 
-Or build it yourself:
+### 2. Run the bootstrap command
+
+Open Termux and paste:
 
 ```bash
-./gradlew assembleDebug
-# APK at: app/build/outputs/apk/debug/app-debug.apk
+curl -fsSL https://raw.githubusercontent.com/Jonathan-A-White/whisper-hid/main/scripts/bootstrap.sh | bash
 ```
 
-### 2. Set Up Termux
+This clones the repo, installs dependencies, builds whisper.cpp, downloads
+the default model, fetches the latest APK from GitHub Releases (opening the
+Android installer for you), and starts the Whisper server. It's idempotent —
+safe to re-run if anything fails partway.
 
-Install Termux and Termux:API from F-Droid, then run:
+### 3. Follow the guided setup in the PWA
+
+Open the PWA at <https://jonathan-a-white.github.io/whisper-hid/>. On a new
+phone it shows a **setup wizard** that detects each component as it comes
+online and walks you through the remaining manual steps with copyable
+commands:
+
+1. Install the **Whisper Keyboard** app (installer opened by the bootstrap)
+2. Tap **"Open Whisper Keyboard"** in the app to authenticate the PWA
+3. On your laptop, pair Bluetooth with **"Whisper Keyboard"**
+4. Run the built-in microphone test
+
+The wizard is also available later from **Settings > Setup guide**.
+
+Then speak into your microphone — text appears on your laptop as keyboard input.
+
+### Manual setup (alternative)
 
 ```bash
-# Copy scripts to phone or clone this repo in Termux
-git clone <this-repo-url>
+# In Termux:
+git clone https://github.com/Jonathan-A-White/whisper-hid
 cd whisper-hid
+bash scripts/setup-termux.sh    # installs deps, builds whisper.cpp, downloads model
 
-# Run one-time setup (installs deps, builds whisper.cpp, downloads model)
-bash scripts/setup-termux.sh
-```
-
-### 3. Pair and Connect
-
-1. Open the **Whisper Keyboard** app — it runs as a headless service
-2. On your laptop, go to Bluetooth settings and pair with "Whisper Keyboard"
-
-### 4. Start Transcription
-
-In Termux:
-
-```bash
+# Start/stop the server:
 cd ~/whisper-stt
 ./start-whisper-server.sh
-```
-
-Then open the PWA in your phone's browser. Speak into your microphone — text will appear on your laptop as keyboard input.
-
-### 5. Stop
-
-```bash
 ./stop-whisper-server.sh
 ```
+
+Build the APK yourself with `./gradlew assembleDebug`
+(output: `app/build/outputs/apk/debug/app-debug.apk`), or download it from the
+[`latest-apk` release](../../releases/tag/latest-apk) (updated by CI on every
+push to main).
 
 ## Whisper Models
 
@@ -119,6 +128,7 @@ whisper-hid/
 │   ├── src/
 │   └── vite.config.ts
 ├── scripts/                      # Termux scripts
+│   ├── bootstrap.sh              # One-command new-phone setup (curl | bash)
 │   ├── setup-termux.sh
 │   ├── whisper-server.py
 │   ├── start-whisper-server.sh

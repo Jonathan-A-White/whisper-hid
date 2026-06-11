@@ -7,9 +7,10 @@ import { ModelBenchmark } from "./ModelBenchmark";
 interface SettingsViewProps {
   settings: Settings;
   onUpdate: (partial: Partial<Settings>) => void;
+  onShowSetup: () => void;
 }
 
-export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
+export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewProps) {
   const [whisperVersion, setWhisperVersion] = useState<string | null>(null);
   const [hidVersion, setHidVersion] = useState<string | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -250,6 +251,20 @@ export function SettingsView({ settings, onUpdate }: SettingsViewProps) {
       {/* Word corrections */}
       <div className="pt-4 border-t border-gray-800">
         <WordCorrections />
+      </div>
+
+      {/* Setup guide */}
+      <div className="pt-4 border-t border-gray-800">
+        <button
+          onClick={onShowSetup}
+          className="w-full py-2 rounded bg-gray-800 text-sky-400 text-sm font-medium"
+        >
+          Setup guide
+        </button>
+        <p className="text-xs text-gray-600 mt-1.5">
+          Step-by-step checklist for setting up a new phone or fixing a
+          broken component.
+        </p>
       </div>
 
       <div className="pt-4 border-t border-gray-800 space-y-1">

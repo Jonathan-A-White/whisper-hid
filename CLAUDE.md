@@ -88,6 +88,26 @@ eliminates the ~1-3s model load overhead on every transcription.
 3. AAC codec mismatch → server auto-detects AAC vs AMR-WB at startup
 4. Actual silence → check audio_analysis step in /debug/test-pipeline (max_amplitude < 100)
 
+## New-phone setup flow
+
+Two pieces make setup on a fresh phone (with Termux installed) nearly automatic:
+
+- `scripts/bootstrap.sh` — run via `curl ... | bash` inside Termux. Clones the
+  repo, runs setup-termux.sh, downloads the latest APK from the rolling
+  `latest-apk` GitHub Release (updated by CI on every push to main, see
+  build-apk.yml) and opens the Android installer, then starts the Whisper
+  server. Idempotent. Commands that might read stdin use `< /dev/null` so they
+  don't swallow the piped script.
+- PWA Setup Wizard (`pwa/src/components/SetupWizard.tsx`) — shown automatically
+  when the PWA has no auth token (i.e., new phone), and reachable from
+  Settings > Setup guide. Polls both `/status` endpoints (unauthenticated) to
+  auto-detect progress: Whisper server up → steps 1-2 done, HID service up →
+  step 3, token present → step 4, bluetooth "connected" → step 5. Includes a
+  mic test using `POST /debug/test-pipeline`.
+
+If the bootstrap URL, APK release tag, or PWA URL changes, update both
+bootstrap.sh and the constants at the top of SetupWizard.tsx.
+
 ## Word corrections (auto-correct dictionary)
 
 Whisper often misrecognizes proper nouns (e.g., "quad" instead of "Claude").

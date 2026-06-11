@@ -7,6 +7,7 @@ import { StatusBar } from "./components/StatusBar";
 import { TalkView } from "./components/TalkView";
 import { HistoryView } from "./components/HistoryView";
 import { SettingsView } from "./components/SettingsView";
+import { SetupWizard } from "./components/SetupWizard";
 import { DebugLog } from "./components/DebugLog";
 import type { Tab, Settings } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
@@ -25,6 +26,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("talk");
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [showDebug, setShowDebug] = useState(false);
+  const [showSetup, setShowSetup] = useState(false);
 
   const whisper = useWhisper();
   const hid = useHidService(settings);
@@ -38,24 +40,16 @@ export default function App() {
     });
   };
 
+  // No auth token = first launch on a new phone. Show the guided setup
+  // checklist instead of a dead-end error; it detects each component as it
+  // comes online. Opening the PWA from the Android app reloads this page
+  // with a token, which dismisses the wizard automatically.
   if (!hasToken()) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center p-8">
-        <div className="text-center">
-          <h1 className="text-xl font-bold text-white mb-4">
-            Not Authenticated
-          </h1>
-          <p className="text-gray-400 mb-6">
-            Open this app from the Whisper HID Service Android app to
-            authenticate.
-          </p>
-          <p className="text-gray-500 text-sm">
-            Tap &quot;Open Whisper Keyboard&quot; in the Android app to get a
-            fresh auth token.
-          </p>
-        </div>
-      </div>
-    );
+    return <SetupWizard />;
+  }
+
+  if (showSetup) {
+    return <SetupWizard onClose={() => setShowSetup(false)} />;
   }
 
   if (hid.authError) {
@@ -102,7 +96,11 @@ export default function App() {
         ) : tab === "history" ? (
           <HistoryView store={store} hid={hid} />
         ) : (
-          <SettingsView settings={settings} onUpdate={updateSettings} />
+          <SettingsView
+            settings={settings}
+            onUpdate={updateSettings}
+            onShowSetup={() => setShowSetup(true)}
+          />
         )}
       </main>
 
