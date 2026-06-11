@@ -132,6 +132,17 @@ export async function benchmarkModels(options?: {
   return res.json();
 }
 
+export interface PipelineDiagnostics {
+  speech_detected?: boolean;
+  final_text?: string;
+  steps?: Array<{ step: string; error?: string; [key: string]: unknown }>;
+}
+
+export async function testPipeline(): Promise<PipelineDiagnostics> {
+  const res = await whisperFetch("/debug/test-pipeline", { method: "POST" });
+  return res.json();
+}
+
 export async function getCorrections(): Promise<Record<string, string>> {
   const res = await whisperFetch("/corrections");
   return res.json();

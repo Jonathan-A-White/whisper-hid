@@ -19,6 +19,9 @@ on:
       - "gradle/**"
       - "gradlew"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -52,4 +55,19 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          files: app/build/outputs/apk/debug/*.apk
+
+      # Rolling prerelease so scripts/bootstrap.sh can always fetch the
+      # newest APK from a stable URL without authentication:
+      # https://github.com/<repo>/releases/download/latest-apk/app-debug.apk
+      - name: Update rolling latest-apk release
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-apk
+          name: Latest APK (main)
+          prerelease: true
+          body: |
+            Rolling build of the latest `main` commit. Updated automatically by CI.
+            Used by `scripts/bootstrap.sh` for one-command phone setup.
           files: app/build/outputs/apk/debug/*.apk
