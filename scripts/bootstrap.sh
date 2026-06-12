@@ -62,7 +62,7 @@ bash "$REPO_DIR/scripts/setup-termux.sh" < /dev/null
 step "[4/5] Downloading latest Android app APK..."
 APK_OK=false
 for url in "${APK_URLS[@]}"; do
-    if curl -fSL --retry 3 -o "$APK_PATH" "$url" < /dev/null; then
+    if curl -fSL --progress-bar --retry 3 -o "$APK_PATH" "$url" < /dev/null; then
         APK_OK=true
         break
     fi
