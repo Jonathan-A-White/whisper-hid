@@ -1,14 +1,21 @@
 #!/data/data/com.termux/files/usr/bin/python3
-"""Whisper HTTP API server — wraps whisper.cpp with Flask.
+"""Speech-to-text HTTP API server — Parakeet (sherpa-onnx) or whisper.cpp with Flask.
+
+Two transcription engines:
+  - parakeet: NVIDIA Parakeet TDT 0.6B via sherpa-onnx, in-process (preferred —
+    faster and more accurate than whisper base.en). Used when the model files
+    and the sherpa-onnx package are available.
+  - whisper: whisper.cpp via persistent whisper-server or one-shot subprocess.
+    Automatic fallback when Parakeet is unavailable or fails.
 
 Endpoints:
   POST /transcribe        — One-shot: accept audio bytes, return transcription
   POST /transcribe/start  — PTT: start mic recording
   POST /transcribe/stop   — PTT: stop recording, transcribe, return text
-  GET  /status            — Server health and loaded model
+  GET  /status            — Server health, active engine and loaded model
   GET  /logs              — Recent log entries (circular buffer, 200 max)
   GET  /models            — List available models on disk
-  PUT  /model             — Switch the active model
+  PUT  /model             — Switch the active model (whisper models or parakeet)
   POST /models/benchmark  — Benchmark models against a test audio clip
 """
 
@@ -30,7 +37,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.2.0"
 
 # --- Configuration ---
 
@@ -44,6 +51,14 @@ ALLOWED_ORIGIN = os.environ.get(
 PORT = int(os.environ.get("WHISPER_PORT", "9876"))
 WHISPER_SERVER_PORT = int(os.environ.get("WHISPER_SERVER_PORT", "9878"))
 NOISE_REDUCTION = os.environ.get("WHISPER_NOISE_REDUCTION", "0").lower() in ("1", "true", "yes")
+
+# Parakeet engine (sherpa-onnx). STT_ENGINE: "auto" prefers parakeet when
+# available, "whisper" forces whisper.cpp, "parakeet" requires parakeet.
+STT_ENGINE = os.environ.get("STT_ENGINE", "auto").lower()
+PARAKEET_MODEL_NAME = "parakeet-tdt-0.6b-v2"
+PARAKEET_DIR_NAME = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
+PARAKEET_CATALOG_SIZE_MB = 640
+PARAKEET_THREADS = int(os.environ.get("PARAKEET_THREADS", "4"))
 
 # --- Runtime settings (mutable via /settings API) ---
 
@@ -64,6 +79,7 @@ def get_noise_reduction() -> bool:
 
 # --- State ---
 
+active_engine = "whisper"  # "whisper" or "parakeet"
 model_path = ""
 model_name = ""
 model_size_mb = 0
@@ -296,6 +312,140 @@ def _transcribe_via_server(wav_path: str) -> tuple[str, int]:
 atexit.register(stop_whisper_server)
 
 
+# --- Parakeet engine (sherpa-onnx, in-process) ---
+
+_parakeet_recognizer = None
+
+
+def find_parakeet_model_files() -> dict | None:
+    """Locate the Parakeet ONNX model files under MODEL_DIR.
+
+    Returns a dict of paths (encoder/decoder/joiner/tokens) or None if the
+    model is not downloaded. Prefers int8-quantized files, falls back to fp32.
+    """
+    base = os.path.join(MODEL_DIR, PARAKEET_DIR_NAME)
+    if not os.path.isdir(base):
+        return None
+    for enc, dec, joi in [
+        ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx"),
+        ("encoder.onnx", "decoder.onnx", "joiner.onnx"),
+    ]:
+        paths = {
+            "encoder": os.path.join(base, enc),
+            "decoder": os.path.join(base, dec),
+            "joiner": os.path.join(base, joi),
+            "tokens": os.path.join(base, "tokens.txt"),
+        }
+        if all(os.path.isfile(p) for p in paths.values()):
+            return paths
+    return None
+
+
+def parakeet_model_size_mb() -> int:
+    """Total on-disk size of the Parakeet model directory in MB."""
+    base = os.path.join(MODEL_DIR, PARAKEET_DIR_NAME)
+    total = 0
+    for root, _, files in os.walk(base):
+        for fname in files:
+            try:
+                total += os.path.getsize(os.path.join(root, fname))
+            except OSError:
+                pass
+    return round(total / (1024 * 1024))
+
+
+def load_parakeet() -> bool:
+    """Load the Parakeet model via sherpa-onnx (in-process, loaded once).
+
+    Returns True if the recognizer is ready. Safe to call repeatedly.
+    """
+    global _parakeet_recognizer
+
+    if _parakeet_recognizer is not None:
+        return True
+
+    files = find_parakeet_model_files()
+    if files is None:
+        add_log("info", f"Parakeet model not found in {MODEL_DIR} — run: ./update-model.sh parakeet")
+        return False
+
+    try:
+        import sherpa_onnx
+    except ImportError:
+        add_log("warn", "sherpa-onnx not installed — run: pip install sherpa-onnx numpy")
+        return False
+
+    t0 = time.time()
+    try:
+        _parakeet_recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+            encoder=files["encoder"],
+            decoder=files["decoder"],
+            joiner=files["joiner"],
+            tokens=files["tokens"],
+            num_threads=PARAKEET_THREADS,
+            model_type="nemo_transducer",
+        )
+    except Exception as e:
+        add_log("error", f"Failed to load Parakeet model: {e}")
+        _parakeet_recognizer = None
+        return False
+
+    load_ms = int((time.time() - t0) * 1000)
+    add_log("info", f"Parakeet model loaded in {load_ms}ms ({PARAKEET_THREADS} threads)")
+    return True
+
+
+def unload_parakeet():
+    """Release the Parakeet recognizer (frees ~700MB RAM)."""
+    global _parakeet_recognizer
+    if _parakeet_recognizer is not None:
+        _parakeet_recognizer = None
+        add_log("info", "Parakeet model unloaded")
+
+
+def _read_wav_float32(wav_path: str):
+    """Read a 16-bit PCM WAV as (float32 samples in [-1, 1], sample_rate)."""
+    import array
+    import wave
+
+    with wave.open(wav_path, "rb") as w:
+        sample_rate = w.getframerate()
+        n_channels = w.getnchannels()
+        sample_width = w.getsampwidth()
+        frames = w.readframes(w.getnframes())
+
+    if sample_width != 2:
+        raise RuntimeError(f"Unsupported WAV sample width: {sample_width} bytes")
+
+    samples = array.array("h", frames)
+    if n_channels > 1:
+        samples = samples[::n_channels]
+
+    try:
+        import numpy as np
+        audio = np.asarray(samples, dtype=np.float32) / 32768.0
+    except ImportError:
+        # sherpa-onnx accepts any buffer of float32 via pybind11
+        audio = array.array("f", (s / 32768.0 for s in samples))
+    return audio, sample_rate
+
+
+def run_parakeet_raw(wav_path: str) -> tuple[str, int]:
+    """Run Parakeet on a WAV file. Returns (raw text, duration_ms)."""
+    if _parakeet_recognizer is None:
+        raise RuntimeError("Parakeet model not loaded")
+
+    audio, sample_rate = _read_wav_float32(wav_path)
+
+    t0 = time.time()
+    stream = _parakeet_recognizer.create_stream()
+    stream.accept_waveform(sample_rate, audio)
+    _parakeet_recognizer.decode_stream(stream)
+    duration_ms = int((time.time() - t0) * 1000)
+
+    return stream.result.text.strip(), duration_ms
+
+
 def detect_audio_format():
     """Detect whether AAC or AMR-WB recording works on this device.
 
@@ -496,6 +646,43 @@ def _get_vad_flags() -> list[str]:
 # Cache detected flags (populated on first call)
 _whisper_extra_flags: list[str] | None = None
 
+SILENCE_MARKERS = ["[BLANK_AUDIO]", "(silence)", "[silence]"]
+
+
+def _postprocess_text(text: str, source: str) -> str:
+    """Shared transcription cleanup: strip silence markers, collapse
+    whitespace, apply word corrections."""
+    for marker in SILENCE_MARKERS:
+        text = text.replace(marker, "")
+    # Collapse all whitespace (including newlines between segments) into single spaces
+    text = " ".join(text.split())
+
+    if not text:
+        add_log("warn", f"{source}: no speech detected")
+
+    if text and word_corrections:
+        corrected = apply_corrections(text)
+        if corrected != text:
+            add_log("info", f"Corrections applied: {repr(text)} -> {repr(corrected)}")
+            text = corrected
+    return text
+
+
+def run_transcription(wav_path: str) -> tuple[str, int]:
+    """Transcribe a WAV file with the active engine. Returns (text, duration_ms).
+
+    Uses Parakeet (in-process sherpa-onnx) when active, falling back to
+    whisper.cpp if Parakeet is unavailable or fails.
+    """
+    if active_engine == "parakeet" and _parakeet_recognizer is not None:
+        try:
+            text, duration_ms = run_parakeet_raw(wav_path)
+            add_log("info", f"Parakeet: took={duration_ms}ms")
+            return _postprocess_text(text, "Parakeet"), duration_ms
+        except Exception as e:
+            add_log("warn", f"Parakeet failed ({e}), falling back to whisper")
+    return run_whisper(wav_path)
+
 
 def run_whisper(wav_path: str) -> tuple[str, int]:
     """Run whisper.cpp on a WAV file. Returns (text, duration_ms).
@@ -513,24 +700,7 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
         try:
             text, duration_ms = _transcribe_via_server(wav_path)
             add_log("info", f"Whisper (server): took={duration_ms}ms")
-
-            # Filter silence markers
-            for marker in ["[BLANK_AUDIO]", "(silence)", "[silence]"]:
-                text = text.replace(marker, "")
-            # Collapse all whitespace (including newlines between segments) into single spaces
-            text = " ".join(text.split())
-
-            if not text:
-                add_log("warn", "Whisper (server): no speech detected")
-
-            # Apply word corrections
-            if text and word_corrections:
-                corrected = apply_corrections(text)
-                if corrected != text:
-                    add_log("info", f"Corrections applied: {repr(text)} -> {repr(corrected)}")
-                    text = corrected
-
-            return text, duration_ms
+            return _postprocess_text(text, "Whisper (server)"), duration_ms
         except Exception as e:
             add_log("warn", f"Whisper server request failed ({e}), falling back to subprocess")
 
@@ -567,28 +737,7 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
             add_log("info", f"Whisper stderr: {line.strip()}")
 
     # Parse output — whisper.cpp prints transcription to stdout
-    raw_text = result.stdout.strip()
-    text = raw_text
-    # Filter out silence/blank markers
-    silence_markers = ["[BLANK_AUDIO]", "(silence)", "[silence]"]
-    for marker in silence_markers:
-        text = text.replace(marker, "")
-    # Collapse all whitespace (including newlines between segments) into single spaces
-    text = " ".join(text.split())
-
-    if not text and raw_text:
-        add_log("warn", f"Whisper returned only silence markers: {repr(raw_text)}")
-    elif not text:
-        add_log("warn", "Whisper returned empty output — no speech detected")
-
-    # Apply word corrections
-    if text and word_corrections:
-        corrected = apply_corrections(text)
-        if corrected != text:
-            add_log("info", f"Corrections applied: {repr(text)} -> {repr(corrected)}")
-            text = corrected
-
-    return text, duration_ms
+    return _postprocess_text(result.stdout.strip(), "Whisper"), duration_ms
 
 
 # --- CORS helpers ---
@@ -643,7 +792,7 @@ def transcribe():
                     # Maybe it's already a WAV — try directly
                     wav_path = input_path
 
-                text, duration_ms = run_whisper(wav_path)
+                text, duration_ms = run_transcription(wav_path)
                 wav_size = os.path.getsize(wav_path)
                 audio_duration_sec = round((wav_size - 44) / 32000, 1)  # 16kHz mono PCM
                 speed_ratio = round(audio_duration_sec / (duration_ms / 1000), 1) if duration_ms > 0 else 0
@@ -750,7 +899,7 @@ def transcribe_stop():
                 add_log("error", "Failed to transcode recording")
                 return jsonify({"error": "transcode_failed", "message": "Failed to convert audio to WAV."}), 500
 
-            text, duration_ms = run_whisper(wav_path)
+            text, duration_ms = run_transcription(wav_path)
             wav_size = os.path.getsize(wav_path)
             audio_duration_sec = round((wav_size - 44) / 32000, 1)  # 16kHz mono PCM
             speed_ratio = round(audio_duration_sec / (duration_ms / 1000), 1) if duration_ms > 0 else 0
@@ -782,6 +931,7 @@ def status():
         return jsonify({
             "status": "ready",
             "version": SERVER_VERSION,
+            "engine": active_engine,
             "model": model_name,
             "model_size_mb": model_size_mb,
             "recording": is_recording,
@@ -791,6 +941,7 @@ def status():
         return jsonify({
             "status": "error",
             "version": SERVER_VERSION,
+            "engine": active_engine,
             "model": None,
             "message": "Model not loaded",
         })
@@ -811,7 +962,7 @@ def debug_test_pipeline():
     if not model_loaded:
         return jsonify({"error": "model_not_loaded"}), 503
 
-    diag = {"audio_format": audio_format, "audio_ext": audio_ext, "steps": []}
+    diag = {"audio_format": audio_format, "audio_ext": audio_ext, "engine": active_engine, "steps": []}
 
     with tempfile.TemporaryDirectory() as td:
         raw_file = os.path.join(td, f"test.{audio_ext}")
@@ -879,32 +1030,45 @@ def debug_test_pipeline():
         except Exception as e:
             diag["steps"].append({"step": "audio_analysis", "error": str(e)})
 
-        # Step 4: Run whisper
-        global _whisper_extra_flags
-        whisper_bin = WHISPER_BIN or find_whisper_bin()
-        if _whisper_extra_flags is None:
-            _whisper_extra_flags = _detect_whisper_flags()
-        whisper_cmd = [
-            whisper_bin, "--model", model_path, "--language", "en",
-            *_whisper_extra_flags, "--file", wav_file,
-        ]
-        diag["whisper_cmd"] = " ".join(whisper_cmd)
-        t0 = time.time()
-        whisper_result = subprocess.run(
-            whisper_cmd, capture_output=True, text=True, timeout=60,
-        )
-        whisper_ms = int((time.time() - t0) * 1000)
-        diag["steps"].append({
-            "step": "whisper",
-            "exit_code": whisper_result.returncode,
-            "duration_ms": whisper_ms,
-            "raw_stdout": whisper_result.stdout[:500],
-            "stderr_tail": "\n".join(whisper_result.stderr.strip().splitlines()[-10:]) if whisper_result.stderr else "",
-        })
+        # Step 4: Run the active transcription engine
+        if active_engine == "parakeet" and _parakeet_recognizer is not None:
+            try:
+                raw_text, engine_ms = run_parakeet_raw(wav_file)
+                diag["steps"].append({
+                    "step": "parakeet",
+                    "duration_ms": engine_ms,
+                    "raw_text": raw_text[:500],
+                })
+            except Exception as e:
+                diag["steps"].append({"step": "parakeet", "error": str(e)})
+                return jsonify(diag), 500
+        else:
+            global _whisper_extra_flags
+            whisper_bin = WHISPER_BIN or find_whisper_bin()
+            if _whisper_extra_flags is None:
+                _whisper_extra_flags = _detect_whisper_flags()
+            whisper_cmd = [
+                whisper_bin, "--model", model_path, "--language", "en",
+                *_whisper_extra_flags, "--file", wav_file,
+            ]
+            diag["whisper_cmd"] = " ".join(whisper_cmd)
+            t0 = time.time()
+            whisper_result = subprocess.run(
+                whisper_cmd, capture_output=True, text=True, timeout=60,
+            )
+            whisper_ms = int((time.time() - t0) * 1000)
+            diag["steps"].append({
+                "step": "whisper",
+                "exit_code": whisper_result.returncode,
+                "duration_ms": whisper_ms,
+                "raw_stdout": whisper_result.stdout[:500],
+                "stderr_tail": "\n".join(whisper_result.stderr.strip().splitlines()[-10:]) if whisper_result.stderr else "",
+            })
+            raw_text = whisper_result.stdout.strip()
 
         # Final text
-        text = whisper_result.stdout.strip()
-        for marker in ["[BLANK_AUDIO]", "(silence)", "[silence]"]:
+        text = raw_text
+        for marker in SILENCE_MARKERS:
             text = text.replace(marker, "")
         text = text.strip()
         diag["final_text"] = text
@@ -1064,18 +1228,22 @@ def _do_benchmark():
         use_vad = data.get("use_vad", False)
         duration = max(2, min(10, int(duration)))
 
-    # Determine which models to benchmark
+    # Determine which models to benchmark. Parakeet runs through its own
+    # in-process engine, not whisper-cli, so it's handled separately.
     all_models = list_models()
     downloaded = [m for m in all_models if m["downloaded"]]
     if not downloaded:
         return jsonify({"error": "no_models", "message": "No models downloaded."}), 400
 
     if requested_models:
-        targets = [m for m in downloaded if m["name"] in requested_models]
-        if not targets:
+        selected = [m for m in downloaded if m["name"] in requested_models]
+        if not selected:
             return jsonify({"error": "no_matching_models", "message": "None of the requested models are downloaded."}), 400
     else:
-        targets = downloaded
+        selected = downloaded
+
+    targets = [m for m in selected if m["name"] != PARAKEET_MODEL_NAME]
+    parakeet_target = next((m for m in selected if m["name"] == PARAKEET_MODEL_NAME), None)
 
     add_log("info", f"Benchmark starting: {len(targets)} models, duration={duration}s, vad={use_vad}")
 
@@ -1141,6 +1309,38 @@ def _do_benchmark():
                     "error": str(e),
                 })
                 add_log("error", f"Benchmark {m['name']} failed: {e}")
+
+        # Benchmark Parakeet via its in-process engine
+        if parakeet_target is not None:
+            add_log("info", f"Benchmarking {PARAKEET_MODEL_NAME}...")
+            try:
+                if not load_parakeet():
+                    raise RuntimeError("Parakeet engine unavailable (sherpa-onnx not installed?)")
+                text, inference_ms = run_parakeet_raw(wav_path)
+                speed_ratio = round(audio_duration_sec / (inference_ms / 1000), 1) if inference_ms > 0 else 0
+                results.append({
+                    "model": PARAKEET_MODEL_NAME,
+                    "size_mb": parakeet_target["size_mb"],
+                    "text": text,
+                    "inference_ms": inference_ms,
+                    "speed_ratio": speed_ratio,
+                    "error": None,
+                })
+                add_log("info", f"Benchmark {PARAKEET_MODEL_NAME}: {inference_ms}ms, {speed_ratio}x, \"{text[:60]}\"")
+            except Exception as e:
+                results.append({
+                    "model": PARAKEET_MODEL_NAME,
+                    "size_mb": parakeet_target["size_mb"],
+                    "text": "",
+                    "inference_ms": 0,
+                    "speed_ratio": 0,
+                    "error": str(e),
+                })
+                add_log("error", f"Benchmark {PARAKEET_MODEL_NAME} failed: {e}")
+            finally:
+                # Don't keep ~700MB of Parakeet in RAM if whisper is the active engine
+                if active_engine != "parakeet":
+                    unload_parakeet()
 
         add_log("info", f"Benchmark complete: {len(results)} models tested")
 
@@ -1212,6 +1412,17 @@ def list_models() -> list[dict]:
                 "active": os.path.join(MODEL_DIR, f"ggml-{name}.bin") == model_path,
             })
 
+    # Parakeet engine (sherpa-onnx model directory, not a ggml file)
+    parakeet_downloaded = find_parakeet_model_files() is not None
+    models.append({
+        "name": PARAKEET_MODEL_NAME,
+        "file": PARAKEET_DIR_NAME,
+        "size_mb": parakeet_model_size_mb() if parakeet_downloaded else PARAKEET_CATALOG_SIZE_MB,
+        "description": "NVIDIA Parakeet via sherpa-onnx — faster and more accurate than whisper",
+        "downloaded": parakeet_downloaded,
+        "active": active_engine == "parakeet",
+    })
+
     return models
 
 
@@ -1223,11 +1434,11 @@ def get_models():
 
 @app.route("/model", methods=["PUT"])
 def put_model():
-    """Switch the active Whisper model.
+    """Switch the active model — a Whisper model or the Parakeet engine.
 
     Body: {"model": "small.en"}  (the model name, not the filename)
     """
-    global model_path, model_name, model_size_mb, model_loaded
+    global model_path, model_name, model_size_mb, model_loaded, active_engine
 
     if recording_process is not None:
         return jsonify({
@@ -1250,6 +1461,34 @@ def put_model():
         }), 400
 
     requested = requested.strip()
+
+    # Switch to the Parakeet engine
+    if requested == PARAKEET_MODEL_NAME:
+        if find_parakeet_model_files() is None:
+            return jsonify({
+                "error": "model_not_found",
+                "message": f"Parakeet model not found. Run: ./update-model.sh parakeet",
+            }), 404
+        if not load_parakeet():
+            return jsonify({
+                "error": "engine_unavailable",
+                "message": "sherpa-onnx not installed. In Termux run: pip install sherpa-onnx numpy",
+            }), 500
+
+        active_engine = "parakeet"
+        model_name = PARAKEET_MODEL_NAME
+        model_size_mb = parakeet_model_size_mb()
+        model_loaded = True
+        # Free whisper-server RAM — whisper falls back to subprocess mode if needed
+        stop_whisper_server()
+        add_log("info", f"Engine switched to: parakeet ({model_size_mb} MB)")
+        return jsonify({
+            "ok": True,
+            "model": model_name,
+            "model_size_mb": model_size_mb,
+        })
+
+    # Switch to a Whisper model
     new_file = f"ggml-{requested}.bin"
     new_path = os.path.join(MODEL_DIR, new_file)
 
@@ -1259,15 +1498,20 @@ def put_model():
             "message": f"Model file not found: {new_file}",
         }), 404
 
+    was_parakeet = active_engine == "parakeet"
+    active_engine = "whisper"
     model_path = new_path
     model_name = requested
     model_size_mb = round(os.path.getsize(new_path) / (1024 * 1024))
     model_loaded = True
     add_log("info", f"Model switched to: {model_name} ({model_size_mb} MB)")
 
-    # Restart the persistent whisper-server with the new model
-    if _whisper_server_mode or _whisper_server_proc is not None:
-        restart_whisper_server(new_path)
+    # Free Parakeet RAM when leaving the parakeet engine
+    if was_parakeet:
+        unload_parakeet()
+
+    # (Re)start the persistent whisper-server with the new model
+    restart_whisper_server(new_path)
 
     return jsonify({
         "ok": True,
@@ -1278,21 +1522,45 @@ def put_model():
 
 # --- Main ---
 
+def select_engine():
+    """Pick the transcription engine at startup.
+
+    Prefers Parakeet (faster + more accurate) when its model and sherpa-onnx
+    are available, unless STT_ENGINE=whisper forces whisper.cpp.
+    """
+    global active_engine, model_name, model_size_mb, model_loaded
+
+    if STT_ENGINE in ("auto", "parakeet") and load_parakeet():
+        active_engine = "parakeet"
+        model_name = PARAKEET_MODEL_NAME
+        model_size_mb = parakeet_model_size_mb()
+        model_loaded = True
+        add_log("info", f"Engine: parakeet ({model_name}, {model_size_mb} MB)")
+        return
+
+    if STT_ENGINE == "parakeet":
+        add_log("error", "STT_ENGINE=parakeet but Parakeet is unavailable — falling back to whisper")
+
+    active_engine = "whisper"
+    add_log("info", f"Engine: whisper ({model_name or 'no model'})")
+
+
 if __name__ == "__main__":
     _init_runtime_settings()
     load_corrections()
     load_model()
+    select_engine()
     detect_audio_format()
 
     whisper_bin = WHISPER_BIN or find_whisper_bin()
     if whisper_bin:
         add_log("info", f"Whisper binary: {whisper_bin}")
-    else:
+    elif active_engine == "whisper":
         add_log("error", "Whisper binary not found — transcription will fail")
 
-    # Try to start persistent whisper-server (model loaded once, fast inference).
-    # Falls back to one-shot subprocess mode if the binary isn't available.
-    if model_loaded:
+    # Persistent whisper-server (model loaded once, fast inference) only makes
+    # sense when whisper is the active engine — Parakeet is already in-process.
+    if model_loaded and active_engine == "whisper":
         if start_whisper_server(model_path):
             add_log("info", "Using persistent whisper-server mode (model loaded once)")
         else:

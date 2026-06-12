@@ -77,7 +77,7 @@ class TestListModels:
         assert len(active) == 1
         assert active[0]["name"] == "base.en"
 
-    def test_model_info_fields(self, client):
+    def test_model_info_fields(self, client, server):
         resp = client.get("/models")
         models = resp.get_json()["models"]
         for m in models:
@@ -87,8 +87,12 @@ class TestListModels:
             assert "description" in m
             assert "downloaded" in m
             assert "active" in m
-            assert m["file"].startswith("ggml-")
-            assert m["file"].endswith(".bin")
+            if m["name"] == server.PARAKEET_MODEL_NAME:
+                # Parakeet is a sherpa-onnx model directory, not a ggml file
+                assert m["file"] == server.PARAKEET_DIR_NAME
+            else:
+                assert m["file"].startswith("ggml-")
+                assert m["file"].endswith(".bin")
 
     def test_description_from_catalog(self, client, server):
         resp = client.get("/models")
@@ -131,8 +135,8 @@ class TestListModels:
         client = server.app.test_client()
         resp = client.get("/models")
         models = resp.get_json()["models"]
-        # Should still return catalog entries (all not downloaded)
-        assert len(models) == len(server.MODEL_CATALOG)
+        # Should still return catalog entries plus parakeet (all not downloaded)
+        assert len(models) == len(server.MODEL_CATALOG) + 1
         assert all(m["downloaded"] is False for m in models)
 
     def test_missing_model_dir_returns_catalog(self, server, tmp_path):
@@ -141,7 +145,7 @@ class TestListModels:
         client = server.app.test_client()
         resp = client.get("/models")
         models = resp.get_json()["models"]
-        assert len(models) == len(server.MODEL_CATALOG)
+        assert len(models) == len(server.MODEL_CATALOG) + 1
         assert all(m["downloaded"] is False for m in models)
 
 
