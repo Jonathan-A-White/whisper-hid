@@ -111,10 +111,12 @@ if [ "$MODEL_NAME" = "parakeet" ] || [ "$MODEL_NAME" = "parakeet-tdt-0.6b-v2" ];
     fi
     echo ""
     echo "Downloaded: $DEST_DIR ($(du -sh "$DEST_DIR" | cut -f1))"
-    if ! python3 -c "import sherpa_onnx" 2>/dev/null; then
+    if ! python3 -c "import sherpa_onnx, numpy" 2>/dev/null \
+        && ! python3 -c "import onnxruntime, numpy" 2>/dev/null; then
         echo ""
-        echo "NOTE: the sherpa-onnx Python package is not installed yet."
-        echo "Install it with: pip install sherpa-onnx numpy"
+        echo "NOTE: no Parakeet backend installed yet. In Termux run:"
+        echo "  pkg install python-numpy python-onnxruntime"
+        echo "(elsewhere: pip install sherpa-onnx numpy)"
     fi
     echo ""
     echo "Restart the Whisper server to use Parakeet (preferred automatically):"
