@@ -24,8 +24,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.BufferedInputStream
 import java.io.OutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -188,13 +187,6 @@ class BluetoothHidService : Service() {
         authToken = bytes.joinToString("") { "%02x".format(it) }
         addLog("info", "Auth token generated")
     }
-
-    private data class HttpRequest(
-        val method: String,
-        val path: String,
-        val headers: Map<String, String>,
-        val body: String
-    )
 
     private fun validateToken(request: HttpRequest): Boolean {
         val authHeader = request.headers["authorization"] ?: ""
@@ -653,41 +645,12 @@ class BluetoothHidService : Service() {
     private fun handleConnection(socket: Socket) {
         try {
             socket.soTimeout = 10000
-            val input = BufferedReader(InputStreamReader(socket.getInputStream()))
+            val input = BufferedInputStream(socket.getInputStream())
             val output = socket.getOutputStream()
 
-            val requestLine = input.readLine() ?: return
-            val parts = requestLine.split(" ", limit = 3)
-            if (parts.size < 2) return
-            val method = parts[0]
-            val path = parts[1]
+            val request = HttpRequest.parse(input) ?: return
 
-            val headers = mutableMapOf<String, String>()
-            var line = input.readLine()
-            while (line != null && line.isNotEmpty()) {
-                val colonIdx = line.indexOf(':')
-                if (colonIdx > 0) {
-                    headers[line.substring(0, colonIdx).trim().lowercase()] =
-                        line.substring(colonIdx + 1).trim()
-                }
-                line = input.readLine()
-            }
-
-            val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
-            val body = if (contentLength > 0) {
-                val buf = CharArray(contentLength)
-                var read = 0
-                while (read < contentLength) {
-                    val n = input.read(buf, read, contentLength - read)
-                    if (n == -1) break
-                    read += n
-                }
-                String(buf, 0, read)
-            } else ""
-
-            val request = HttpRequest(method, path, headers, body)
-
-            when (path) {
+            when (request.path) {
                 "/type" -> handleType(request, output)
                 "/backspace" -> handleBackspace(request, output)
                 "/status" -> handleStatus(request, output)
