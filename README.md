@@ -31,7 +31,7 @@ Turn your Android phone into a speech-to-text Bluetooth keyboard. Whisper runs l
 Three components running on the same phone:
 
 1. **PWA (Browser)** — UI and orchestration, hosted on GitHub Pages, saved to homescreen
-2. **Termux (whisper-server.py)** — Python+Flask HTTP server on localhost:9876, captures mic audio and runs Whisper speech-to-text
+2. **Termux (whisper-server.py)** — Python+Flask HTTP server on localhost:9876, captures mic audio and runs speech-to-text (Parakeet or Whisper)
 3. **Kotlin App (BT HID)** — Headless Bluetooth HID service with HTTP API on localhost:9877, sends keystrokes to the paired laptop
 
 ## Requirements
@@ -98,7 +98,16 @@ Build the APK yourself with `./gradlew assembleDebug`
 [`latest-apk` release](../../releases/tag/latest-apk) (updated by CI on every
 push to main).
 
-## Whisper Models
+## Speech Models
+
+Two transcription engines are supported:
+
+- **Parakeet** (NVIDIA Parakeet TDT 0.6B, recommended) — runs in-process via
+  onnxruntime. Faster *and* more accurate than every whisper option below.
+  Installed automatically by `setup-termux.sh`; the server prefers it at
+  startup whenever it's present.
+- **whisper.cpp** — the original engine, used as the automatic fallback
+  when Parakeet isn't installed (or if it ever fails).
 
 Swap models for different speed/accuracy trade-offs:
 
@@ -108,12 +117,27 @@ Swap models for different speed/accuracy trade-offs:
 
 | Model | Size | Speed (S24 Ultra) | Accuracy |
 |-------|------|-------------------|----------|
+| `parakeet` | ~640 MB | ~10x real-time | Best (comparable to whisper large-v3) |
 | `tiny.en` | 75 MB | ~10x real-time | Basic |
 | `base.en` | 142 MB | ~5x real-time | Good |
 | `small.en` | 466 MB | ~2x real-time | Better |
 | `distil-small.en` | ~350 MB | ~2-3x real-time | Better (optimized) |
 
-Default model is `base.en`.
+Default whisper model is `base.en`. The active model can also be switched
+from the PWA: **Settings > Speech model**.
+
+### Adding Parakeet to an existing install
+
+Phones set up before Parakeet support need three commands in Termux:
+
+```bash
+pkg install python-numpy python-onnxruntime   # prebuilt — pip can't build these on Android
+~/whisper-hid/scripts/update-model.sh parakeet # ~480 MB download
+cd ~/whisper-stt && ./stop-whisper-server.sh && ~/whisper-hid/scripts/start-whisper-server.sh
+```
+
+Verify with `curl http://localhost:9876/status` — it should report
+`"engine": "parakeet"`, and the PWA's top bar will show the active model.
 
 ## Project Structure
 
@@ -131,6 +155,7 @@ whisper-hid/
 │   ├── bootstrap.sh              # One-command new-phone setup (curl | bash)
 │   ├── setup-termux.sh
 │   ├── whisper-server.py
+│   ├── parakeet_onnx.py          # Parakeet inference on onnxruntime + numpy
 │   ├── start-whisper-server.sh
 │   ├── stop-whisper-server.sh
 │   └── update-model.sh
