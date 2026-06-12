@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import type { Settings, WhisperStatus } from "../types";
 import type { TranscriptionResult } from "../hooks/useWhisper";
 import { EditBuffer } from "./EditBuffer";
+import { SymbolModeToggle } from "./SymbolModeToggle";
 
 interface TalkViewProps {
   whisper: {
@@ -148,6 +149,9 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
                 ? `Connected to ${hid.status?.device}`
                 : "Not connected"}
             </p>
+
+            {/* Symbol mode quick toggle */}
+            <SymbolModeToggle />
 
             {/* Last transcription */}
             {lastText && !lastError && (

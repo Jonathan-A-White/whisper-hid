@@ -159,6 +159,46 @@ export async function putCorrections(
   return res.json();
 }
 
+// --- Symbol replacements (spoken word -> symbol) ---
+
+export type SymbolSpacing = "both" | "left" | "right" | "none";
+
+export interface SymbolEntry {
+  phrase: string;
+  symbol: string;
+  spacing: SymbolSpacing;
+}
+
+export interface SymbolConfig {
+  enabled: boolean;
+  entries: SymbolEntry[];
+}
+
+export async function getSymbols(): Promise<SymbolConfig> {
+  const res = await whisperFetch("/symbols");
+  return res.json();
+}
+
+export async function putSymbols(
+  partial: Partial<SymbolConfig>
+): Promise<SymbolConfig> {
+  const res = await whisperFetch("/symbols", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(partial),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || "Failed to save symbols");
+  }
+  return res.json();
+}
+
+export async function resetSymbols(): Promise<SymbolConfig> {
+  const res = await whisperFetch("/symbols/reset", { method: "POST" });
+  return res.json();
+}
+
 // --- Whisper Server Settings ---
 
 export interface WhisperSettings {

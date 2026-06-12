@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { ModelInfo, Settings } from "../types";
 import { whisperStatus, hidStatus, getModels, switchModel, getWhisperSettings, putWhisperSettings } from "../lib/api";
 import { WordCorrections } from "./WordCorrections";
+import { SymbolReplacements } from "./SymbolReplacements";
 import { ModelBenchmark } from "./ModelBenchmark";
 
 interface SettingsViewProps {
@@ -251,6 +252,11 @@ export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewPr
       {/* Word corrections */}
       <div className="pt-4 border-t border-gray-800">
         <WordCorrections />
+      </div>
+
+      {/* Symbol replacements */}
+      <div className="pt-4 border-t border-gray-800">
+        <SymbolReplacements />
       </div>
 
       {/* Setup guide */}
