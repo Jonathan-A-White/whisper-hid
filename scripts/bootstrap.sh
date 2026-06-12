@@ -39,7 +39,13 @@ if [ "$ARCH" != "aarch64" ]; then
     exit 1
 fi
 
-step "[1/5] Installing git and curl..."
+step "[1/5] Updating packages and installing git + curl..."
+# Upgrade everything BEFORE installing git/curl. Installing them alone can
+# pull in a new libcurl while its dependencies (e.g. libngtcp2) stay old,
+# which breaks git-remote-https with "CANNOT LINK EXECUTABLE ... cannot
+# locate symbol". A full upgrade keeps the libraries in sync.
+pkg update -y < /dev/null
+pkg upgrade -y -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold < /dev/null
 pkg install -y git curl < /dev/null
 
 step "[2/5] Cloning whisper-hid repo..."
