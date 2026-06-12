@@ -13,16 +13,16 @@ echo "=== Whisper Bluetooth Keyboard — Termux Setup ==="
 echo ""
 
 # 1. Update packages
-echo "[1/7] Updating Termux packages..."
+echo "[1/8] Updating Termux packages..."
 pkg update -y && pkg upgrade -y
 
 # 2. Install build tools and Python
-echo "[2/7] Installing build tools and Python..."
-pkg install -y clang cmake make git tmux termux-api socat ffmpeg python
+echo "[2/8] Installing build tools and Python..."
+pkg install -y clang cmake make git tmux termux-api socat ffmpeg python bzip2
 pip install flask
 
 # 3. Clone whisper.cpp
-echo "[3/7] Cloning whisper.cpp..."
+echo "[3/8] Cloning whisper.cpp..."
 mkdir -p "$INSTALL_DIR"
 if [ -d "$INSTALL_DIR/whisper.cpp" ]; then
     echo "  whisper.cpp already cloned, pulling latest..."
@@ -32,7 +32,7 @@ else
 fi
 
 # 4. Build whisper.cpp with ARM64 NEON flags
-echo "[4/7] Building whisper.cpp (this may take a few minutes)..."
+echo "[4/8] Building whisper.cpp (this may take a few minutes)..."
 cd "$INSTALL_DIR/whisper.cpp"
 WHISPER_BIN_CLI="$INSTALL_DIR/whisper.cpp/build/bin/whisper-cli"
 WHISPER_BIN_MAIN="$INSTALL_DIR/whisper.cpp/build/bin/main"
@@ -69,7 +69,7 @@ else
 fi
 
 # 5. Download default model
-echo "[5/7] Downloading default model ($DEFAULT_MODEL)..."
+echo "[5/8] Downloading default model ($DEFAULT_MODEL)..."
 mkdir -p "$INSTALL_DIR/models"
 if [ -f "$INSTALL_DIR/models/$DEFAULT_MODEL" ]; then
     echo "  Model already exists, skipping download."
@@ -78,8 +78,45 @@ else
         "$MODEL_REPO/$DEFAULT_MODEL"
 fi
 
-# 6. Copy scripts
-echo "[6/7] Setting up scripts..."
+# 6. Parakeet engine (optional but recommended — faster + more accurate).
+# Failure here is non-fatal: the server falls back to whisper.cpp.
+echo "[6/8] Installing Parakeet engine (sherpa-onnx, optional)..."
+PARAKEET_DIR="sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
+PARAKEET_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${PARAKEET_DIR}.tar.bz2"
+PARAKEET_OK=0
+if python3 -c "import sherpa_onnx, numpy" 2>/dev/null; then
+    echo "  sherpa-onnx already installed."
+    PARAKEET_OK=1
+else
+    echo "  Installing sherpa-onnx (may compile from source — this can take a while)..."
+    if pip install sherpa-onnx numpy; then
+        PARAKEET_OK=1
+    else
+        echo "  WARNING: sherpa-onnx install failed — Parakeet engine unavailable."
+        echo "  The server will use whisper.cpp instead. To retry later:"
+        echo "    pip install sherpa-onnx numpy && ./update-model.sh parakeet"
+    fi
+fi
+if [ "$PARAKEET_OK" = "1" ]; then
+    if [ -f "$INSTALL_DIR/models/$PARAKEET_DIR/tokens.txt" ]; then
+        echo "  Parakeet model already downloaded."
+    else
+        echo "  Downloading Parakeet model (~480 MB)..."
+        if curl -L --progress-bar -o "$INSTALL_DIR/models/${PARAKEET_DIR}.tar.bz2" "$PARAKEET_URL" \
+            && tar xjf "$INSTALL_DIR/models/${PARAKEET_DIR}.tar.bz2" -C "$INSTALL_DIR/models"; then
+            rm -f "$INSTALL_DIR/models/${PARAKEET_DIR}.tar.bz2"
+            echo "  Parakeet model installed."
+        else
+            rm -f "$INSTALL_DIR/models/${PARAKEET_DIR}.tar.bz2"
+            PARAKEET_OK=0
+            echo "  WARNING: Parakeet model download failed. To retry later:"
+            echo "    ./update-model.sh parakeet"
+        fi
+    fi
+fi
+
+# 7. Copy scripts
+echo "[7/8] Setting up scripts..."
 MISSING_SCRIPTS=()
 for script in whisper-server.py start-whisper-server.sh stop-whisper-server.sh update-model.sh diagnose-sigill.sh; do
     if [ -f "$SCRIPT_DIR/$script" ]; then
@@ -104,8 +141,8 @@ if [ ${#MISSING_SCRIPTS[@]} -gt 0 ]; then
     exit 1
 fi
 
-# 7. Set up Termux:Boot auto-start (optional)
-echo "[7/7] Setting up Termux:Boot auto-start..."
+# 8. Set up Termux:Boot auto-start (optional)
+echo "[8/8] Setting up Termux:Boot auto-start..."
 BOOT_DIR="$HOME/.termux/boot"
 mkdir -p "$BOOT_DIR"
 cat > "$BOOT_DIR/start-whisper-server" << 'BOOTEOF'
@@ -135,6 +172,11 @@ if [ -x "$WHISPER_BIN_SERVER" ]; then
 else
     echo "Whisper server: not built (will use subprocess mode)"
 fi
+if [ "$PARAKEET_OK" = "1" ] && [ -f "$INSTALL_DIR/models/$PARAKEET_DIR/tokens.txt" ]; then
+    echo "Parakeet engine: installed (used automatically — faster + more accurate)"
+else
+    echo "Parakeet engine: not installed (whisper.cpp will be used)"
+fi
 echo ""
 echo "Next steps:"
 echo "  1. Grant Termux:API microphone permission"
@@ -147,5 +189,5 @@ echo "  cd $(dirname $INSTALL_DIR)/whisper-hid"
 echo "  scripts/stop-whisper-server.sh && git pull && scripts/start-whisper-server.sh"
 echo ""
 echo "To swap models: ./update-model.sh <model-name>"
-echo "  Available: tiny.en, base.en, small.en, distil-small.en"
+echo "  Available: parakeet, tiny.en, base.en, small.en, distil-small.en"
 echo "  Note: Restart the Whisper server after swapping models."

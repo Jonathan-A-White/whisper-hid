@@ -144,7 +144,7 @@ export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewPr
       {/* Whisper model selector */}
       <div>
         <label className="text-sm text-gray-300 block mb-1">
-          Whisper model
+          Speech model
         </label>
         {models.length > 0 ? (
           <>

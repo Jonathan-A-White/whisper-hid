@@ -69,6 +69,30 @@ When adding new whisper flags:
 - Always check `--help` output before assuming a flag exists
 - See `_detect_whisper_flags()` in whisper-server.py
 
+### Parakeet engine (sherpa-onnx)
+The server supports a second transcription engine: NVIDIA Parakeet TDT 0.6B v2
+(int8) via the sherpa-onnx Python package, run in-process. It is both faster
+(~10x real-time on phone-class CPUs vs ~2x for whisper base.en) and more
+accurate (WER comparable to whisper large-v3). When the model directory and
+sherpa-onnx are present, the server prefers Parakeet automatically at startup.
+
+- **Engine selection**: `STT_ENGINE` env var — `auto` (default, prefers
+  parakeet), `whisper` (force whisper.cpp), `parakeet`
+- **Model files**: `models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/`
+  (encoder/decoder/joiner .int8.onnx + tokens.txt, ~630 MB on disk)
+- **Install**: `pip install sherpa-onnx numpy` + `./update-model.sh parakeet`
+  (setup-termux.sh does both automatically, non-fatally)
+- **Switching**: `PUT /model {"model": "parakeet-tdt-0.6b-v2"}` — also listed
+  in `GET /models` and the PWA model dropdown like any whisper model
+- **Status**: `GET /status` includes `"engine": "parakeet" | "whisper"`
+- **Fallback**: any Parakeet failure falls back to whisper.cpp per-request;
+  switching engines frees the inactive engine's RAM (parakeet ~700 MB loaded)
+- **Threads**: `PARAKEET_THREADS` env var (default 4)
+- **numpy gotcha**: sherpa-onnx does NOT declare numpy as a pip dependency but
+  needs it at runtime — always install both
+- Tests: `pytest scripts/tests/test_parakeet.py` (uses a fake sherpa_onnx
+  module injected into sys.modules — no model download needed)
+
 ### Persistent whisper-server mode
 The server can use a long-running `whisper-server` process (from whisper.cpp) that
 loads the model once and serves inference requests via HTTP on port 9878. This
