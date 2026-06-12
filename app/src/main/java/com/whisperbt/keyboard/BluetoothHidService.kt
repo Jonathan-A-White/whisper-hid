@@ -11,8 +11,11 @@ import android.bluetooth.BluetoothHidDevice
 import android.bluetooth.BluetoothHidDeviceAppSdpSettings
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Binder
@@ -48,6 +51,10 @@ class BluetoothHidService : Service() {
         private val RECONNECT_DELAYS_MS = longArrayOf(2000, 4000, 8000, 16000, 30000)
         private const val RECONNECT_SLOW_MS = 30000L
         private const val RECONNECT_MAX_DURATION_MS = 5 * 60 * 1000L
+
+        // SCO startup often fails right after the headset profile connects — retry
+        private const val SCO_RETRY_DELAY_MS = 3000L
+        private const val SCO_MAX_RETRIES = 5
 
         // Standard USB HID keyboard descriptor (boot protocol compatible).
         private val HID_DESCRIPTOR = byteArrayOf(
@@ -117,6 +124,15 @@ class BluetoothHidService : Service() {
     private var reconnectStartTime = 0L
     private var reconnectRunnable: Runnable? = null
 
+    // Headset mic (SCO) state
+    private var audioManager: AudioManager? = null
+    private var scoReceiver: BroadcastReceiver? = null
+    private var audioDeviceCallback: AudioDeviceCallback? = null
+    private var scoRetryRunnable: Runnable? = null
+    private var scoRetryCount = 0
+    private var scoRequested = false
+    @Volatile private var scoConnected = false
+
     // Log buffer (circular)
     private val logBuffer = ConcurrentLinkedDeque<LogEntry>()
 
@@ -147,7 +163,7 @@ class BluetoothHidService : Service() {
         }
 
         startHttpServer()
-        enableSco()
+        setupHeadsetMicRouting()
         registerHidDevice()
     }
 
@@ -158,7 +174,7 @@ class BluetoothHidService : Service() {
     override fun onDestroy() {
         cancelReconnect()
         stopHttpServer()
-        disableSco()
+        teardownHeadsetMicRouting()
         unregisterHidDevice()
         executor.shutdown()
         super.onDestroy()
@@ -188,45 +204,150 @@ class BluetoothHidService : Service() {
         return false
     }
 
-    // --- SCO Management ---
+    // --- Headset mic (SCO) routing ---
+    //
+    // Mic capture happens in Termux (a different app), so routing must be
+    // system-wide: startBluetoothSco()/setBluetoothScoOn() force ALL mic capture
+    // onto the headset. setCommunicationDevice() — the Android 12+ replacement —
+    // only routes the calling app's own communication audio and would leave
+    // Termux recording from the phone mic, so the deprecated API is used
+    // deliberately on every Android version.
 
-    private fun enableSco() {
-        try {
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                val devices = audioManager.availableCommunicationDevices
-                val btDevice = devices.firstOrNull {
-                    it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+    private fun setupHeadsetMicRouting() {
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager = am
+
+        scoReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val state = intent?.getIntExtra(
+                    AudioManager.EXTRA_SCO_AUDIO_STATE, AudioManager.SCO_AUDIO_STATE_ERROR
+                )
+                when (state) {
+                    AudioManager.SCO_AUDIO_STATE_CONNECTED -> onScoConnected(am)
+                    AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
+                        if (scoConnected) {
+                            scoConnected = false
+                            addLog("info", "Headset mic SCO disconnected")
+                        }
+                        if (scoRequested && hasBluetoothMic()) scheduleScoRetry()
+                    }
                 }
-                if (btDevice != null) {
-                    audioManager.setCommunicationDevice(btDevice)
-                    addLog("info", "SCO enabled via setCommunicationDevice")
-                } else {
-                    addLog("info", "No BT SCO device found, using fallback")
-                    @Suppress("DEPRECATION")
-                    audioManager.startBluetoothSco()
-                }
-            } else {
-                @Suppress("DEPRECATION")
-                audioManager.startBluetoothSco()
-                addLog("info", "SCO enabled via startBluetoothSco")
             }
-        } catch (e: Exception) {
-            addLog("error", "Failed to enable SCO: ${e.message}")
+        }
+        val scoFilter = IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(scoReceiver, scoFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(scoReceiver, scoFilter)
+        }
+
+        audioDeviceCallback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+                if (addedDevices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO && it.isSource }) {
+                    addLog("info", "Bluetooth headset mic detected: ${bluetoothMicName() ?: "unknown"}")
+                    enableSco()
+                }
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+                if (removedDevices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO } &&
+                    !hasBluetoothMic()
+                ) {
+                    addLog("info", "Bluetooth headset removed — mic back to phone")
+                    disableSco()
+                }
+            }
+        }
+        am.registerAudioDeviceCallback(audioDeviceCallback, handler)
+
+        if (hasBluetoothMic()) {
+            addLog("info", "Bluetooth headset mic present: ${bluetoothMicName() ?: "unknown"}")
+            enableSco()
         }
     }
 
-    private fun disableSco() {
+    private fun teardownHeadsetMicRouting() {
+        disableSco()
+        scoReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
+        scoReceiver = null
+        audioDeviceCallback?.let { audioManager?.unregisterAudioDeviceCallback(it) }
+        audioDeviceCallback = null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun onScoConnected(am: AudioManager) {
+        scoConnected = true
+        scoRetryCount = 0
+        cancelScoRetry()
         try {
-            val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                audioManager.clearCommunicationDevice()
-            } else {
-                @Suppress("DEPRECATION")
-                audioManager.stopBluetoothSco()
+            am.isBluetoothScoOn = true
+        } catch (e: Exception) {
+            addLog("error", "setBluetoothScoOn failed: ${e.message}")
+        }
+        addLog("info", "Headset mic active: ${bluetoothMicName() ?: "Bluetooth headset"}")
+    }
+
+    fun hasBluetoothMic(): Boolean =
+        audioManager?.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            ?.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO } == true
+
+    fun bluetoothMicName(): String? =
+        audioManager?.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            ?.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+            ?.productName?.toString()
+
+    fun isHeadsetMicActive(): Boolean = scoConnected
+
+    private fun enableSco() {
+        val am = audioManager ?: return
+        if (!hasBluetoothMic()) return
+        scoRequested = true
+        scoRetryCount = 0
+        startSco(am)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun startSco(am: AudioManager) {
+        try {
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            am.startBluetoothSco()
+            scheduleScoRetry()
+        } catch (e: Exception) {
+            addLog("error", "Failed to start Bluetooth SCO: ${e.message}")
+        }
+    }
+
+    private fun scheduleScoRetry() {
+        cancelScoRetry()
+        if (scoRetryCount >= SCO_MAX_RETRIES) {
+            addLog("error", "Headset mic SCO failed after $SCO_MAX_RETRIES attempts — using phone mic")
+            return
+        }
+        scoRetryRunnable = Runnable {
+            if (scoRequested && !scoConnected && hasBluetoothMic()) {
+                scoRetryCount++
+                addLog("info", "Retrying headset mic SCO (attempt $scoRetryCount)")
+                audioManager?.let { startSco(it) }
             }
-            audioManager.mode = AudioManager.MODE_NORMAL
+        }
+        handler.postDelayed(scoRetryRunnable!!, SCO_RETRY_DELAY_MS)
+    }
+
+    private fun cancelScoRetry() {
+        scoRetryRunnable?.let { handler.removeCallbacks(it) }
+        scoRetryRunnable = null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun disableSco() {
+        scoRequested = false
+        scoConnected = false
+        cancelScoRetry()
+        val am = audioManager ?: return
+        try {
+            am.isBluetoothScoOn = false
+            am.stopBluetoothSco()
+            am.mode = AudioManager.MODE_NORMAL
         } catch (e: Exception) {
             Log.w(TAG, "Failed to disable SCO", e)
         }
@@ -316,7 +437,6 @@ class BluetoothHidService : Service() {
                     btState = BtState.CONNECTED
                     cancelReconnect()
                     reconnectAttempt = 0
-                    enableSco()
                     val name = try { device?.name } catch (_: SecurityException) { "Unknown" }
                     addLog("info", "BT connected to $name")
                     updateNotification("Connected to $name")
@@ -702,6 +822,12 @@ class BluetoothHidService : Service() {
         json.put("service", "running")
         json.put("version", BuildConfig.APP_VERSION)
         json.put("uptime_seconds", (System.currentTimeMillis() - startTime) / 1000)
+
+        val headsetMic = JSONObject()
+            .put("available", hasBluetoothMic())
+            .put("active", isHeadsetMicActive())
+        bluetoothMicName()?.let { headsetMic.put("device", it) }
+        json.put("headset_mic", headsetMic)
 
         val deviceName = getConnectedDeviceName()
         when (btState) {
