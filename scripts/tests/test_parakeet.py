@@ -82,16 +82,17 @@ def write_wav(path, num_samples=1600, sample_rate=16000, value=1000):
 @pytest.fixture
 def server(tmp_path):
     """Fresh server module with MODEL_DIR pointed at a temp dir."""
-    saved = sys.modules.pop("sherpa_onnx", None)
+    saved = {name: sys.modules.pop(name, None) for name in ["sherpa_onnx", "parakeet_onnx"]}
     mod = _load_server_module()
     mod.MODEL_DIR = str(tmp_path / "models")
     os.makedirs(mod.MODEL_DIR, exist_ok=True)
     yield mod
     mod._parakeet_recognizer = None
-    if saved is not None:
-        sys.modules["sherpa_onnx"] = saved
-    else:
-        sys.modules.pop("sherpa_onnx", None)
+    for name, value in saved.items():
+        if value is not None:
+            sys.modules[name] = value
+        else:
+            sys.modules.pop(name, None)
 
 
 class TestFindParakeetModelFiles:
@@ -122,10 +123,38 @@ class TestLoadParakeet:
         sys.modules["sherpa_onnx"] = make_fake_sherpa()
         assert server.load_parakeet() is False
 
-    def test_sherpa_not_installed(self, server, tmp_path):
+    def test_no_backend_installed(self, server, tmp_path):
         write_parakeet_model(tmp_path / "models")
-        sys.modules["sherpa_onnx"] = None  # makes "import sherpa_onnx" fail
+        # make both backend imports fail
+        sys.modules["sherpa_onnx"] = None
+        sys.modules["parakeet_onnx"] = None
         assert server.load_parakeet() is False
+
+    def test_falls_back_to_onnxruntime_backend(self, server, tmp_path):
+        write_parakeet_model(tmp_path / "models")
+        sys.modules["sherpa_onnx"] = None  # sherpa-onnx not installed
+
+        captured = {}
+
+        class FakeOnnxRecognizer:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        fake_mod = types.ModuleType("parakeet_onnx")
+        fake_mod.ParakeetOnnxRecognizer = FakeOnnxRecognizer
+        sys.modules["parakeet_onnx"] = fake_mod
+
+        assert server.load_parakeet() is True
+        assert server._parakeet_backend == "onnxruntime"
+        assert captured["encoder"].endswith("encoder.int8.onnx")
+        assert captured["num_threads"] == server.PARAKEET_THREADS
+
+    def test_sherpa_preferred_over_onnxruntime(self, server, tmp_path):
+        write_parakeet_model(tmp_path / "models")
+        sys.modules["sherpa_onnx"] = make_fake_sherpa()
+        sys.modules["parakeet_onnx"] = None  # would fail if tried
+        assert server.load_parakeet() is True
+        assert server._parakeet_backend == "sherpa-onnx"
 
     def test_loads_with_fake_sherpa(self, server, tmp_path):
         write_parakeet_model(tmp_path / "models")
@@ -303,9 +332,10 @@ class TestSwitchEngine:
         assert resp.get_json()["error"] == "model_not_found"
         assert server.active_engine == "whisper"
 
-    def test_switch_to_parakeet_sherpa_missing(self, server, client, tmp_path):
+    def test_switch_to_parakeet_no_backend(self, server, client, tmp_path):
         write_parakeet_model(tmp_path / "models")
-        sys.modules["sherpa_onnx"] = None  # import fails
+        sys.modules["sherpa_onnx"] = None  # both backend imports fail
+        sys.modules["parakeet_onnx"] = None
 
         resp = client.put(
             "/model",
@@ -360,3 +390,51 @@ class TestSelectEngine:
         server.select_engine()
         assert server.active_engine == "whisper"
         assert server._parakeet_recognizer is None
+
+
+class TestParakeetOnnxFbank:
+    """Numeric tests for the bundled onnxruntime backend's feature extraction.
+
+    Golden values were verified against kaldi-native-fbank (max abs diff
+    2.6e-4) and the full pipeline against the upstream sherpa-onnx
+    reference implementation (identical transcripts on real audio).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_numpy(self):
+        pytest.importorskip("numpy")
+
+    @pytest.fixture
+    def mod(self):
+        # parakeet_onnx imports onnxruntime at module level; the fbank
+        # functions only need numpy, so stub onnxruntime if it's absent.
+        try:
+            import onnxruntime  # noqa: F401
+        except ImportError:
+            sys.modules["onnxruntime"] = types.ModuleType("onnxruntime")
+        sys.modules.pop("parakeet_onnx", None)
+        import parakeet_onnx
+        yield parakeet_onnx
+        sys.modules.pop("parakeet_onnx", None)
+
+    def test_mel_filterbank_shape(self, mod):
+        w = mod.mel_filterbank()
+        assert w.shape == (128, 257)
+        assert (w >= 0).all()
+        assert abs(float(w[0].sum()) - 0.028378) < 1e-4
+
+    def test_fbank_golden_values(self, mod):
+        import numpy as np
+        t = np.arange(8000) / 16000.0
+        audio = (0.5 * np.sin(2 * np.pi * 440.0 * t)).astype(np.float32)
+        f = mod.compute_fbank(audio)
+        assert f.shape == (48, 128)
+        assert abs(float(f.mean()) - (-14.4146)) < 0.01
+        assert abs(float(f[10, 20]) - (-2.0295)) < 0.01
+        # 440Hz peak lands in mel bin 18
+        assert int(f[0].argmax()) == 18
+
+    def test_fbank_short_audio(self, mod):
+        import numpy as np
+        f = mod.compute_fbank(np.zeros(100, dtype=np.float32))
+        assert f.shape == (0, 128)

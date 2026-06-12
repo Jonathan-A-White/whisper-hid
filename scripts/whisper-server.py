@@ -312,9 +312,10 @@ def _transcribe_via_server(wav_path: str) -> tuple[str, int]:
 atexit.register(stop_whisper_server)
 
 
-# --- Parakeet engine (sherpa-onnx, in-process) ---
+# --- Parakeet engine (sherpa-onnx or onnxruntime, in-process) ---
 
 _parakeet_recognizer = None
+_parakeet_backend = ""  # "sherpa-onnx" or "onnxruntime"
 
 
 def find_parakeet_model_files() -> dict | None:
@@ -354,12 +355,45 @@ def parakeet_model_size_mb() -> int:
     return round(total / (1024 * 1024))
 
 
+def _create_parakeet_recognizer(files: dict):
+    """Build a Parakeet recognizer from whichever backend is installed.
+
+    Prefers the sherpa-onnx package (C++ decode loop); falls back to the
+    bundled parakeet_onnx module which needs only onnxruntime + numpy
+    (both available as prebuilt Termux packages — no pip compilation).
+    Returns (recognizer, backend_name).
+    """
+    try:
+        import sherpa_onnx
+        recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+            encoder=files["encoder"],
+            decoder=files["decoder"],
+            joiner=files["joiner"],
+            tokens=files["tokens"],
+            num_threads=PARAKEET_THREADS,
+            model_type="nemo_transducer",
+        )
+        return recognizer, "sherpa-onnx"
+    except ImportError:
+        pass
+
+    from parakeet_onnx import ParakeetOnnxRecognizer
+    recognizer = ParakeetOnnxRecognizer(
+        encoder=files["encoder"],
+        decoder=files["decoder"],
+        joiner=files["joiner"],
+        tokens=files["tokens"],
+        num_threads=PARAKEET_THREADS,
+    )
+    return recognizer, "onnxruntime"
+
+
 def load_parakeet() -> bool:
-    """Load the Parakeet model via sherpa-onnx (in-process, loaded once).
+    """Load the Parakeet model (in-process, loaded once).
 
     Returns True if the recognizer is ready. Safe to call repeatedly.
     """
-    global _parakeet_recognizer
+    global _parakeet_recognizer, _parakeet_backend
 
     if _parakeet_recognizer is not None:
         return True
@@ -369,37 +403,32 @@ def load_parakeet() -> bool:
         add_log("info", f"Parakeet model not found in {MODEL_DIR} — run: ./update-model.sh parakeet")
         return False
 
-    try:
-        import sherpa_onnx
-    except ImportError:
-        add_log("warn", "sherpa-onnx not installed — run: pip install sherpa-onnx numpy")
-        return False
-
     t0 = time.time()
     try:
-        _parakeet_recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
-            encoder=files["encoder"],
-            decoder=files["decoder"],
-            joiner=files["joiner"],
-            tokens=files["tokens"],
-            num_threads=PARAKEET_THREADS,
-            model_type="nemo_transducer",
+        _parakeet_recognizer, _parakeet_backend = _create_parakeet_recognizer(files)
+    except ImportError:
+        add_log(
+            "warn",
+            "No Parakeet backend installed — in Termux run: "
+            "pkg install python-numpy python-onnxruntime (or: pip install sherpa-onnx numpy)",
         )
+        return False
     except Exception as e:
         add_log("error", f"Failed to load Parakeet model: {e}")
         _parakeet_recognizer = None
         return False
 
     load_ms = int((time.time() - t0) * 1000)
-    add_log("info", f"Parakeet model loaded in {load_ms}ms ({PARAKEET_THREADS} threads)")
+    add_log("info", f"Parakeet model loaded in {load_ms}ms (backend={_parakeet_backend}, {PARAKEET_THREADS} threads)")
     return True
 
 
 def unload_parakeet():
     """Release the Parakeet recognizer (frees ~700MB RAM)."""
-    global _parakeet_recognizer
+    global _parakeet_recognizer, _parakeet_backend
     if _parakeet_recognizer is not None:
         _parakeet_recognizer = None
+        _parakeet_backend = ""
         add_log("info", "Parakeet model unloaded")
 
 
@@ -932,6 +961,7 @@ def status():
             "status": "ready",
             "version": SERVER_VERSION,
             "engine": active_engine,
+            "engine_backend": _parakeet_backend if active_engine == "parakeet" else "whisper.cpp",
             "model": model_name,
             "model_size_mb": model_size_mb,
             "recording": is_recording,
@@ -1472,7 +1502,7 @@ def put_model():
         if not load_parakeet():
             return jsonify({
                 "error": "engine_unavailable",
-                "message": "sherpa-onnx not installed. In Termux run: pip install sherpa-onnx numpy",
+                "message": "No Parakeet backend. In Termux run: pkg install python-numpy python-onnxruntime",
             }), 500
 
         active_engine = "parakeet"

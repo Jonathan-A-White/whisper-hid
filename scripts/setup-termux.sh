@@ -84,17 +84,21 @@ echo "[6/8] Installing Parakeet engine (sherpa-onnx, optional)..."
 PARAKEET_DIR="sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
 PARAKEET_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${PARAKEET_DIR}.tar.bz2"
 PARAKEET_OK=0
-if python3 -c "import sherpa_onnx, numpy" 2>/dev/null; then
-    echo "  sherpa-onnx already installed."
+# Either backend works: sherpa-onnx (pip, non-Termux) or onnxruntime
+# (prebuilt Termux package — pip can't build numpy/onnxruntime against
+# Android's libc, so use pkg, never pip, for these).
+if python3 -c "import sherpa_onnx, numpy" 2>/dev/null || python3 -c "import onnxruntime, numpy" 2>/dev/null; then
+    echo "  Parakeet backend already installed."
     PARAKEET_OK=1
 else
-    echo "  Installing sherpa-onnx (may compile from source — this can take a while)..."
-    if pip install sherpa-onnx numpy; then
+    echo "  Installing onnxruntime + numpy (prebuilt Termux packages)..."
+    pkg install -y python-numpy python-onnxruntime || true
+    if python3 -c "import onnxruntime, numpy" 2>/dev/null; then
         PARAKEET_OK=1
     else
-        echo "  WARNING: sherpa-onnx install failed — Parakeet engine unavailable."
+        echo "  WARNING: onnxruntime/numpy install failed — Parakeet engine unavailable."
         echo "  The server will use whisper.cpp instead. To retry later:"
-        echo "    pip install sherpa-onnx numpy && ./update-model.sh parakeet"
+        echo "    pkg install python-numpy python-onnxruntime && ./update-model.sh parakeet"
     fi
 fi
 if [ "$PARAKEET_OK" = "1" ]; then
@@ -118,7 +122,7 @@ fi
 # 7. Copy scripts
 echo "[7/8] Setting up scripts..."
 MISSING_SCRIPTS=()
-for script in whisper-server.py start-whisper-server.sh stop-whisper-server.sh update-model.sh diagnose-sigill.sh; do
+for script in whisper-server.py parakeet_onnx.py start-whisper-server.sh stop-whisper-server.sh update-model.sh diagnose-sigill.sh; do
     if [ -f "$SCRIPT_DIR/$script" ]; then
         cp "$SCRIPT_DIR/$script" "$INSTALL_DIR/$script"
         chmod +x "$INSTALL_DIR/$script"

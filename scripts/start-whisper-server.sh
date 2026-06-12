@@ -16,7 +16,7 @@ fi
 # "git pull && start-whisper-server.sh" picks up code changes
 # without requiring a full setup-termux.sh re-run.
 REPO_SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
-for _script in whisper-server.py start-whisper-server.sh stop-whisper-server.sh; do
+for _script in whisper-server.py parakeet_onnx.py start-whisper-server.sh stop-whisper-server.sh; do
     _src="$REPO_SCRIPTS_DIR/$_script"
     _dst="$INSTALL_DIR/$_script"
     if [ -f "$_src" ] && [ "$_src" != "$_dst" ]; then
