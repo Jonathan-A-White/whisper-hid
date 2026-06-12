@@ -192,6 +192,38 @@ was added, the CORS header had to be updated to include PUT — otherwise
 browsers block the preflight request silently. If adding new HTTP methods
 to any endpoint, update `cors_headers()` in whisper-server.py.
 
+## Symbol replacements (spoken words → symbols)
+
+For dictating to Claude Code and other CLIs: spoken phrases are replaced by
+symbols, e.g. "forward slash help" → "/help", "foo dash bar" → "foo-bar".
+
+### How it works
+- `scripts/symbol-replacements.json` stores `{"enabled": bool, "entries": [...]}`;
+  each entry is `{"phrase", "symbol", "spacing"}`
+- `spacing` controls which adjacent spaces the symbol absorbs: `both`
+  (foo-bar), `left` (key: value), `right` ("(x"), `none` (plain word swap)
+- `apply_symbols()` in whisper-server.py runs in `_postprocess_text()` AFTER
+  word corrections (so corrections can fix misheard phrases first). Matching
+  is case-insensitive, whole-phrase (`\b` boundaries), longest phrase first.
+- Only applied while `enabled` is true ("symbol mode") — words like "dash"
+  occur in normal prose, so the mode is toggled per dictation context.
+- A default starter set (`DEFAULT_SYMBOLS`) is materialized into the JSON
+  file on first run, so users can edit/delete built-in entries individually.
+  The file is gitignored (per-device, user-owned).
+
+### API endpoints
+- `GET /symbols` — current config
+- `PUT /symbols` — partial merge: `enabled` and/or `entries` (lets the PWA
+  toggle flip `enabled` without resending the entry list)
+- `POST /symbols/reset` — restore default entries (keeps `enabled`)
+- `GET /status` includes `"symbol_mode": bool`
+- Tests: `pytest scripts/tests/test_symbols.py`
+
+### PWA UI
+- `SymbolReplacements` component in Settings — entry list with per-entry
+  spacing dropdown, add form, restore-defaults button, enable toggle
+- `SymbolModeToggle` pill on the Talk screen for quick on/off switching
+
 ## Component versioning
 All three components expose version info, displayed together in PWA Settings.
 Versions use the format `1.0.<commit-count>+<short-hash>` and are auto-generated

@@ -17,6 +17,9 @@ Endpoints:
   GET  /models            — List available models on disk
   PUT  /model             — Switch the active model (whisper models or parakeet)
   POST /models/benchmark  — Benchmark models against a test audio clip
+  GET  /symbols           — Symbol replacement config (spoken word -> symbol)
+  PUT  /symbols           — Update symbol replacement config (partial merge)
+  POST /symbols/reset     — Restore default symbol entries
 """
 
 import atexit
@@ -37,7 +40,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 
 # --- Configuration ---
 
@@ -134,6 +137,129 @@ def apply_corrections(text: str) -> str:
     for wrong, right in word_corrections.items():
         pattern = re.compile(r'\b' + re.escape(wrong) + r'\b', re.IGNORECASE)
         text = pattern.sub(right, text)
+    return text
+
+
+# --- Symbol replacements (spoken words -> symbols, e.g. "forward slash" -> "/") ---
+
+SYMBOLS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "symbol-replacements.json"
+)
+
+SYMBOL_SPACINGS = ("both", "left", "right", "none")
+
+# Starter set, materialized into SYMBOLS_FILE on first run so every entry
+# can be edited or deleted like a user-added one.
+DEFAULT_SYMBOLS = [
+    {"phrase": "forward slash", "symbol": "/", "spacing": "both"},
+    {"phrase": "back slash", "symbol": "\\", "spacing": "both"},
+    {"phrase": "dash", "symbol": "-", "spacing": "both"},
+    {"phrase": "dot", "symbol": ".", "spacing": "both"},
+    {"phrase": "underscore", "symbol": "_", "spacing": "both"},
+    {"phrase": "backtick", "symbol": "`", "spacing": "both"},
+    {"phrase": "pipe", "symbol": "|", "spacing": "both"},
+    {"phrase": "at sign", "symbol": "@", "spacing": "both"},
+    {"phrase": "hash", "symbol": "#", "spacing": "both"},
+    {"phrase": "tilde", "symbol": "~", "spacing": "both"},
+    {"phrase": "colon", "symbol": ":", "spacing": "left"},
+    {"phrase": "comma", "symbol": ",", "spacing": "left"},
+    {"phrase": "open paren", "symbol": "(", "spacing": "right"},
+    {"phrase": "close paren", "symbol": ")", "spacing": "left"},
+]
+
+symbol_settings: dict = {"enabled": False, "entries": []}
+
+
+def _valid_symbol_entry(e) -> bool:
+    return (
+        isinstance(e, dict)
+        and isinstance(e.get("phrase"), str)
+        and bool(e["phrase"].strip())
+        and isinstance(e.get("symbol"), str)
+        and bool(e["symbol"])
+        and e.get("spacing", "both") in SYMBOL_SPACINGS
+    )
+
+
+def _normalize_symbol_entry(e: dict) -> dict:
+    return {
+        "phrase": e["phrase"].strip(),
+        "symbol": e["symbol"],
+        "spacing": e.get("spacing", "both"),
+    }
+
+
+def load_symbols():
+    """Load symbol replacements from JSON file.
+
+    On first run (no file) the default starter set is written to disk so
+    the user owns every entry from then on.
+    """
+    global symbol_settings
+    if not os.path.isfile(SYMBOLS_FILE):
+        symbol_settings = {
+            "enabled": False,
+            "entries": [dict(e) for e in DEFAULT_SYMBOLS],
+        }
+        save_symbols()
+        return
+    try:
+        with open(SYMBOLS_FILE, "r") as f:
+            data = json.load(f)
+        entries = [
+            _normalize_symbol_entry(e)
+            for e in data.get("entries", [])
+            if _valid_symbol_entry(e)
+        ]
+        symbol_settings = {"enabled": bool(data.get("enabled", False)), "entries": entries}
+    except (json.JSONDecodeError, OSError):
+        # Corrupt file: fall back to defaults in memory, don't overwrite it
+        symbol_settings = {
+            "enabled": False,
+            "entries": [dict(e) for e in DEFAULT_SYMBOLS],
+        }
+
+
+def save_symbols():
+    """Save symbol replacements to JSON file."""
+    try:
+        with open(SYMBOLS_FILE, "w") as f:
+            json.dump(symbol_settings, f, indent=2)
+            f.write("\n")
+    except OSError as e:
+        add_log("error", f"Failed to save symbol replacements: {e}")
+
+
+def apply_symbols(text: str) -> str:
+    """Replace spoken symbol phrases with their symbols.
+
+    Case-insensitive whole-phrase matching. Each entry's "spacing" controls
+    which adjacent spaces the symbol absorbs:
+      both  — joins the surrounding words ("foo dash bar" -> "foo-bar")
+      left  — attaches to the previous word ("key colon value" -> "key: value")
+      right — attaches to the next word ("open paren x" -> "(x")
+      none  — plain word swap, spaces untouched
+    """
+    if not symbol_settings.get("enabled") or not symbol_settings.get("entries"):
+        return text
+    # Longest phrase first so "forward slash" wins over a bare "slash" entry
+    entries = sorted(
+        symbol_settings["entries"],
+        key=lambda e: len(e.get("phrase", "")),
+        reverse=True,
+    )
+    for entry in entries:
+        phrase = entry.get("phrase", "").strip()
+        symbol = entry.get("symbol", "")
+        if not phrase or not symbol:
+            continue
+        spacing = entry.get("spacing", "both")
+        inner = r"\s+".join(re.escape(w) for w in phrase.split())
+        left = r"\s*" if spacing in ("both", "left") else ""
+        right = r"\s*" if spacing in ("both", "right") else ""
+        pattern = re.compile(left + r"\b" + inner + r"\b" + right, re.IGNORECASE)
+        # Lambda replacement: symbols like "\" must not be parsed as regex escapes
+        text = pattern.sub(lambda m, s=symbol: s, text)
     return text
 
 
@@ -694,6 +820,12 @@ def _postprocess_text(text: str, source: str) -> str:
         if corrected != text:
             add_log("info", f"Corrections applied: {repr(text)} -> {repr(corrected)}")
             text = corrected
+
+    if text and symbol_settings.get("enabled"):
+        replaced = apply_symbols(text)
+        if replaced != text:
+            add_log("info", f"Symbols applied: {repr(text)} -> {repr(replaced)}")
+            text = replaced
     return text
 
 
@@ -966,6 +1098,7 @@ def status():
             "model_size_mb": model_size_mb,
             "recording": is_recording,
             "whisper_server_mode": _is_whisper_server_alive(),
+            "symbol_mode": bool(symbol_settings.get("enabled")),
         })
     else:
         return jsonify({
@@ -1128,6 +1261,56 @@ def put_corrections():
     save_corrections()
     add_log("info", f"Word corrections updated: {len(word_corrections)} entries")
     return jsonify(word_corrections)
+
+
+@app.route("/symbols", methods=["GET"])
+def get_symbols():
+    """Return the symbol replacement config: {"enabled": bool, "entries": [...]}."""
+    return jsonify(symbol_settings)
+
+
+@app.route("/symbols", methods=["PUT"])
+def put_symbols():
+    """Update the symbol replacement config.
+
+    Body keys are optional and merged:
+      {"enabled": bool, "entries": [{"phrase", "symbol", "spacing"?}]}
+    Omitted keys keep their current value, so the PWA toggle can flip
+    "enabled" without resending the entry list.
+    """
+    data = request.get_json(silent=True)
+    if data is None or not isinstance(data, dict):
+        return jsonify({"error": "invalid_body", "message": "Request body must be a JSON object."}), 400
+
+    if "enabled" in data and not isinstance(data["enabled"], bool):
+        return jsonify({"error": "invalid_value", "message": "'enabled' must be a boolean."}), 400
+
+    if "entries" in data:
+        entries = data["entries"]
+        if not isinstance(entries, list) or not all(_valid_symbol_entry(e) for e in entries):
+            return jsonify({
+                "error": "invalid_entry",
+                "message": "Each entry needs a non-empty 'phrase' and 'symbol', "
+                           f"and 'spacing' must be one of {list(SYMBOL_SPACINGS)}.",
+            }), 400
+
+    if "enabled" in data:
+        symbol_settings["enabled"] = data["enabled"]
+    if "entries" in data:
+        symbol_settings["entries"] = [_normalize_symbol_entry(e) for e in data["entries"]]
+
+    save_symbols()
+    add_log("info", f"Symbol replacements updated: enabled={symbol_settings['enabled']}, {len(symbol_settings['entries'])} entries")
+    return jsonify(symbol_settings)
+
+
+@app.route("/symbols/reset", methods=["POST"])
+def reset_symbols():
+    """Restore the default symbol entries (keeps the enabled flag)."""
+    symbol_settings["entries"] = [dict(e) for e in DEFAULT_SYMBOLS]
+    save_symbols()
+    add_log("info", "Symbol replacements reset to defaults")
+    return jsonify(symbol_settings)
 
 
 # --- Settings ---
@@ -1578,6 +1761,7 @@ def select_engine():
 if __name__ == "__main__":
     _init_runtime_settings()
     load_corrections()
+    load_symbols()
     load_model()
     select_engine()
     detect_audio_format()
