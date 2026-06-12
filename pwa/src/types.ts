@@ -18,6 +18,11 @@ export interface HidStatus {
   reconnect_max?: number;
   next_retry_seconds?: number;
   failure_reason?: string;
+  headset_mic?: {
+    available: boolean;
+    active: boolean;
+    device?: string;
+  };
 }
 
 export interface BtDevice {

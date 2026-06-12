@@ -20,6 +20,24 @@ sends keystrokes via Bluetooth HID.
 - Mic capture stays in Termux (browser can't reliably access BT headset mic)
 - Auth token generated per service session, passed via URL from Kotlin app to PWA
 
+## Bluetooth headset mic
+Termux records from Android's *default* input, so using a Bluetooth headset's
+mic requires system-wide SCO routing, handled by the Kotlin HID service
+(`BluetoothHidService`, "Headset mic (SCO) routing" section):
+- Uses the deprecated `startBluetoothSco()`/`setBluetoothScoOn()` APIs
+  **deliberately** — `setCommunicationDevice()` (the Android 12+ replacement)
+  only routes the calling app's own audio, and the recording happens in a
+  different app (Termux). Don't "modernize" this without testing cross-app.
+- An `AudioDeviceCallback` watches for BT SCO input devices, so routing
+  engages/disengages automatically as headsets connect/disconnect.
+- SCO startup is retried (it commonly fails right after profile connect);
+  `setBluetoothScoOn(true)` is applied once `ACTION_SCO_AUDIO_STATE_UPDATED`
+  reports connected.
+- State exposed in HID `/status` as `"headset_mic": {available, active, device}`;
+  the PWA StatusBar shows a 🎧 dot (green = headset mic in use).
+- While SCO is active, phone audio plays through the headset at call quality
+  (16 kHz mono) — acceptable for a dedicated dictation device.
+
 ## Build
 - Android app: `./gradlew assembleDebug` (output: app/build/outputs/apk/debug/)
 - PWA: `cd pwa && npm install && npm run build` (output: pwa/dist/)
