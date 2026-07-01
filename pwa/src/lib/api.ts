@@ -300,6 +300,23 @@ export async function hidConnect(address: string) {
   return res.json();
 }
 
+export async function hidHeadsetMic(enabled: boolean): Promise<{
+  ok: boolean;
+  available: boolean;
+  active: boolean;
+  enabled: boolean;
+  device?: string;
+}> {
+  const res = await hidFetch("/headset-mic", {
+    method: "PUT",
+    body: JSON.stringify({ enabled }),
+  });
+  if (res.status === 403) {
+    throw new Error("AUTH_FAILED");
+  }
+  return res.json();
+}
+
 export async function hidRestart() {
   const res = await hidFetch("/restart", { method: "POST" });
   if (res.status === 403) {

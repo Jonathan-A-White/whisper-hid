@@ -71,6 +71,23 @@ mic requires system-wide SCO routing, handled by the Kotlin HID service
   the headset), check `/logs` for "SCO keep-alive stream started" (should
   appear once per headset connect) and "Audio focus request denied" entries.
 
+### Zoom mode (release headset mic to another device)
+A headset has a single call-audio (SCO) channel. Because the HID service
+holds it continuously (keep-alive stream + auto-retry), a laptop sharing the
+same multipoint headset can never open its own channel — Zoom on the laptop
+gets no headset mic. "Zoom mode" releases the link without stopping anything:
+- `PUT /headset-mic {"enabled": false}` (auth required) calls `disableSco()`
+  and suppresses the auto-re-enable paths (the `headsetMicEnabled` flag
+  guards `enableSco()`); `enabled: true` reclaims the link. `GET /headset-mic`
+  returns the state unauthenticated; `/status` `headset_mic` includes
+  `"enabled"`.
+- The flag persists in SharedPreferences so a service restart mid-call
+  doesn't snatch the headset back from the laptop.
+- While released, BT HID typing still works and dictation falls back to the
+  phone's built-in mic.
+- PWA: `ZoomModeToggle` pill on the Talk screen (`hid.setHeadsetMic` in
+  `useHidService`); the StatusBar 🎧 dot turns gray while released.
+
 ## Build
 - Android app: `./gradlew assembleDebug` (output: app/build/outputs/apk/debug/)
 - PWA: `cd pwa && npm install && npm run build` (output: pwa/dist/)
