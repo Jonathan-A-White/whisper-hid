@@ -19,7 +19,9 @@ import android.media.AudioAttributes
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
+import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioTrack
 import android.os.Binder
 import android.os.Build
 import android.os.Handler
@@ -134,6 +136,9 @@ class BluetoothHidService : Service() {
     private var scoRequested = false
     @Volatile private var scoConnected = false
     private var audioFocusRequest: AudioFocusRequest? = null
+    private var keepAliveTrack: AudioTrack? = null
+    private var keepAliveThread: Thread? = null
+    @Volatile private var keepAliveRunning = false
 
     // Log buffer (circular)
     private val logBuffer = ConcurrentLinkedDeque<LogEntry>()
@@ -279,6 +284,7 @@ class BluetoothHidService : Service() {
         } catch (e: Exception) {
             addLog("error", "setBluetoothScoOn failed: ${e.message}")
         }
+        startScoKeepAlive()
         addLog("info", "Headset mic active: ${bluetoothMicName() ?: "Bluetooth headset"}")
     }
 
@@ -345,6 +351,83 @@ class BluetoothHidService : Service() {
         audioFocusRequest = null
     }
 
+    // Audio focus alone doesn't keep the SCO link alive on some devices
+    // (observed on Samsung/OneUI): the audio HAL reaps the link after ~15s
+    // because no active stream in THIS app is using it — Termux's mic reads
+    // are in a separate process the policy can't attribute to the link. Keep
+    // a continuous, inaudible output stream (silence) playing over the SCO
+    // channel so the link is always "in use" and never torn down. This is the
+    // output direction only, so it doesn't contend with Termux's mic capture;
+    // SCO is a single bidirectional connection, so keeping the output warm
+    // keeps the mic path up too.
+    private fun startScoKeepAlive() {
+        if (keepAliveRunning) return
+        val sampleRate = 16000
+        val minBuf = AudioTrack.getMinBufferSize(
+            sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
+        )
+        if (minBuf <= 0) {
+            addLog("error", "SCO keep-alive: invalid AudioTrack buffer size")
+            return
+        }
+        val track = try {
+            AudioTrack.Builder()
+                .setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(sampleRate)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build()
+                )
+                .setBufferSizeInBytes(minBuf * 2)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+        } catch (e: Exception) {
+            addLog("error", "SCO keep-alive: failed to create AudioTrack: ${e.message}")
+            return
+        }
+        keepAliveTrack = track
+        keepAliveRunning = true
+        keepAliveThread = Thread {
+            val silence = ShortArray(minBuf / 2)
+            try {
+                track.play()
+                while (keepAliveRunning) {
+                    // Blocking write paces the loop to real time.
+                    if (track.write(silence, 0, silence.size) < 0) break
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "SCO keep-alive write loop ended", e)
+            }
+        }.apply {
+            isDaemon = true
+            name = "sco-keepalive"
+            start()
+        }
+        addLog("info", "SCO keep-alive stream started")
+    }
+
+    private fun stopScoKeepAlive() {
+        if (!keepAliveRunning && keepAliveTrack == null) return
+        keepAliveRunning = false
+        keepAliveThread?.let {
+            it.interrupt()
+            try { it.join(500) } catch (_: InterruptedException) {}
+        }
+        keepAliveThread = null
+        keepAliveTrack?.let {
+            try { it.stop() } catch (_: Exception) {}
+            try { it.release() } catch (_: Exception) {}
+        }
+        keepAliveTrack = null
+    }
+
     private fun scheduleScoRetry() {
         cancelScoRetry()
         if (scoRetryCount >= SCO_MAX_RETRIES) {
@@ -371,6 +454,7 @@ class BluetoothHidService : Service() {
         scoRequested = false
         scoConnected = false
         cancelScoRetry()
+        stopScoKeepAlive()
         val am = audioManager ?: return
         try {
             am.isBluetoothScoOn = false
