@@ -59,6 +59,15 @@ class BluetoothHidService : Service() {
         private const val SCO_RETRY_DELAY_MS = 3000L
         private const val SCO_MAX_RETRIES = 5
 
+        // A BT HID host silently drops input reports for a short window right
+        // after STATE_CONNECTED (it's still re-enumerating / setting up the
+        // input pipe). sendReport() succeeds at the link layer, so the leading
+        // keystrokes look sent but never reach the host — the message arrives
+        // truncated at the front. Hold off the first keystroke until the link
+        // has settled. Only the first send after a (re)connect pays this cost;
+        // warm-link sends see zero added latency.
+        private const val CONNECT_SETTLE_MS = 1500L
+
         // Standard USB HID keyboard descriptor (boot protocol compatible).
         private val HID_DESCRIPTOR = byteArrayOf(
             0x05.toByte(), 0x01.toByte(), // Usage Page (Generic Desktop)
@@ -111,6 +120,10 @@ class BluetoothHidService : Service() {
     private var lastKnownDevice: BluetoothDevice? = null
     private var btState = BtState.IDLE
     var keystrokeDelayMs: Long = 10L
+
+    // Wall-clock time the current link reached CONNECTED, used to enforce the
+    // post-connect settle window before the first keystroke (see sendString).
+    @Volatile private var connectedAtMs: Long = 0L
 
     private val executor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
@@ -528,6 +541,7 @@ class BluetoothHidService : Service() {
                     connectedDevice = pluggedDevice
                     lastKnownDevice = pluggedDevice
                     btState = BtState.CONNECTED
+                    connectedAtMs = System.currentTimeMillis()
                     val name = try { pluggedDevice.name } catch (_: SecurityException) { "Unknown" }
                     addLog("info", "Already connected to $name")
                     updateNotification("Connected to $name")
@@ -548,6 +562,7 @@ class BluetoothHidService : Service() {
                     connectedDevice = device
                     lastKnownDevice = device
                     btState = BtState.CONNECTED
+                    connectedAtMs = System.currentTimeMillis()
                     cancelReconnect()
                     reconnectAttempt = 0
                     val name = try { device?.name } catch (_: SecurityException) { "Unknown" }
@@ -635,11 +650,30 @@ class BluetoothHidService : Service() {
 
     // --- Send keystrokes ---
 
+    // Block on the sender thread until the post-connect settle window has
+    // elapsed, so the host has finished setting up its input pipe before the
+    // first report. Runs inside the single-threaded executor, so it never
+    // blocks the HTTP handler that already returned 200. No-op once the link
+    // has been up longer than CONNECT_SETTLE_MS.
+    private fun waitForConnectSettle() {
+        val since = System.currentTimeMillis() - connectedAtMs
+        val remaining = CONNECT_SETTLE_MS - since
+        if (remaining > 0) {
+            addLog("info", "Waiting ${remaining}ms for HID link to settle before typing")
+            try {
+                Thread.sleep(remaining)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+    }
+
     fun sendString(text: String) {
         val device = connectedDevice ?: return
         val hid = hidDevice ?: return
 
         executor.execute {
+            waitForConnectSettle()
             for (char in text) {
                 val report = HidKeyMapper.map(char) ?: continue
                 try {
@@ -661,6 +695,7 @@ class BluetoothHidService : Service() {
         val report = HidKeyMapper.backspaceReport()
 
         executor.execute {
+            waitForConnectSettle()
             repeat(count) {
                 try {
                     hid.sendReport(device, REPORT_ID.toInt(), HidKeyMapper.toBytes(report))
