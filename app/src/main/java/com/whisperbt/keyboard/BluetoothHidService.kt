@@ -178,7 +178,16 @@ class BluetoothHidService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification("Initializing..."))
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification("Initializing..."))
+        } catch (e: SecurityException) {
+            // Android 14+ rejects a connectedDevice foreground service until
+            // BLUETOOTH_CONNECT is granted (e.g. first launch before the
+            // permission dialog is answered). Bail out instead of crashing.
+            Log.e(TAG, "Cannot start foreground service, missing Bluetooth permission?", e)
+            stopSelf()
+            return
+        }
 
         generateAuthToken()
 

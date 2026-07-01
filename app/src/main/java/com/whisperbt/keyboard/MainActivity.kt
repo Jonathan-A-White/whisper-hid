@@ -27,6 +27,7 @@ class MainActivity : AppCompatActivity() {
 
     private var hidService: BluetoothHidService? = null
     private var hidBound = false
+    private var bindRequested = false
 
     private lateinit var statusService: TextView
     private lateinit var statusBluetooth: TextView
@@ -45,13 +46,20 @@ class MainActivity : AppCompatActivity() {
         btnOpenPwa.setOnClickListener { openPwa() }
         btnStopService.setOnClickListener { stopHidService() }
 
-        requestPermissions()
-        startHidService()
+        // Starting the connectedDevice foreground service before BLUETOOTH_CONNECT
+        // is granted crashes on Android 14+ — wait for the grant on first launch.
+        if (hasBluetoothPermissions()) {
+            startHidService()
+        } else {
+            requestPermissions()
+        }
     }
 
     override fun onStart() {
         super.onStart()
-        bindHidService()
+        if (hasBluetoothPermissions()) {
+            bindHidService()
+        }
     }
 
     override fun onStop() {
@@ -87,7 +95,11 @@ class MainActivity : AppCompatActivity() {
     private fun updateStatus() {
         val service = hidService
         if (service == null) {
-            statusService.text = "Service: Starting..."
+            statusService.text = if (hasBluetoothPermissions()) {
+                "Service: Starting..."
+            } else {
+                "Service: Waiting for Bluetooth permission"
+            }
             statusBluetooth.text = ""
             return
         }
@@ -111,6 +123,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     // --- Permissions ---
+
+    private fun hasBluetoothPermissions(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) ==
+            PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) ==
+            PackageManager.PERMISSION_GRANTED
+    }
 
     private fun requestPermissions() {
         val needed = mutableListOf<String>()
@@ -138,9 +158,13 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERM_REQUEST_CODE) {
-            val denied = grantResults.any { it != PackageManager.PERMISSION_GRANTED }
+            val denied = grantResults.isEmpty() ||
+                grantResults.any { it != PackageManager.PERMISSION_GRANTED }
             if (denied) {
                 Toast.makeText(this, "Bluetooth permissions are required", Toast.LENGTH_LONG).show()
+            } else {
+                startHidService()
+                bindHidService()
             }
         }
     }
@@ -168,13 +192,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun bindHidService() {
+        if (bindRequested) return
+        bindRequested = true
         val intent = Intent(this, BluetoothHidService::class.java)
         bindService(intent, hidConnection, Context.BIND_AUTO_CREATE)
     }
 
     private fun unbindHidService() {
-        if (hidBound) {
+        if (bindRequested) {
             unbindService(hidConnection)
+            bindRequested = false
             hidBound = false
             hidService = null
         }
