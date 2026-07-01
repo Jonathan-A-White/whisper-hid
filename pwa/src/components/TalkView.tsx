@@ -1,8 +1,9 @@
 import { useCallback, useState } from "react";
-import type { Settings, WhisperStatus } from "../types";
+import type { HidStatus, Settings, WhisperStatus } from "../types";
 import type { TranscriptionResult } from "../hooks/useWhisper";
 import { EditBuffer } from "./EditBuffer";
 import { SymbolModeToggle } from "./SymbolModeToggle";
+import { ZoomModeToggle } from "./ZoomModeToggle";
 
 interface TalkViewProps {
   whisper: {
@@ -15,8 +16,9 @@ interface TalkViewProps {
   hid: {
     sendText: (text: string) => Promise<boolean>;
     sendNewline: () => Promise<void>;
-    status: { bluetooth: string; device?: string } | null;
+    status: HidStatus | null;
     queue: { id: string; text: string; status: string }[];
+    setHeadsetMic: (enabled: boolean) => Promise<void>;
   };
   store: {
     pinnedEntries: { id: string; text: string }[];
@@ -152,6 +154,9 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
 
             {/* Symbol mode quick toggle */}
             <SymbolModeToggle />
+
+            {/* Zoom mode quick toggle — release headset mic to the laptop */}
+            <ZoomModeToggle status={hid.status} onToggle={hid.setHeadsetMic} />
 
             {/* Last transcription */}
             {lastText && !lastError && (

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { hidStatus, hidType, hidRestart, clearToken } from "../lib/api";
+import {
+  hidStatus,
+  hidType,
+  hidRestart,
+  hidHeadsetMic,
+  clearToken,
+} from "../lib/api";
 import type { HidStatus, QueuedText, Settings } from "../types";
 
 export function useHidService(settings: Settings) {
@@ -130,6 +136,30 @@ export function useHidService(settings: Settings) {
     }
   }, []);
 
+  // Toggle whether the HID service holds the headset's SCO mic link.
+  // Optimistic update so the Zoom-mode pill responds instantly; the 3s
+  // status poll corrects any drift (or reverts on failure).
+  const setHeadsetMic = useCallback(async (enabled: boolean) => {
+    setStatus((prev) =>
+      prev?.headset_mic
+        ? { ...prev, headset_mic: { ...prev.headset_mic, enabled } }
+        : prev
+    );
+    try {
+      await hidHeadsetMic(enabled);
+    } catch (e) {
+      if (e instanceof Error && e.message === "AUTH_FAILED") {
+        setAuthError(true);
+        clearToken();
+      }
+      setStatus((prev) =>
+        prev?.headset_mic
+          ? { ...prev, headset_mic: { ...prev.headset_mic, enabled: !enabled } }
+          : prev
+      );
+    }
+  }, []);
+
   return {
     status,
     reachable,
@@ -138,5 +168,6 @@ export function useHidService(settings: Settings) {
     sendText,
     sendNewline,
     restart,
+    setHeadsetMic,
   };
 }

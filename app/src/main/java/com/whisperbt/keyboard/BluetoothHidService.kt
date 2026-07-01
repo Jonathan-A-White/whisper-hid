@@ -59,6 +59,11 @@ class BluetoothHidService : Service() {
         private const val SCO_RETRY_DELAY_MS = 3000L
         private const val SCO_MAX_RETRIES = 5
 
+        // Headset mic enable flag persists across service restarts so a
+        // restart mid-call doesn't snatch the headset back from the laptop.
+        private const val PREFS_NAME = "whisper_hid_prefs"
+        private const val KEY_HEADSET_MIC_ENABLED = "headset_mic_enabled"
+
         // A BT HID host silently drops input reports for a short window right
         // after STATE_CONNECTED (it's still re-enumerating / setting up the
         // input pipe). sendReport() succeeds at the link layer, so the leading
@@ -148,6 +153,9 @@ class BluetoothHidService : Service() {
     private var scoRetryCount = 0
     private var scoRequested = false
     @Volatile private var scoConnected = false
+    // User-facing "Zoom mode" switch: false = release the headset's SCO link
+    // so another device (laptop running Zoom) can use the headset mic.
+    @Volatile private var headsetMicEnabled = true
     private var audioFocusRequest: AudioFocusRequest? = null
     private var keepAliveTrack: AudioTrack? = null
     private var keepAliveThread: Thread? = null
@@ -181,6 +189,9 @@ class BluetoothHidService : Service() {
             stopSelf()
             return
         }
+
+        headsetMicEnabled = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_HEADSET_MIC_ENABLED, true)
 
         startHttpServer()
         setupHeadsetMicRouting()
@@ -312,8 +323,34 @@ class BluetoothHidService : Service() {
 
     fun isHeadsetMicActive(): Boolean = scoConnected
 
+    fun isHeadsetMicEnabled(): Boolean = headsetMicEnabled
+
+    // "Zoom mode": the user shares one multipoint headset between this phone
+    // and a laptop. A headset has a single call-audio (SCO) channel, and this
+    // service holds it continuously (keep-alive stream + auto-retry), so the
+    // laptop can never open its own — Zoom gets no headset mic. Disabling the
+    // headset mic releases SCO without stopping the service: HID typing keeps
+    // working and dictation falls back to the phone's built-in mic.
+    fun setHeadsetMicEnabled(enabled: Boolean) {
+        if (headsetMicEnabled == enabled) return
+        headsetMicEnabled = enabled
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_HEADSET_MIC_ENABLED, enabled)
+            .apply()
+        handler.post {
+            if (enabled) {
+                addLog("info", "Headset mic re-enabled — reclaiming SCO link")
+                enableSco()
+            } else {
+                addLog("info", "Headset mic released for other devices (Zoom mode)")
+                disableSco()
+            }
+        }
+    }
+
     private fun enableSco() {
         val am = audioManager ?: return
+        if (!headsetMicEnabled) return
         if (!hasBluetoothMic()) return
         scoRequested = true
         scoRetryCount = 0
@@ -814,6 +851,7 @@ class BluetoothHidService : Service() {
                 "/restart" -> handleRestart(request, output)
                 "/devices" -> handleDevices(request, output)
                 "/connect" -> handleConnect(request, output)
+                "/headset-mic" -> handleHeadsetMic(request, output)
                 else -> sendResponse(output, 404, JSONObject().put("error", "not_found"))
             }
         } catch (e: Exception) {
@@ -942,11 +980,7 @@ class BluetoothHidService : Service() {
         json.put("version", BuildConfig.APP_VERSION)
         json.put("uptime_seconds", (System.currentTimeMillis() - startTime) / 1000)
 
-        val headsetMic = JSONObject()
-            .put("available", hasBluetoothMic())
-            .put("active", isHeadsetMicActive())
-        bluetoothMicName()?.let { headsetMic.put("device", it) }
-        json.put("headset_mic", headsetMic)
+        json.put("headset_mic", headsetMicJson())
 
         val deviceName = getConnectedDeviceName()
         when (btState) {
@@ -975,6 +1009,47 @@ class BluetoothHidService : Service() {
         }
 
         sendResponse(output, 200, json)
+    }
+
+    private fun headsetMicJson(): JSONObject {
+        val json = JSONObject()
+            .put("available", hasBluetoothMic())
+            .put("active", isHeadsetMicActive())
+            .put("enabled", headsetMicEnabled)
+        bluetoothMicName()?.let { json.put("device", it) }
+        return json
+    }
+
+    private fun handleHeadsetMic(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (request.method == "GET") {
+            sendResponse(output, 200, headsetMicJson())
+            return
+        }
+        if (request.method != "PUT") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
+            return
+        }
+        if (!validateToken(request)) {
+            sendResponse(output, 403, JSONObject().put("error", "forbidden"))
+            return
+        }
+
+        try {
+            val json = parseJsonBody(request.body)
+            if (!json.has("enabled")) {
+                sendResponse(output, 400, JSONObject()
+                    .put("error", "missing_enabled")
+                    .put("message", "Body must include {\"enabled\": true|false}"))
+                return
+            }
+            setHeadsetMicEnabled(json.getBoolean("enabled"))
+            // "active" may lag: the SCO transition runs async on the main
+            // handler. "enabled" reflects the new setting immediately.
+            sendResponse(output, 200, headsetMicJson().put("ok", true))
+        } catch (e: Exception) {
+            sendResponse(output, 500, JSONObject().put("error", e.message ?: "unknown"))
+        }
     }
 
     private fun handleLogs(request: HttpRequest, output: OutputStream) {

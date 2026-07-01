@@ -29,19 +29,28 @@ export function StatusBar({
       <div className="flex items-center justify-between text-sm">
         <span className="font-semibold text-white">Whisper Keyboard</span>
         <div className="flex items-center gap-3">
-          {/* Headset mic indicator — green when SCO is up (recording uses headset mic) */}
-          {hidStatus?.headset_mic?.available && (
+          {/* Headset mic indicator — green when SCO is up (recording uses
+              headset mic), gray when released to the laptop (Zoom mode) */}
+          {hidStatus?.headset_mic &&
+            (hidStatus.headset_mic.available ||
+              hidStatus.headset_mic.enabled === false) && (
             <span
               className="flex items-center gap-1"
               title={
-                hidStatus.headset_mic.active
-                  ? `Headset mic active: ${hidStatus.headset_mic.device ?? "Bluetooth headset"}`
-                  : "Headset detected — mic routing connecting..."
+                hidStatus.headset_mic.enabled === false
+                  ? "Zoom mode — headset mic released, dictation uses phone mic"
+                  : hidStatus.headset_mic.active
+                    ? `Headset mic active: ${hidStatus.headset_mic.device ?? "Bluetooth headset"}`
+                    : "Headset detected — mic routing connecting..."
               }
             >
               <span
                 className={`w-2 h-2 rounded-full ${
-                  hidStatus.headset_mic.active ? "bg-green-400" : "bg-yellow-400"
+                  hidStatus.headset_mic.enabled === false
+                    ? "bg-gray-500"
+                    : hidStatus.headset_mic.active
+                      ? "bg-green-400"
+                      : "bg-yellow-400"
                 }`}
               />
               <span className="text-gray-400 text-xs">🎧</span>

@@ -21,6 +21,8 @@ export interface HidStatus {
   headset_mic?: {
     available: boolean;
     active: boolean;
+    /** false = released for other devices (Zoom mode); absent on older APKs */
+    enabled?: boolean;
     device?: string;
   };
 }
