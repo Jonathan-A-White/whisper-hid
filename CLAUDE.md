@@ -37,13 +37,21 @@ mic requires system-wide SCO routing, handled by the Kotlin HID service
   the PWA StatusBar shows a 🎧 dot (green = headset mic in use).
 - While SCO is active, phone audio plays through the headset at call quality
   (16 kHz mono) — acceptable for a dedicated dictation device.
-- Holds `AUDIOFOCUS_GAIN` (voice communication usage) for as long as the
-  headset mic is wanted. Without it, some devices (observed on Samsung/OneUI)
-  silently tear down the SCO link roughly every 30s — since Termux's mic
-  reads happen in a separate process, nothing else signals the audio policy
-  that the connection is in active use. If periodic SCO drops reappear
-  (🎧 dot flashing yellow/green, audio blip on the headset), check `/logs`
-  for "Audio focus request denied" or "Audio focus changed" entries first.
+- Some devices (observed on Samsung/OneUI) silently tear down the SCO link
+  every ~15-30s. Two mechanisms combat this:
+  1. Holds `AUDIOFOCUS_GAIN` (voice communication usage) while the headset
+     mic is wanted.
+  2. **The decisive fix**: plays a continuous inaudible silence stream
+     (`startScoKeepAlive()`, an `AudioTrack` with `USAGE_VOICE_COMMUNICATION`)
+     over the SCO channel. Audio focus alone was NOT enough — the audio HAL
+     reaps the link when no *active stream in this app* uses it, and Termux's
+     mic reads are in a separate process the policy can't attribute to the
+     link. The silent output stream keeps the link "in use"; since SCO is one
+     bidirectional connection, keeping the output warm keeps the mic path up.
+     It's output-only, so it doesn't contend with Termux's mic capture.
+  If periodic SCO drops reappear (🎧 dot flashing yellow/green, audio blip on
+  the headset), check `/logs` for "SCO keep-alive stream started" (should
+  appear once per headset connect) and "Audio focus request denied" entries.
 
 ## Build
 - Android app: `./gradlew assembleDebug` (output: app/build/outputs/apk/debug/)
