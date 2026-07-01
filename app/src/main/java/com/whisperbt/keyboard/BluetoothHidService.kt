@@ -15,8 +15,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioAttributes
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Binder
 import android.os.Build
@@ -131,6 +133,7 @@ class BluetoothHidService : Service() {
     private var scoRetryCount = 0
     private var scoRequested = false
     @Volatile private var scoConnected = false
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     // Log buffer (circular)
     private val logBuffer = ConcurrentLinkedDeque<LogEntry>()
@@ -295,6 +298,7 @@ class BluetoothHidService : Service() {
         if (!hasBluetoothMic()) return
         scoRequested = true
         scoRetryCount = 0
+        requestScoAudioFocus(am)
         startSco(am)
     }
 
@@ -307,6 +311,38 @@ class BluetoothHidService : Service() {
         } catch (e: Exception) {
             addLog("error", "Failed to start Bluetooth SCO: ${e.message}")
         }
+    }
+
+    // Without holding audio focus, some devices (observed on Samsung/OneUI)
+    // silently tear down an app-requested SCO link roughly every 30s, since
+    // nothing signals the system that the connection is actively "in use" —
+    // Termux's mic reads happen in a separate process the audio policy can't
+    // see. Holding AUDIOFOCUS_GAIN for voice communication for as long as SCO
+    // is wanted keeps the link from being reclaimed; scheduleScoRetry() still
+    // recovers if it drops anyway.
+    private fun requestScoAudioFocus(am: AudioManager) {
+        if (audioFocusRequest != null) return
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+            .build()
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(attrs)
+            .setOnAudioFocusChangeListener { change ->
+                addLog("info", "Audio focus changed: $change")
+            }
+            .build()
+        val result = am.requestAudioFocus(request)
+        if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+            audioFocusRequest = request
+        } else {
+            addLog("error", "Audio focus request denied ($result) — headset mic may drop periodically")
+        }
+    }
+
+    private fun abandonScoAudioFocus(am: AudioManager) {
+        audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+        audioFocusRequest = null
     }
 
     private fun scheduleScoRetry() {
@@ -343,6 +379,7 @@ class BluetoothHidService : Service() {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to disable SCO", e)
         }
+        abandonScoAudioFocus(am)
     }
 
     // --- HID Registration ---
