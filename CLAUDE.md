@@ -20,6 +20,24 @@ sends keystrokes via Bluetooth HID.
 - Mic capture stays in Termux (browser can't reliably access BT headset mic)
 - Auth token generated per service session, passed via URL from Kotlin app to PWA
 
+## Bluetooth HID typing: post-connect settle delay
+A BT HID **host** (the laptop/PC receiving keystrokes) silently drops input
+reports for a short window right after the link reaches `STATE_CONNECTED` — it
+is still re-enumerating and setting up its input pipe. `hid.sendReport()`
+returns success at the link layer during this window, so the leading keystrokes
+*look* sent but never reach the host, and the message arrives truncated at the
+front (e.g. only "...what has been taught" of a longer sentence). Re-sending the
+same text seconds later works because the link is warm.
+
+`BluetoothHidService` guards against this: it records `connectedAtMs` when the
+link reaches CONNECTED and `waitForConnectSettle()` blocks the sender thread
+until `CONNECT_SETTLE_MS` (1.5s) has elapsed before the first keystroke. This
+runs inside the single-threaded keystroke executor, so it never blocks the HTTP
+handler (which already returned 200), and it's a no-op for warm-link sends — only
+the first send after a (re)connect pays the cost. **Don't remove this delay** to
+shave latency; without it the first dictation after any reconnect loses its
+opening words. Look for "Waiting Nms for HID link to settle" in HID `/logs`.
+
 ## Bluetooth headset mic
 Termux records from Android's *default* input, so using a Bluetooth headset's
 mic requires system-wide SCO routing, handled by the Kotlin HID service
