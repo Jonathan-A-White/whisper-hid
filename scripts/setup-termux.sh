@@ -18,7 +18,10 @@ pkg update -y && pkg upgrade -y
 
 # 2. Install build tools and Python
 echo "[2/9] Installing build tools and Python..."
-pkg install -y clang cmake make git tmux termux-api socat ffmpeg python bzip2
+# libandroid-spawn: bionic has no spawn.h/posix_spawn; this Termux package
+# provides both. llama-server's tool-exec code (vendor/sheredom/subprocess.h)
+# needs it — see the llama.cpp build in step 7.
+pkg install -y clang cmake make git tmux termux-api socat ffmpeg python bzip2 libandroid-spawn
 pip install flask
 
 # 3. Clone whisper.cpp
@@ -147,14 +150,17 @@ else
     # Same -march story as whisper.cpp: GGML_NATIVE=OFF avoids SIGILL from
     # -mcpu=native; LLAMA_CURL=OFF drops the libcurl dependency (models are
     # downloaded with curl below, not by llama-server).
-    # MTMD_VIDEO=OFF: mtmd's video support (on by default) pulls in a vendored
-    # subprocess.h that needs spawn.h, which Termux's libc doesn't ship — the
-    # build dies there. Cleanup only sends text, so video support is unneeded.
+    # MTMD_VIDEO=OFF: video decode shells out to ffmpeg at runtime and is
+    # unneeded for text-only cleanup — skip building it.
+    # -landroid-spawn: llama-server's tool-exec code (vendored subprocess.h)
+    # uses posix_spawn, which bionic lacks; the libandroid-spawn package
+    # (installed in step 2) supplies spawn.h and the implementation.
     if [ -d "$INSTALL_DIR/llama.cpp" ] \
         && (cd "$INSTALL_DIR/llama.cpp" \
             && cmake -B build \
                 -DCMAKE_C_FLAGS="-march=$ARM_MARCH" \
                 -DCMAKE_CXX_FLAGS="-march=$ARM_MARCH" \
+                -DCMAKE_EXE_LINKER_FLAGS="-landroid-spawn" \
                 -DGGML_NATIVE=OFF \
                 -DLLAMA_CURL=OFF \
                 -DLLAMA_BUILD_SERVER=ON \
