@@ -156,7 +156,14 @@ export function SetupWizard({ onClose }: SetupWizardProps) {
         setMicResult(`${failed.step}: ${failed.error}`);
       } else if (diag.speech_detected) {
         setMicOk(true);
-        setMicResult(`Heard: "${diag.final_text}"`);
+        const bw = diag.mic_bandwidth?.verdict;
+        const bwNote =
+          bw === "narrowband"
+            ? " ⚠️ Mic audio is narrowband (~4 kHz) — a Bluetooth headset link on the low-quality CVSD codec. Transcription accuracy will suffer; try re-pairing or updating the headset firmware."
+            : bw === "wideband"
+              ? " Mic audio is wideband."
+              : "";
+        setMicResult(`Heard: "${diag.final_text}"${bwNote}`);
       } else {
         setMicOk(false);
         setMicResult(

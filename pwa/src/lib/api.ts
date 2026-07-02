@@ -135,6 +135,13 @@ export async function benchmarkModels(options?: {
 export interface PipelineDiagnostics {
   speech_detected?: boolean;
   final_text?: string;
+  mic_bandwidth?: {
+    verdict?: "narrowband" | "wideband" | "unknown";
+    high_band_ratio?: number;
+    peak_frame_high_ratio?: number;
+    rolloff_hz?: number;
+    reason?: string;
+  };
   steps?: Array<{ step: string; error?: string; [key: string]: unknown }>;
 }
 

@@ -25,7 +25,9 @@ Endpoints:
 """
 
 import atexit
+import cmath
 import json
+import math
 import os
 import re
 import shutil
@@ -43,7 +45,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.6.0"
+SERVER_VERSION = "1.6.1"
 
 # --- Configuration ---
 
@@ -1053,6 +1055,110 @@ def transcode_to_wav(input_path: str, output_path: str, quiet: bool = False) -> 
         return False
 
 
+# --- Mic bandwidth estimation (Bluetooth SCO codec detection) ---
+#
+# A Bluetooth headset mic over SCO delivers either 16 kHz mSBC ("wideband
+# speech") or 8 kHz CVSD (narrowband). CVSD audio has no content above
+# 4 kHz — the consonant range — and transcription accuracy drops hard.
+# The phone HAL upsamples the stream, so the WAV sample rate is always
+# 16 kHz regardless; the only tell is the spectrum. estimate_bandwidth()
+# looks at speech frames of the test recording and reports which one the
+# link actually negotiated (or "wideband" for the phone's own mic).
+
+def _fft(x: list[complex]) -> list[complex]:
+    """Recursive radix-2 FFT; len(x) must be a power of two."""
+    n = len(x)
+    if n == 1:
+        return x
+    even = _fft(x[0::2])
+    odd = _fft(x[1::2])
+    half = n // 2
+    out = [0j] * n
+    for k in range(half):
+        t = cmath.exp(-2j * math.pi * k / n) * odd[k]
+        out[k] = even[k] + t
+        out[k + half] = even[k] - t
+    return out
+
+
+BW_FRAME_SIZE = 512          # 32ms at 16 kHz; power of two for the FFT
+BW_FRAME_HOP = 256
+BW_SPEECH_RMS_FLOOR = 100.0  # frames quieter than this are ignored
+BW_MAX_FRAMES = 400          # bound CPU cost on long recordings
+
+
+def estimate_bandwidth(samples, sample_rate: int = 16000) -> dict:
+    """Classify PCM audio as narrowband (<=4 kHz content) or wideband.
+
+    Returns a dict with "verdict" ("narrowband" | "wideband" | "unknown")
+    plus the numbers behind it. Two independent signals decide:
+    - high_band_ratio: share of speech energy in 4.2-7.8 kHz, aggregated
+      over all speech frames. Narrowband audio scores ~0.
+    - peak_frame_high_ratio: the single frame with the largest high-band
+      share (fricatives like /s/), which stays high even when a dictation
+      is vowel-heavy overall.
+    Thresholds have wide margins: wideband speech typically scores 10-100x
+    above them, upsampled CVSD 10-100x below.
+    """
+    n = BW_FRAME_SIZE
+    if len(samples) < n:
+        return {"verdict": "unknown", "reason": "too_short"}
+
+    window = [0.5 - 0.5 * math.cos(2 * math.pi * i / n) for i in range(n)]
+    bin_hz = sample_rate / n
+    low_bins = range(int(200 / bin_hz) + 1, int(4000 / bin_hz))
+    # Gap at 4.0-4.2 kHz keeps the codec's transition band out of both sums.
+    high_bins = range(int(4200 / bin_hz) + 1, int(7800 / bin_hz))
+
+    spectrum = [0.0] * (n // 2 + 1)
+    speech_frames = 0
+    peak_frame_ratio = 0.0
+    starts = range(0, len(samples) - n, BW_FRAME_HOP)
+    for start in list(starts)[:BW_MAX_FRAMES]:
+        frame = samples[start:start + n]
+        rms = math.sqrt(sum(s * s for s in frame) / n)
+        if rms < BW_SPEECH_RMS_FLOOR:
+            continue
+        speech_frames += 1
+        fx = _fft([frame[i] * window[i] for i in range(n)])
+        power = [abs(fx[k]) ** 2 for k in range(n // 2 + 1)]
+        for k in range(len(spectrum)):
+            spectrum[k] += power[k]
+        f_low = sum(power[k] for k in low_bins)
+        f_high = sum(power[k] for k in high_bins)
+        if f_low + f_high > 0:
+            peak_frame_ratio = max(peak_frame_ratio, f_high / (f_low + f_high))
+
+    if speech_frames < 5:
+        return {"verdict": "unknown", "reason": "not_enough_speech"}
+
+    low = sum(spectrum[k] for k in low_bins)
+    high = sum(spectrum[k] for k in high_bins)
+    if low + high <= 0:
+        return {"verdict": "unknown", "reason": "no_energy"}
+    high_ratio = high / (low + high)
+
+    # Rolloff: frequency below which 97% of the (200 Hz+) energy lies.
+    floor_bin = int(200 / bin_hz) + 1
+    tail = sum(spectrum[floor_bin:])
+    acc = 0.0
+    rolloff_hz = sample_rate / 2
+    for k in range(floor_bin, len(spectrum)):
+        acc += spectrum[k]
+        if acc >= 0.97 * tail:
+            rolloff_hz = k * bin_hz
+            break
+
+    wideband = high_ratio >= 0.015 or peak_frame_ratio >= 0.08
+    return {
+        "verdict": "wideband" if wideband else "narrowband",
+        "high_band_ratio": round(high_ratio, 5),
+        "peak_frame_high_ratio": round(peak_frame_ratio, 5),
+        "rolloff_hz": round(rolloff_hz),
+        "speech_frames": speech_frames,
+    }
+
+
 def _detect_whisper_flags() -> list[str]:
     """Probe whisper-cli --help to find supported flags (run once)."""
     whisper_bin = WHISPER_BIN or find_whisper_bin()
@@ -1877,6 +1983,8 @@ def debug_test_pipeline():
                 samples = struct.unpack(f"<{len(pcm)//2}h", pcm[:len(pcm)//2*2])
                 max_amp = max(abs(s) for s in samples)
                 avg_amp = sum(abs(s) for s in samples) / len(samples)
+                bandwidth = estimate_bandwidth(samples)
+                diag["mic_bandwidth"] = bandwidth
                 diag["steps"].append({
                     "step": "audio_analysis",
                     "num_samples": len(samples),
@@ -1885,6 +1993,7 @@ def debug_test_pipeline():
                     "avg_amplitude": round(avg_amp, 1),
                     "max_amplitude_pct": round(max_amp / 32768 * 100, 1),
                     "silent": max_amp < 100,
+                    "bandwidth": bandwidth,
                 })
         except Exception as e:
             diag["steps"].append({"step": "audio_analysis", "error": str(e)})
