@@ -13,11 +13,14 @@ VAD_MODEL_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-sil
 VAD_MODEL_FILE="silero-v5.1.2.ggml.bin"
 PARAKEET_DIR="sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
 PARAKEET_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${PARAKEET_DIR}.tar.bz2"
-# Speech cleanup LLM — keep in sync with whisper-server.py and setup-termux.sh
+# Speech cleanup LLMs — keep file names in sync with the
+# CLEANUP_MODEL_CATALOG in whisper-server.py and with setup-termux.sh.
+# unsloth repos: the official Qwen/Qwen3-*-GGUF repos don't carry the
+# Q4_K_M quant (their /resolve URLs return "Entry not found").
 CLEANUP_MODEL_FILE="Qwen3-1.7B-Q4_K_M.gguf"
-# unsloth repo: the official Qwen/Qwen3-1.7B-GGUF repo doesn't carry the
-# Q4_K_M quant (its /resolve URL returns "Entry not found").
 CLEANUP_MODEL_URL="https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/${CLEANUP_MODEL_FILE}"
+CLEANUP_4B_MODEL_FILE="Qwen3-4B-Q4_K_M.gguf"
+CLEANUP_4B_MODEL_URL="https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/main/${CLEANUP_4B_MODEL_FILE}"
 
 usage() {
     echo "Usage: $0 <model-name>"
@@ -48,7 +51,8 @@ usage() {
     echo ""
     echo "Special:"
     echo "  vad                    ~2 MB                     Silero VAD model"
-    echo "  cleanup              ~1.1 GB                     Qwen3-1.7B speech cleanup LLM"
+    echo "  cleanup              ~1.1 GB                     Qwen3-1.7B speech cleanup LLM (default)"
+    echo "  cleanup-4b           ~2.4 GB                     Qwen3-4B cleanup LLM (smarter, needs ~3 GB RAM)"
     echo ""
     echo "Examples:"
     echo "  $0 parakeet                # recommended"
@@ -90,10 +94,19 @@ if [ "$MODEL_NAME" = "vad" ]; then
     exit 0
 fi
 
-# Special case: speech cleanup LLM (GGUF for llama.cpp, not a whisper model)
-if [ "$MODEL_NAME" = "cleanup" ]; then
+# Special case: speech cleanup LLMs (GGUF for llama.cpp, not whisper models)
+if [ "$MODEL_NAME" = "cleanup" ] || [ "$MODEL_NAME" = "cleanup-4b" ]; then
+    if [ "$MODEL_NAME" = "cleanup-4b" ]; then
+        DL_FILE="$CLEANUP_4B_MODEL_FILE"
+        DL_URL="$CLEANUP_4B_MODEL_URL"
+        DL_DESC="Qwen3-4B Q4_K_M speech cleanup model (~2.4 GB)"
+    else
+        DL_FILE="$CLEANUP_MODEL_FILE"
+        DL_URL="$CLEANUP_MODEL_URL"
+        DL_DESC="Qwen3-1.7B Q4_K_M speech cleanup model (~1.1 GB)"
+    fi
     mkdir -p "$MODEL_DIR"
-    DEST="$MODEL_DIR/$CLEANUP_MODEL_FILE"
+    DEST="$MODEL_DIR/$DL_FILE"
     if [ -f "$DEST" ]; then
         echo "Cleanup model already exists: $DEST"
         read -p "Re-download? (y/N) " -n 1 -r
@@ -103,9 +116,9 @@ if [ "$MODEL_NAME" = "cleanup" ]; then
             exit 0
         fi
     fi
-    echo "Downloading Qwen3-1.7B Q4_K_M speech cleanup model (~1.1 GB)..."
-    echo "URL: $CLEANUP_MODEL_URL"
-    curl -fL --progress-bar -o "$DEST" "$CLEANUP_MODEL_URL"
+    echo "Downloading $DL_DESC..."
+    echo "URL: $DL_URL"
+    curl -fL --progress-bar -o "$DEST" "$DL_URL"
     ACTUAL_SIZE=$(wc -c < "$DEST")
     if [ "$ACTUAL_SIZE" -lt "$MIN_MODEL_SIZE" ]; then
         echo "Error: Downloaded file is only ${ACTUAL_SIZE} bytes — expected a model file (>10 MB)."
@@ -119,7 +132,12 @@ if [ "$MODEL_NAME" = "cleanup" ]; then
         echo "NOTE: llama-server is not built yet — re-run setup-termux.sh to build it."
     fi
     echo ""
-    echo "Restart the Whisper server, then flip the Cleanup toggle in the PWA:"
+    if [ "$MODEL_NAME" = "cleanup-4b" ]; then
+        echo "Pick the model in PWA Settings > Speech cleanup (no server restart needed),"
+        echo "or restart the Whisper server to apply a CLEANUP_MODEL env var:"
+    else
+        echo "Restart the Whisper server, then flip the Cleanup toggle in the PWA:"
+    fi
     echo "  ./stop-whisper-server.sh && ./start-whisper-server.sh"
     exit 0
 fi

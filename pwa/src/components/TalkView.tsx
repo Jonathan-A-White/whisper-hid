@@ -1,8 +1,9 @@
 import { useCallback, useState } from "react";
 import type { HidStatus, Settings, WhisperStatus } from "../types";
 import type { TranscriptionResult } from "../hooks/useWhisper";
+import { applyVoiceEdit } from "../lib/api";
 import { CleanupToggle } from "./CleanupToggle";
-import { EditBuffer } from "./EditBuffer";
+import { EditBuffer, type VoiceEditState } from "./EditBuffer";
 import { SymbolModeToggle } from "./SymbolModeToggle";
 import { ZoomModeToggle } from "./ZoomModeToggle";
 
@@ -40,6 +41,8 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
   const [lastStats, setLastStats] = useState<TranscriptionStats | null>(null);
   const [editText, setEditText] = useState<string | null>(null);
   const [lastEntryStats, setLastEntryStats] = useState<{ model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number } | null>(null);
+  const [voiceEditState, setVoiceEditState] = useState<VoiceEditState>("idle");
+  const [voiceEditError, setVoiceEditError] = useState<string | null>(null);
 
   const handlePtt = useCallback(async () => {
     if (whisper.recording) {
@@ -77,6 +80,8 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
   const handleSendEdit = useCallback(
     async (text: string) => {
       setEditText(null);
+      setVoiceEditState("idle");
+      setVoiceEditError(null);
       setLastText(text);
       await store.addEntry(text, lastEntryStats ?? undefined);
       setLastEntryStats(null);
@@ -85,6 +90,34 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
     },
     [hid, store, lastEntryStats, settings.newlineAfterEnd]
   );
+
+  // Voice editing of the pending buffer: first tap records the spoken
+  // instruction, second tap transcribes it and asks the cleanup LLM to apply
+  // it to the buffer text. Any failure leaves the buffer unchanged.
+  const handleVoiceEditToggle = useCallback(async () => {
+    if (voiceEditState === "listening") {
+      const { text: command, error } = await whisper.stopRecording();
+      if (!command) {
+        setVoiceEditState("idle");
+        setVoiceEditError(error ?? "No instruction heard");
+        return;
+      }
+      setVoiceEditState("applying");
+      try {
+        // editText can't be null while the buffer is shown
+        const result = await applyVoiceEdit(editText ?? "", command);
+        setEditText(result.text);
+        setVoiceEditError(null);
+      } catch (e) {
+        setVoiceEditError(e instanceof Error ? e.message : "Edit failed");
+      }
+      setVoiceEditState("idle");
+    } else if (voiceEditState === "idle") {
+      setVoiceEditError(null);
+      setVoiceEditState("listening");
+      await whisper.startRecording();
+    }
+  }, [voiceEditState, whisper, editText]);
 
   const handlePinnedTap = useCallback(
     async (text: string) => {
@@ -122,8 +155,22 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
         {editText !== null ? (
           <EditBuffer
             text={editText}
+            onChange={setEditText}
             onSend={handleSendEdit}
-            onDiscard={() => setEditText(null)}
+            onDiscard={() => {
+              setEditText(null);
+              setVoiceEditState("idle");
+              setVoiceEditError(null);
+            }}
+            voiceEdit={
+              whisper.status?.cleanup_available || voiceEditState !== "idle"
+                ? {
+                    state: voiceEditState,
+                    error: voiceEditError,
+                    onToggle: handleVoiceEditToggle,
+                  }
+                : null
+            }
           />
         ) : (
           <>

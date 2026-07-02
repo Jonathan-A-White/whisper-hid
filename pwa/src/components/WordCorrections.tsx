@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { getCorrections, putCorrections } from "../lib/api";
+import {
+  getCorrections,
+  putCorrections,
+  suggestCorrections,
+  type CorrectionSuggestion,
+} from "../lib/api";
 
 export function WordCorrections() {
   const [corrections, setCorrections] = useState<Record<string, string>>({});
@@ -7,6 +12,9 @@ export function WordCorrections() {
   const [error, setError] = useState<string | null>(null);
   const [newFrom, setNewFrom] = useState("");
   const [newTo, setNewTo] = useState("");
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestions, setSuggestions] = useState<CorrectionSuggestion[] | null>(null);
+  const [suggestNote, setSuggestNote] = useState<string | null>(null);
 
   const fetchCorrections = useCallback(async () => {
     try {
@@ -47,6 +55,45 @@ export function WordCorrections() {
     try {
       const saved = await putCorrections(updated);
       setCorrections(saved);
+      setError(null);
+    } catch {
+      setError("Failed to save");
+    }
+  };
+
+  // Ask the cleanup LLM to scan recent dictations for likely mishearings.
+  const handleSuggest = async () => {
+    setSuggesting(true);
+    setSuggestNote(null);
+    try {
+      const result = await suggestCorrections();
+      const fresh = result.suggestions.filter(
+        (s) => !(s.wrong.toLowerCase() in corrections)
+      );
+      setSuggestions(fresh);
+      if (fresh.length === 0) {
+        setSuggestNote(
+          result.transcripts === 0
+            ? "No recent dictations to analyze — dictate a few things first."
+            : "No likely mishearings found in recent dictations."
+        );
+      }
+    } catch (e) {
+      setSuggestions(null);
+      setSuggestNote(e instanceof Error ? e.message : "Suggestion request failed");
+    } finally {
+      setSuggesting(false);
+    }
+  };
+
+  const handleAcceptSuggestion = async (s: CorrectionSuggestion) => {
+    const updated = { ...corrections, [s.wrong.toLowerCase()]: s.right };
+    try {
+      const saved = await putCorrections(updated);
+      setCorrections(saved);
+      setSuggestions(
+        (prev) => prev?.filter((x) => x.wrong !== s.wrong) ?? null
+      );
       setError(null);
     } catch {
       setError("Failed to save");
@@ -121,6 +168,45 @@ export function WordCorrections() {
             >
               Add correction
             </button>
+          </div>
+
+          {/* LLM-suggested corrections from recent dictations */}
+          <div className="space-y-2">
+            <button
+              onClick={handleSuggest}
+              disabled={suggesting}
+              className="w-full py-2 bg-gray-800 text-emerald-400 rounded text-sm font-medium disabled:opacity-40 hover:bg-gray-700"
+            >
+              {suggesting ? "Analyzing recent dictations..." : "✨ Suggest corrections"}
+            </button>
+            {suggestNote && (
+              <p className="text-xs text-gray-500">{suggestNote}</p>
+            )}
+            {suggestions && suggestions.length > 0 && (
+              <div className="space-y-1">
+                {suggestions.map((s) => (
+                  <div
+                    key={s.wrong}
+                    className="flex items-center gap-2 bg-gray-900 rounded px-3 py-1.5"
+                  >
+                    <span className="text-sm text-red-300 flex-1 truncate">
+                      {s.wrong}
+                    </span>
+                    <span className="text-gray-600 text-xs">&rarr;</span>
+                    <span className="text-sm text-green-300 flex-1 truncate">
+                      {s.right}
+                    </span>
+                    <button
+                      onClick={() => handleAcceptSuggestion(s)}
+                      className="text-emerald-400 hover:text-emerald-300 text-sm font-bold ml-1"
+                      aria-label={`Add correction ${s.wrong} to ${s.right}`}
+                    >
+                      +
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </>
       )}
