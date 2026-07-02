@@ -192,7 +192,14 @@ instead of ~duration/10 with Parakeet).
   (copy first — ffmpeg racing the encoder is unreliable), decodes it, finds
   silence boundaries via per-frame levels (`find_commit_boundary()`, adaptive
   threshold), and transcribes new complete chunks. Silent-only spans (thinking
-  pauses) advance the committed pointer without an engine call.
+  pauses) advance the committed pointer without an engine call. A chunk only
+  counts as speech if above-threshold frames accumulate to ≥0.25s
+  (`CHUNK_MIN_SPEECH_SEC`, not necessarily consecutive) OR any frame is ≥3×
+  threshold (`CHUNK_LOUD_FACTOR` — keeps short sharp words) — a lone
+  breath/noise blip no longer triggers a ~200ms engine call that returns
+  empty text. A skipped chunk is never transcribed later, so when tuning,
+  err toward "speech": a false positive costs one brief engine call, a
+  false negative loses words.
 - **Post-processing runs ONCE on the joined text** at stop — chunks are
   transcribed raw (`run_transcription(..., postprocess=False)`) so word
   corrections and symbol phrases spanning a chunk boundary still match.

@@ -41,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.4.1"
+SERVER_VERSION = "1.4.2"
 
 # --- Configuration ---
 
@@ -962,6 +962,8 @@ CHUNK_MIN_NEW_SEC = 1.0     # don't commit chunks shorter than this
 CHUNK_TAIL_GUARD_SEC = 0.4  # never commit into the (possibly unflushed) tail
 CHUNK_FRAME_SEC = 0.03      # analysis frame size for level detection
 CHUNK_LEVEL_FLOOR = 120.0   # absolute mean-abs level below which is silence
+CHUNK_MIN_SPEECH_SEC = 0.25  # accumulated speech-level time needed to call the engine
+CHUNK_LOUD_FACTOR = 3.0     # frames this far above threshold count as speech alone
 
 
 def _read_wav_pcm(wav_path: str) -> tuple[bytes, int]:
@@ -1005,6 +1007,8 @@ def find_commit_boundary(
     min_new_sec: float = CHUNK_MIN_NEW_SEC,
     tail_guard_sec: float = CHUNK_TAIL_GUARD_SEC,
     level_floor: float = CHUNK_LEVEL_FLOOR,
+    min_speech_sec: float = CHUNK_MIN_SPEECH_SEC,
+    loud_factor: float = CHUNK_LOUD_FACTOR,
 ) -> tuple[float, bool] | None:
     """Find a safe point to commit transcription up to.
 
@@ -1049,9 +1053,17 @@ def find_commit_boundary(
     if boundary is None or boundary - committed_sec < min_new_sec:
         return None
 
-    boundary_frame = int(boundary / frame_sec)
-    has_speech = any(
-        levels[i] >= threshold for i in range(first_frame, min(boundary_frame, len(levels)))
+    # Breath noise and room-sound transients push isolated frames above the
+    # silence threshold, so "any frame above threshold" wastes engine calls on
+    # chunks that transcribe to nothing. Require the above-threshold frames to
+    # accumulate to min_speech_sec (not necessarily consecutive) — but a frame
+    # loud enough (loud_factor x threshold) counts as speech on its own, so a
+    # short sharp word ("No!") is never dropped. A false "speech" costs one
+    # brief engine call; a false "silence" loses words permanently.
+    segment = levels[first_frame : min(int(boundary / frame_sec), len(levels))]
+    speech_sec = frame_sec * sum(1 for lv in segment if lv >= threshold)
+    has_speech = speech_sec >= min_speech_sec or any(
+        lv >= loud_factor * threshold for lv in segment
     )
     return boundary, has_speech
 
