@@ -654,6 +654,12 @@ CLEANUP_EXAMPLES = [
         "the demo is on tuesday I mean wednesday at ten",
         "The demo is on Wednesday at ten.",
     ),
+    # A correction inside a spoken list — the corrected item replaces the
+    # one just before the marker, not the whole list.
+    (
+        "call extension four seven five I mean six",
+        "Call extension four seven six.",
+    ),
     (
         "it works fine",
         "It works fine.",
