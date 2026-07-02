@@ -41,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.4.0"
+SERVER_VERSION = "1.4.1"
 
 # --- Configuration ---
 
@@ -609,6 +609,16 @@ def run_parakeet_raw(wav_path: str) -> tuple[str, int]:
     duration_ms = int((time.time() - t0) * 1000)
 
     return stream.result.text.strip(), duration_ms
+
+
+def _encoder_flags(fmt: str) -> list[str]:
+    """termux-microphone-record encoder flags for a recording format."""
+    if fmt == "amr_wb":
+        return ["-e", "amr_wb", "-b", "23850"]
+    if fmt == "opus":
+        # Android records Opus into an Ogg container (streamable pages).
+        return ["-e", "opus"]
+    return []  # aac — device default
 
 
 def detect_audio_format():
@@ -1180,16 +1190,15 @@ def probe_partial_decode(fmt: str, ext: str) -> bool:
     recorder is still writing it (required for chunked transcription).
 
     Records for ~2.5s, copies the in-progress file, and tries to ffmpeg-decode
-    the copy. ADTS AAC and raw AMR-WB pass; MP4-container AAC fails (the moov
-    atom is only written when the recording stops).
+    the copy. ADTS AAC, raw AMR-WB, and Ogg Opus pass; MP4-family containers
+    fail (the moov atom is only written when the recording stops).
     """
     with tempfile.TemporaryDirectory() as td:
         raw = os.path.join(td, f"probe.{ext}")
         snap = os.path.join(td, f"snap.{ext}")
         wav = os.path.join(td, "probe.wav")
         rec_cmd = ["termux-microphone-record", "-f", raw, "-l", "0"]
-        if fmt == "amr_wb":
-            rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+        rec_cmd += _encoder_flags(fmt)
         try:
             subprocess.run(rec_cmd, timeout=5)
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -1219,10 +1228,12 @@ def detect_chunked_support():
     """Decide whether chunked transcription is possible on this device.
 
     Probes the detected recording format first; if that isn't
-    partial-decodable (typical for AAC in an MP4 container), tries AMR-WB —
-    raw AMR streams are always readable mid-write — and switches the recording
-    format to it. AMR-WB is 16kHz wideband speech coding, which matches the
-    16kHz input both engines use anyway.
+    partial-decodable (typical when Android wraps recordings in an MP4-family
+    container), tries AMR-WB (raw .amr streams are readable mid-write) and
+    then Opus (Android records Opus into Ogg, which is written as
+    self-contained pages), switching the recording format to whichever
+    passes. Both are speech-appropriate: the engines consume 16kHz mono
+    regardless.
     """
     global chunked_supported, audio_format, audio_ext
 
@@ -1233,12 +1244,15 @@ def detect_chunked_support():
         chunked_supported = True
         add_log("info", f"Chunked transcription: enabled ({audio_format} decodes mid-recording)")
         return
-    if audio_format != "amr_wb" and probe_partial_decode("amr_wb", "amr"):
-        audio_format, audio_ext = "amr_wb", "amr"
-        chunked_supported = True
-        add_log("info", "Chunked transcription: enabled — switched recording format to AMR-WB "
-                        "(AAC recordings on this device can't be decoded mid-write)")
-        return
+    for fmt, ext in (("amr_wb", "amr"), ("opus", "ogg")):
+        if fmt == audio_format:
+            continue
+        if probe_partial_decode(fmt, ext):
+            audio_format, audio_ext = fmt, ext
+            chunked_supported = True
+            add_log("info", f"Chunked transcription: enabled — switched recording format to {fmt} "
+                            "(the default format on this device can't be decoded mid-write)")
+            return
     add_log("info", "Chunked transcription: unavailable (recordings can't be decoded mid-write)")
 
 
@@ -1339,8 +1353,7 @@ def transcribe_start():
                 "-f", recording_file,
                 "-l", "0",     # unlimited duration
             ]
-            if audio_format == "amr_wb":
-                rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+            rec_cmd += _encoder_flags(audio_format)
             add_log("info", f"Recording cmd: {' '.join(rec_cmd)}")
             recording_process = subprocess.Popen(rec_cmd)
             add_log("info", f"Recording started: {recording_file}")
@@ -1494,8 +1507,7 @@ def debug_test_pipeline():
 
         # Step 1: Record 3 seconds
         rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", "3"]
-        if audio_format == "amr_wb":
-            rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+        rec_cmd += _encoder_flags(audio_format)
         diag["rec_cmd"] = " ".join(rec_cmd)
 
         try:
@@ -1835,8 +1847,7 @@ def _do_benchmark():
             # Record audio from mic
             raw_file = os.path.join(td, f"benchmark.{audio_ext}")
             rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", str(duration)]
-            if audio_format == "amr_wb":
-                rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+            rec_cmd += _encoder_flags(audio_format)
             try:
                 subprocess.run(rec_cmd, timeout=duration + 5)
                 time.sleep(duration + 1)
