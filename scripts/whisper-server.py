@@ -633,7 +633,9 @@ atexit.register(stop_cleanup_server)
 CLEANUP_SYSTEM_PROMPT = (
     "/no_think You clean up raw speech-to-text transcripts. Rewrite the transcript with:\n"
     "- filler words (um, uh, you know), false starts, and stuttered/repeated words removed\n"
-    "- spoken self-corrections resolved, keeping only the corrected version\n"
+    "- spoken self-corrections resolved, keeping only the corrected version — the speaker "
+    "signals these with phrases like \"no wait\", \"I mean\", \"actually\", \"sorry\", "
+    "\"scratch that\"; drop both the marker and the words it corrects\n"
     "- punctuation, capitalization, and sentence breaks fixed\n"
     "Never paraphrase, reorder, summarize, or add words — keep the speaker's exact wording "
     "apart from those removals and fixes. Reply with ONLY the cleaned transcript."
@@ -647,6 +649,10 @@ CLEANUP_EXAMPLES = [
     (
         "send the report to to Sarah no wait send it to Mike by Friday",
         "Send the report to Mike by Friday.",
+    ),
+    (
+        "the demo is on tuesday I mean wednesday at ten",
+        "The demo is on Wednesday at ten.",
     ),
     (
         "it works fine",
