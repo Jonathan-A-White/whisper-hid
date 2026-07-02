@@ -13,6 +13,9 @@ VAD_MODEL_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-sil
 VAD_MODEL_FILE="silero-v5.1.2.ggml.bin"
 PARAKEET_DIR="sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
 PARAKEET_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${PARAKEET_DIR}.tar.bz2"
+# Speech cleanup LLM — keep in sync with whisper-server.py and setup-termux.sh
+CLEANUP_MODEL_FILE="Qwen3-1.7B-Q4_K_M.gguf"
+CLEANUP_MODEL_URL="https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/${CLEANUP_MODEL_FILE}"
 
 usage() {
     echo "Usage: $0 <model-name>"
@@ -43,6 +46,7 @@ usage() {
     echo ""
     echo "Special:"
     echo "  vad                    ~2 MB                     Silero VAD model"
+    echo "  cleanup              ~1.1 GB                     Qwen3-1.7B speech cleanup LLM"
     echo ""
     echo "Examples:"
     echo "  $0 parakeet                # recommended"
@@ -81,6 +85,40 @@ if [ "$MODEL_NAME" = "vad" ]; then
     echo ""
     echo "Downloaded: $DEST ($SIZE)"
     echo "VAD will be automatically used by the whisper server if the --vad flag is supported."
+    exit 0
+fi
+
+# Special case: speech cleanup LLM (GGUF for llama.cpp, not a whisper model)
+if [ "$MODEL_NAME" = "cleanup" ]; then
+    mkdir -p "$MODEL_DIR"
+    DEST="$MODEL_DIR/$CLEANUP_MODEL_FILE"
+    if [ -f "$DEST" ]; then
+        echo "Cleanup model already exists: $DEST"
+        read -p "Re-download? (y/N) " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Keeping existing model."
+            exit 0
+        fi
+    fi
+    echo "Downloading Qwen3-1.7B Q4_K_M speech cleanup model (~1.1 GB)..."
+    echo "URL: $CLEANUP_MODEL_URL"
+    curl -L --progress-bar -o "$DEST" "$CLEANUP_MODEL_URL"
+    ACTUAL_SIZE=$(wc -c < "$DEST")
+    if [ "$ACTUAL_SIZE" -lt "$MIN_MODEL_SIZE" ]; then
+        echo "Error: Downloaded file is only ${ACTUAL_SIZE} bytes — expected a model file (>10 MB)."
+        rm -f "$DEST"
+        exit 1
+    fi
+    echo ""
+    echo "Downloaded: $DEST ($(du -h "$DEST" | cut -f1))"
+    if [ ! -x "$INSTALL_DIR/llama.cpp/build/bin/llama-server" ]; then
+        echo ""
+        echo "NOTE: llama-server is not built yet — re-run setup-termux.sh to build it."
+    fi
+    echo ""
+    echo "Restart the Whisper server, then flip the Cleanup toggle in the PWA:"
+    echo "  ./stop-whisper-server.sh && ./start-whisper-server.sh"
     exit 0
 fi
 

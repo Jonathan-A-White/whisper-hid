@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import type { HidStatus, Settings, WhisperStatus } from "../types";
 import type { TranscriptionResult } from "../hooks/useWhisper";
+import { CleanupToggle } from "./CleanupToggle";
 import { EditBuffer } from "./EditBuffer";
 import { SymbolModeToggle } from "./SymbolModeToggle";
 import { ZoomModeToggle } from "./ZoomModeToggle";
@@ -154,6 +155,9 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
 
             {/* Symbol mode quick toggle */}
             <SymbolModeToggle />
+
+            {/* Speech cleanup quick toggle — local LLM polishes the transcript */}
+            <CleanupToggle />
 
             {/* Zoom mode quick toggle — release headset mic to the laptop */}
             <ZoomModeToggle status={hid.status} onToggle={hid.setHeadsetMic} />

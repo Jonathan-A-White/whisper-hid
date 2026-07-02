@@ -319,6 +319,57 @@ symbols, e.g. "forward slash help" → "/help", "foo dash bar" → "foo-bar".
   spacing dropdown, add form, restore-defaults button, enable toggle
 - `SymbolModeToggle` pill on the Talk screen for quick on/off switching
 
+## Speech cleanup (local LLM post-processing)
+
+A small local LLM (Qwen3-1.7B Q4_K_M by default) rewrites the final
+transcript: filler words (um/uh) and false starts removed, spoken
+self-corrections resolved ("meet at 3 no wait 4pm" → "meet at 4pm"),
+punctuation/capitalization/sentence breaks fixed. Runs on the phone next to
+Parakeet — no network.
+
+### How it works
+- A resident `llama-server` (built from llama.cpp, same Termux build story as
+  whisper.cpp) runs on localhost:9879, launched at whisper-server startup and
+  mirroring the persistent whisper-server lifecycle. The model stays loaded
+  (~1.3 GB RAM) so flipping the toggle never pays a load wait.
+- `apply_cleanup()` is called from `_postprocess_text()` BEFORE word
+  corrections and symbols, so corrections/symbol phrases still match the
+  cleaned text. In chunked mode this means it runs ONCE on the joined full
+  text — never per chunk (false starts and self-corrections span chunk
+  boundaries). Don't move it into the chunk loop.
+- **Skipped while symbol mode is on** — CLI dictation wants verbatim text and
+  the LLM would mangle "/help" or "foo-bar" back into prose.
+- **Failure = fallback, never breakage**: server not ready, request error, or
+  a degenerate response (empty / outside a 0.35–1.6 length ratio window,
+  `_cleanup_result_ok()`) all deliver the raw transcript. Look for
+  "Cleanup applied"/"Cleanup rejected"/"Cleanup failed" in `/logs`.
+- Prompting: system prompt + few-shot pairs (`CLEANUP_EXAMPLES`) pin down
+  "remove, don't rewrite"; `/no_think` disables Qwen3 thinking mode and any
+  `<think>` block is stripped from the reply. llama-server KV-caches the
+  shared prompt prefix across requests. `max_tokens` is capped relative to
+  input length so a runaway generation can't stall Stop.
+- **Latency**: adds roughly 3–7s after Stop for typical dictations (scales
+  with length) — that's the accepted tradeoff; the toggle is the escape hatch.
+
+### Config / API
+- `GET /cleanup` → `{"enabled", "available", "model"}`; `PUT /cleanup
+  {"enabled": bool}` — persisted in `scripts/cleanup-settings.json`
+  (gitignored, per-device)
+- `/status` includes `"cleanup_mode"` (toggle) and `"cleanup_available"`
+  (llama-server up with model loaded)
+- Env: `STT_CLEANUP` (`auto`/`off` — whether the llama-server is started at
+  all), `CLEANUP_SERVER_PORT` (9879), `CLEANUP_MODEL` (GGUF filename),
+  `CLEANUP_THREADS` (4), `CLEANUP_TIMEOUT_SEC` (45)
+- Install: setup-termux.sh builds llama.cpp (`-DGGML_NATIVE=OFF`,
+  `-DLLAMA_CURL=OFF`, non-fatal) and downloads the model;
+  `./update-model.sh cleanup` re-downloads the model alone. The model
+  filename is duplicated in whisper-server.py, setup-termux.sh, and
+  update-model.sh — keep all three in sync.
+- PWA: `CleanupToggle` pill on the Talk screen (hidden when unavailable,
+  except while enabled so it can still be turned off)
+- Tests: `pytest scripts/tests/test_cleanup.py` (fake `_cleanup_request` —
+  no llama-server or model needed)
+
 ## Component versioning
 All three components expose version info, displayed together in PWA Settings.
 Versions use the format `1.0.<commit-count>+<short-hash>` and are auto-generated
