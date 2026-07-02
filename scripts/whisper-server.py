@@ -20,6 +20,8 @@ Endpoints:
   GET  /symbols           — Symbol replacement config (spoken word -> symbol)
   PUT  /symbols           — Update symbol replacement config (partial merge)
   POST /symbols/reset     — Restore default symbol entries
+  GET  /cleanup           — Speech cleanup (local LLM) state
+  PUT  /cleanup           — Enable/disable speech cleanup
 """
 
 import atexit
@@ -41,7 +43,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.4.2"
+SERVER_VERSION = "1.5.0"
 
 # --- Configuration ---
 
@@ -63,6 +65,17 @@ PARAKEET_MODEL_NAME = "parakeet-tdt-0.6b-v2"
 PARAKEET_DIR_NAME = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
 PARAKEET_CATALOG_SIZE_MB = 640
 PARAKEET_THREADS = int(os.environ.get("PARAKEET_THREADS", "4"))
+
+# Speech cleanup (local LLM post-processing). STT_CLEANUP: "auto" (default)
+# starts a llama.cpp server at startup when its binary and model are present;
+# "off" disables the feature entirely. Whether cleanup is *applied* is a
+# separate runtime toggle (PUT /cleanup, persisted to CLEANUP_SETTINGS_FILE).
+STT_CLEANUP = os.environ.get("STT_CLEANUP", "auto").lower()
+CLEANUP_SERVER_PORT = int(os.environ.get("CLEANUP_SERVER_PORT", "9879"))
+# Keep the model file name in sync with setup-termux.sh and update-model.sh.
+CLEANUP_MODEL_FILE = os.environ.get("CLEANUP_MODEL", "Qwen3-1.7B-Q4_K_M.gguf")
+CLEANUP_THREADS = int(os.environ.get("CLEANUP_THREADS", "4"))
+CLEANUP_TIMEOUT_SEC = int(os.environ.get("CLEANUP_TIMEOUT_SEC", "45"))
 
 # Chunked (streaming) transcription. STT_CHUNKED: "auto" (default) probes at
 # startup whether recordings can be decoded while still being written and, if
@@ -446,6 +459,268 @@ def _transcribe_via_server(wav_path: str) -> tuple[str, int]:
 
 
 atexit.register(stop_whisper_server)
+
+
+# --- Speech cleanup (local LLM removes disfluencies, fixes punctuation) ---
+#
+# A small instruct model (Qwen3-1.7B Q4 by default) served by a resident
+# llama.cpp llama-server on CLEANUP_SERVER_PORT rewrites the final transcript:
+# filler words and false starts removed, spoken self-corrections resolved,
+# punctuation/capitalization fixed. It runs ONCE on the joined full text (via
+# _postprocess_text, before word corrections) — never on individual chunks,
+# since false starts and self-corrections span chunk boundaries. Skipped while
+# symbol mode is on (CLI dictation wants verbatim text). Any failure or a
+# degenerate LLM response falls back to the raw transcript — never breakage.
+
+CLEANUP_SETTINGS_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "cleanup-settings.json"
+)
+
+cleanup_settings: dict = {"enabled": False}
+
+
+def load_cleanup_settings():
+    """Load the speech cleanup toggle from its JSON file."""
+    global cleanup_settings
+    if not os.path.isfile(CLEANUP_SETTINGS_FILE):
+        cleanup_settings = {"enabled": False}
+        return
+    try:
+        with open(CLEANUP_SETTINGS_FILE, "r") as f:
+            data = json.load(f)
+        cleanup_settings = {"enabled": bool(data.get("enabled", False))}
+    except (json.JSONDecodeError, OSError):
+        cleanup_settings = {"enabled": False}
+
+
+def save_cleanup_settings():
+    """Save the speech cleanup toggle to its JSON file."""
+    try:
+        with open(CLEANUP_SETTINGS_FILE, "w") as f:
+            json.dump(cleanup_settings, f, indent=2)
+            f.write("\n")
+    except OSError as e:
+        add_log("error", f"Failed to save cleanup settings: {e}")
+
+
+_cleanup_server_proc: subprocess.Popen | None = None
+
+
+def find_cleanup_bin() -> str:
+    """Locate the llama.cpp server binary."""
+    c = os.path.join(INSTALL_DIR, "llama.cpp", "build", "bin", "llama-server")
+    if os.path.isfile(c) and os.access(c, os.X_OK):
+        return c
+    return ""
+
+
+def find_cleanup_model() -> str:
+    """Locate the cleanup GGUF model file."""
+    c = os.path.join(MODEL_DIR, CLEANUP_MODEL_FILE)
+    return c if os.path.isfile(c) else ""
+
+
+def _cleanup_health_ok(timeout: float = 1.0) -> bool:
+    """True when llama-server answers /health with 200 (503 while loading)."""
+    try:
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{CLEANUP_SERVER_PORT}/health"
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+def _is_cleanup_server_alive() -> bool:
+    """Check that the llama-server process runs and its model is loaded."""
+    return (
+        _cleanup_server_proc is not None
+        and _cleanup_server_proc.poll() is None
+        and _cleanup_health_ok()
+    )
+
+
+def start_cleanup_server() -> bool:
+    """Start the resident llama-server for speech cleanup.
+
+    Returns True if the process was launched. Model loading takes a while on
+    first start, so readiness is not waited for here — a background thread
+    logs when /health goes green, and apply_cleanup() checks liveness per
+    call. Missing binary or model just means cleanup stays unavailable.
+    """
+    global _cleanup_server_proc
+
+    server_bin = find_cleanup_bin()
+    model_file = find_cleanup_model()
+    if not server_bin or not model_file:
+        add_log(
+            "info",
+            "Speech cleanup unavailable — llama-server binary or model missing "
+            "(run setup-termux.sh, or: ./update-model.sh cleanup)",
+        )
+        return False
+
+    cmd = [
+        server_bin,
+        "--model", model_file,
+        "--host", "127.0.0.1",
+        "--port", str(CLEANUP_SERVER_PORT),
+        "--ctx-size", "4096",
+        "--threads", str(CLEANUP_THREADS),
+    ]
+    add_log("info", f"Starting cleanup llama-server: {' '.join(cmd)}")
+    try:
+        _cleanup_server_proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, OSError) as e:
+        add_log("error", f"Failed to start cleanup llama-server: {e}")
+        return False
+
+    def _watch_ready(proc):
+        deadline = time.time() + 180
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                add_log("error", f"Cleanup llama-server exited (code={proc.returncode})")
+                return
+            if _cleanup_health_ok():
+                add_log("info", f"Cleanup llama-server ready on port {CLEANUP_SERVER_PORT} (pid={proc.pid})")
+                return
+            time.sleep(1.0)
+        add_log("warn", "Cleanup llama-server not ready after 180s — cleanup stays unavailable")
+
+    threading.Thread(
+        target=_watch_ready, args=(_cleanup_server_proc,),
+        daemon=True, name="cleanup-server-watch",
+    ).start()
+    return True
+
+
+def stop_cleanup_server():
+    """Stop the resident cleanup llama-server."""
+    global _cleanup_server_proc
+
+    if _cleanup_server_proc is not None:
+        add_log("info", f"Stopping cleanup llama-server (pid={_cleanup_server_proc.pid})")
+        try:
+            _cleanup_server_proc.terminate()
+            _cleanup_server_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _cleanup_server_proc.kill()
+            _cleanup_server_proc.wait(timeout=3)
+        except Exception:
+            pass
+        _cleanup_server_proc = None
+
+
+atexit.register(stop_cleanup_server)
+
+
+# /no_think disables Qwen3's thinking mode (latency); other instruct models
+# ignore the token. Few-shot pairs pin down "remove, don't rewrite" — small
+# models drift into paraphrasing without them. llama-server KV-caches this
+# shared prefix, so only the first request pays for prompt processing.
+CLEANUP_SYSTEM_PROMPT = (
+    "/no_think You clean up raw speech-to-text transcripts. Rewrite the transcript with:\n"
+    "- filler words (um, uh, you know), false starts, and stuttered/repeated words removed\n"
+    "- spoken self-corrections resolved, keeping only the corrected version\n"
+    "- punctuation, capitalization, and sentence breaks fixed\n"
+    "Never paraphrase, reorder, summarize, or add words — keep the speaker's exact wording "
+    "apart from those removals and fixes. Reply with ONLY the cleaned transcript."
+)
+
+CLEANUP_EXAMPLES = [
+    (
+        "so um I think we should uh we should probably start with the the login page",
+        "I think we should probably start with the login page.",
+    ),
+    (
+        "send the report to to Sarah no wait send it to Mike by Friday",
+        "Send the report to Mike by Friday.",
+    ),
+    (
+        "it works fine",
+        "It works fine.",
+    ),
+]
+
+
+def _strip_think(text: str) -> str:
+    """Drop the <think>…</think> block Qwen3 emits even with /no_think."""
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+
+
+def _cleanup_request(text: str) -> str:
+    """Ask the llama-server to clean one transcript. Returns the raw reply."""
+    messages = [{"role": "system", "content": CLEANUP_SYSTEM_PROMPT}]
+    for raw, cleaned in CLEANUP_EXAMPLES:
+        messages.append({"role": "user", "content": raw})
+        messages.append({"role": "assistant", "content": cleaned})
+    messages.append({"role": "user", "content": text})
+
+    payload = {
+        "messages": messages,
+        "temperature": 0,
+        # Output is at most about as long as the input; cap generation so a
+        # runaway response can't stall the Stop request for the full timeout.
+        "max_tokens": max(64, len(text) // 2),
+    }
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{CLEANUP_SERVER_PORT}/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=CLEANUP_TIMEOUT_SEC) as resp:
+        result = json.loads(resp.read())
+    return _strip_think(result["choices"][0]["message"]["content"])
+
+
+def _cleanup_result_ok(original: str, cleaned: str) -> bool:
+    """Sanity guard: a degenerate LLM response must never replace the
+    transcript. Empty output, heavy truncation, or padding with commentary
+    all land outside this length window; legitimate cleanup (fillers out,
+    punctuation in) stays within it."""
+    if not cleaned:
+        return False
+    ratio = len(cleaned) / len(original)
+    return 0.35 <= ratio <= 1.6
+
+
+def apply_cleanup(text: str) -> str:
+    """Run LLM speech cleanup on a final transcript.
+
+    Returns the input unchanged when cleanup is disabled, symbol mode is on
+    (verbatim CLI dictation — the LLM would mangle "/help" or "foo-bar"),
+    the llama-server isn't ready, the request fails, or the response flunks
+    the sanity guard.
+    """
+    if not text or not cleanup_settings.get("enabled"):
+        return text
+    if symbol_settings.get("enabled"):
+        add_log("info", "Cleanup skipped (symbol mode is on)")
+        return text
+    if not _is_cleanup_server_alive():
+        add_log("warn", "Cleanup enabled but llama-server not ready — using raw text")
+        return text
+
+    t0 = time.time()
+    try:
+        cleaned = _cleanup_request(text)
+    except Exception as e:
+        add_log("warn", f"Cleanup failed ({e}) — using raw text")
+        return text
+    ms = int((time.time() - t0) * 1000)
+
+    if not _cleanup_result_ok(text, cleaned):
+        add_log("warn", f"Cleanup rejected ({len(text)} -> {len(cleaned)} chars, {ms}ms) — using raw text")
+        return text
+    if cleaned != text:
+        add_log("info", f"Cleanup applied ({ms}ms): {text[:60]!r} -> {cleaned[:60]!r}")
+    return cleaned
 
 
 # --- Parakeet engine (sherpa-onnx or onnxruntime, in-process) ---
@@ -844,11 +1119,20 @@ def _clean_raw_text(text: str) -> str:
 
 def _postprocess_text(text: str, source: str) -> str:
     """Shared transcription cleanup: strip silence markers, collapse
-    whitespace, apply word corrections."""
+    whitespace, apply LLM speech cleanup, word corrections, symbols."""
     text = _clean_raw_text(text)
 
     if not text:
         add_log("warn", f"{source}: no speech detected")
+
+    # LLM cleanup first, on the speaker's raw wording — corrections and
+    # symbol phrases still match afterwards. In chunked mode this runs once
+    # on the joined text (chunks are transcribed with postprocess=False), so
+    # false starts and self-corrections spanning chunk boundaries are seen
+    # whole. apply_cleanup() is a no-op unless enabled, and always falls
+    # back to the input on failure.
+    if text:
+        text = apply_cleanup(text)
 
     if text and word_corrections:
         corrected = apply_corrections(text)
@@ -1490,6 +1774,8 @@ def status():
             "recording": is_recording,
             "whisper_server_mode": _is_whisper_server_alive(),
             "symbol_mode": bool(symbol_settings.get("enabled")),
+            "cleanup_mode": bool(cleanup_settings.get("enabled")),
+            "cleanup_available": _is_cleanup_server_alive(),
             "chunked": chunked_supported,
         })
     else:
@@ -1702,6 +1988,34 @@ def reset_symbols():
     save_symbols()
     add_log("info", "Symbol replacements reset to defaults")
     return jsonify(symbol_settings)
+
+
+# --- Speech cleanup toggle ---
+
+def _cleanup_state() -> dict:
+    return {
+        "enabled": bool(cleanup_settings.get("enabled")),
+        "available": _is_cleanup_server_alive(),
+        "model": CLEANUP_MODEL_FILE if find_cleanup_model() else None,
+    }
+
+
+@app.route("/cleanup", methods=["GET"])
+def get_cleanup():
+    """Return the speech cleanup state: {"enabled", "available", "model"}."""
+    return jsonify(_cleanup_state())
+
+
+@app.route("/cleanup", methods=["PUT"])
+def put_cleanup():
+    """Enable or disable speech cleanup. Body: {"enabled": bool}."""
+    data = request.get_json(silent=True)
+    if data is None or not isinstance(data, dict) or not isinstance(data.get("enabled"), bool):
+        return jsonify({"error": "invalid_body", "message": "Request body must be JSON with a boolean 'enabled'."}), 400
+    cleanup_settings["enabled"] = data["enabled"]
+    save_cleanup_settings()
+    add_log("info", f"Speech cleanup {'enabled' if data['enabled'] else 'disabled'}")
+    return jsonify(_cleanup_state())
 
 
 # --- Settings ---
@@ -2152,6 +2466,7 @@ if __name__ == "__main__":
     _init_runtime_settings()
     load_corrections()
     load_symbols()
+    load_cleanup_settings()
     load_model()
     select_engine()
     detect_audio_format()
@@ -2170,6 +2485,13 @@ if __name__ == "__main__":
             add_log("info", "Using persistent whisper-server mode (model loaded once)")
         else:
             add_log("info", "Using subprocess mode (model loaded per request)")
+
+    # Resident cleanup LLM — started regardless of the runtime toggle so
+    # flipping cleanup on never pays a model-load wait mid-dictation.
+    if STT_CLEANUP != "off":
+        start_cleanup_server()
+    else:
+        add_log("info", "Speech cleanup: disabled (STT_CLEANUP=off)")
 
     add_log("info", f"Server starting on port {PORT}")
     app.run(host="127.0.0.1", port=PORT, threaded=True)

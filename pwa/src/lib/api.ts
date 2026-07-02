@@ -199,6 +199,33 @@ export async function resetSymbols(): Promise<SymbolConfig> {
   return res.json();
 }
 
+// --- Speech cleanup (local LLM removes disfluencies, fixes punctuation) ---
+
+export interface CleanupConfig {
+  enabled: boolean;
+  /** true when the llama-server is running with its model loaded */
+  available: boolean;
+  model: string | null;
+}
+
+export async function getCleanup(): Promise<CleanupConfig> {
+  const res = await whisperFetch("/cleanup");
+  return res.json();
+}
+
+export async function putCleanup(enabled: boolean): Promise<CleanupConfig> {
+  const res = await whisperFetch("/cleanup", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || "Failed to save cleanup setting");
+  }
+  return res.json();
+}
+
 // --- Whisper Server Settings ---
 
 export interface WhisperSettings {

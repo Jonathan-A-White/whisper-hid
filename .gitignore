@@ -10,3 +10,5 @@ __pycache__/
 .pytest_cache/
 # Materialized per-device from DEFAULT_SYMBOLS, then user-edited via the PWA
 scripts/symbol-replacements.json
+# Per-device speech cleanup toggle, set via the PWA
+scripts/cleanup-settings.json
