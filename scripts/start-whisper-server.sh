@@ -34,9 +34,23 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
     exit 0
 fi
 
+# Forward tuning env vars into the tmux session explicitly. tmux sessions
+# inherit the environment of the tmux *server*, not the caller — so without
+# this, "export CLEANUP_THREADS=6 && ./start-whisper-server.sh" silently
+# does nothing whenever a tmux server is already running.
+ENV_VARS=""
+for _var in WHISPER_MODEL WHISPER_PORT STT_ENGINE STT_CLEANUP STT_CHUNKED \
+            CLEANUP_MODEL CLEANUP_THREADS CLEANUP_SERVER_PORT CLEANUP_TIMEOUT_SEC \
+            PARAKEET_THREADS WHISPER_SERVER_PORT WHISPER_NOISE_REDUCTION CORS_ORIGIN; do
+    if [ -n "${!_var:-}" ]; then
+        ENV_VARS="$ENV_VARS $(printf '%s=%q' "$_var" "${!_var}")"
+    fi
+done
+unset _var
+
 # Start in a new tmux session
 tmux new-session -d -s "$SESSION_NAME" \
-    "cd '$INSTALL_DIR' && python3 whisper-server.py; echo 'Server exited. Press Enter to close.'; read"
+    "cd '$INSTALL_DIR' && env $ENV_VARS python3 whisper-server.py; echo 'Server exited. Press Enter to close.'; read"
 
 echo "Whisper server started in tmux session '$SESSION_NAME'."
 echo "  View logs:  tmux attach -t $SESSION_NAME"
