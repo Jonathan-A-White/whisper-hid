@@ -182,11 +182,12 @@ the server instead transcribes silence-delimited chunks in the background
 during the recording, so Stop only costs the final uncommitted tail (~1s
 instead of ~duration/10 with Parakeet).
 
-- **Format matters**: ADTS AAC and raw AMR-WB streams decode mid-write;
-  AAC in an MP4 container does not (moov atom is written at stop). This is
+- **Format matters**: ADTS AAC, raw AMR-WB, and Ogg Opus decode mid-write;
+  MP4-family containers do not (moov atom is written at stop). Some devices
+  (observed on Samsung) wrap BOTH aac and amr_wb in MP4 containers. This is
   probed at startup (`detect_chunked_support()`): if the detected format
-  fails the probe, the server tries AMR-WB and switches recording to it
-  (16kHz wideband speech codec — matches the 16kHz input the engines use).
+  fails the probe, the server tries AMR-WB, then Opus (`-e opus` → Ogg
+  container, streamable pages), and switches recording to whichever passes.
 - **How it works**: `ChunkedSession` snapshots the growing file every 2s
   (copy first — ffmpeg racing the encoder is unreliable), decodes it, finds
   silence boundaries via per-frame levels (`find_commit_boundary()`, adaptive
