@@ -115,7 +115,13 @@ Most "no speech detected" bugs are NOT mic problems — check the full pipeline:
 ### Diagnostic endpoints
 - `GET /logs` — circular buffer of recent events with timestamps
 - `POST /debug/test-pipeline` — records 3s of audio and returns diagnostics
-  for every pipeline stage (recording, transcode, audio energy, whisper output)
+  for every pipeline stage (recording, transcode, audio energy, whisper output).
+  Includes `mic_bandwidth` (`estimate_bandwidth()`, pure-Python FFT — no numpy
+  dependency): verdict `narrowband` means the audio has no content above
+  ~4 kHz. With a Bluetooth headset mic that's the SCO link on CVSD instead of
+  mSBC — a major transcription quality hit no server-side processing can
+  recover (try re-pairing / headset firmware update). The Setup Wizard mic
+  test surfaces this verdict.
 
 ### Pipeline stages (each can fail independently)
 1. **Mic capture**: `termux-microphone-record` → raw AAC/AMR file
