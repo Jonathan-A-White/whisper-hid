@@ -139,10 +139,17 @@ if [ -x "$LLAMA_BIN_SERVER" ]; then
 else
     if [ ! -d "$INSTALL_DIR/llama.cpp" ]; then
         git clone "$LLAMA_REPO" "$INSTALL_DIR/llama.cpp" || true
+    else
+        # A clone without a built binary is left over from a failed build —
+        # pull latest so upstream fixes (and the MTMD_VIDEO guard) are present.
+        (cd "$INSTALL_DIR/llama.cpp" && git pull) || true
     fi
     # Same -march story as whisper.cpp: GGML_NATIVE=OFF avoids SIGILL from
     # -mcpu=native; LLAMA_CURL=OFF drops the libcurl dependency (models are
     # downloaded with curl below, not by llama-server).
+    # MTMD_VIDEO=OFF: mtmd's video support (on by default) pulls in a vendored
+    # subprocess.h that needs spawn.h, which Termux's libc doesn't ship — the
+    # build dies there. Cleanup only sends text, so video support is unneeded.
     if [ -d "$INSTALL_DIR/llama.cpp" ] \
         && (cd "$INSTALL_DIR/llama.cpp" \
             && cmake -B build \
@@ -151,6 +158,7 @@ else
                 -DGGML_NATIVE=OFF \
                 -DLLAMA_CURL=OFF \
                 -DLLAMA_BUILD_SERVER=ON \
+                -DMTMD_VIDEO=OFF \
             && cmake --build build --config Release -j"$(nproc)" --target llama-server); then
         CLEANUP_OK=1
     else
