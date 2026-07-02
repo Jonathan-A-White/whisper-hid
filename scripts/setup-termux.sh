@@ -134,7 +134,12 @@ LLAMA_REPO="https://github.com/ggml-org/llama.cpp.git"
 LLAMA_BIN_SERVER="$INSTALL_DIR/llama.cpp/build/bin/llama-server"
 # Keep the model file name in sync with whisper-server.py and update-model.sh
 CLEANUP_MODEL_FILE="Qwen3-1.7B-Q4_K_M.gguf"
-CLEANUP_MODEL_URL="https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/${CLEANUP_MODEL_FILE}"
+# unsloth repo: the official Qwen/Qwen3-1.7B-GGUF repo doesn't carry the
+# Q4_K_M quant (its /resolve URL returns "Entry not found").
+CLEANUP_MODEL_URL="https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/${CLEANUP_MODEL_FILE}"
+# A failed download can leave a tiny error-page file — anything smaller than
+# this is not a model and gets re-downloaded.
+CLEANUP_MODEL_MIN_BYTES=$((10 * 1024 * 1024))
 CLEANUP_OK=0
 if [ -x "$LLAMA_BIN_SERVER" ]; then
     echo "  llama.cpp already built, skipping compile step."
@@ -173,14 +178,22 @@ else
     fi
 fi
 if [ "$CLEANUP_OK" = "1" ]; then
-    if [ -f "$INSTALL_DIR/models/$CLEANUP_MODEL_FILE" ]; then
+    CLEANUP_MODEL_PATH="$INSTALL_DIR/models/$CLEANUP_MODEL_FILE"
+    if [ -f "$CLEANUP_MODEL_PATH" ] \
+        && [ "$(wc -c < "$CLEANUP_MODEL_PATH")" -lt "$CLEANUP_MODEL_MIN_BYTES" ]; then
+        echo "  Existing cleanup model is only $(wc -c < "$CLEANUP_MODEL_PATH") bytes (broken download) — re-downloading."
+        rm -f "$CLEANUP_MODEL_PATH"
+    fi
+    if [ -f "$CLEANUP_MODEL_PATH" ]; then
         echo "  Cleanup model already downloaded."
     else
         echo "  Downloading cleanup model (~1.1 GB)..."
-        if curl -L --progress-bar -o "$INSTALL_DIR/models/$CLEANUP_MODEL_FILE" "$CLEANUP_MODEL_URL"; then
+        # -f: fail on an HTTP error instead of saving the error page as the model
+        if curl -fL --progress-bar -o "$CLEANUP_MODEL_PATH" "$CLEANUP_MODEL_URL" \
+            && [ "$(wc -c < "$CLEANUP_MODEL_PATH")" -ge "$CLEANUP_MODEL_MIN_BYTES" ]; then
             echo "  Cleanup model installed."
         else
-            rm -f "$INSTALL_DIR/models/$CLEANUP_MODEL_FILE"
+            rm -f "$CLEANUP_MODEL_PATH"
             CLEANUP_OK=0
             echo "  WARNING: cleanup model download failed. To retry later:"
             echo "    ./update-model.sh cleanup"

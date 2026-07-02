@@ -15,7 +15,9 @@ PARAKEET_DIR="sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
 PARAKEET_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${PARAKEET_DIR}.tar.bz2"
 # Speech cleanup LLM — keep in sync with whisper-server.py and setup-termux.sh
 CLEANUP_MODEL_FILE="Qwen3-1.7B-Q4_K_M.gguf"
-CLEANUP_MODEL_URL="https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/${CLEANUP_MODEL_FILE}"
+# unsloth repo: the official Qwen/Qwen3-1.7B-GGUF repo doesn't carry the
+# Q4_K_M quant (its /resolve URL returns "Entry not found").
+CLEANUP_MODEL_URL="https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/${CLEANUP_MODEL_FILE}"
 
 usage() {
     echo "Usage: $0 <model-name>"
@@ -103,7 +105,7 @@ if [ "$MODEL_NAME" = "cleanup" ]; then
     fi
     echo "Downloading Qwen3-1.7B Q4_K_M speech cleanup model (~1.1 GB)..."
     echo "URL: $CLEANUP_MODEL_URL"
-    curl -L --progress-bar -o "$DEST" "$CLEANUP_MODEL_URL"
+    curl -fL --progress-bar -o "$DEST" "$CLEANUP_MODEL_URL"
     ACTUAL_SIZE=$(wc -c < "$DEST")
     if [ "$ACTUAL_SIZE" -lt "$MIN_MODEL_SIZE" ]; then
         echo "Error: Downloaded file is only ${ACTUAL_SIZE} bytes — expected a model file (>10 MB)."
