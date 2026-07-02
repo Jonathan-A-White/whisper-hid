@@ -515,9 +515,16 @@ def find_cleanup_bin() -> str:
 
 
 def find_cleanup_model() -> str:
-    """Locate the cleanup GGUF model file."""
+    """Locate the cleanup GGUF model file.
+
+    Requires a plausible size, not just existence: a failed download can leave
+    a tiny error-page file (e.g. 15 bytes of "Entry not found"), which would
+    otherwise make llama-server start and immediately exit.
+    """
     c = os.path.join(MODEL_DIR, CLEANUP_MODEL_FILE)
-    return c if os.path.isfile(c) else ""
+    if os.path.isfile(c) and os.path.getsize(c) > 10 * 1024 * 1024:
+        return c
+    return ""
 
 
 def _cleanup_health_ok(timeout: float = 1.0) -> bool:
