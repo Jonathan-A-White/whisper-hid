@@ -957,7 +957,13 @@ def run_whisper(wav_path: str, postprocess: bool = True) -> tuple[str, int]:
 # the plain stop-time transcription — it never breaks a dictation.
 
 CHUNK_POLL_SEC = 2.0        # how often the poller snapshots the recording
-CHUNK_SILENCE_SEC = 0.6     # minimum pause length that ends a chunk
+# Minimum pause length that ends a chunk. Each chunk is transcribed as an
+# independent utterance, so the engine sentence-cases its first word and
+# punctuates its end — a chunk split at a mid-sentence thinking pause produces
+# "I wonder how quickly It'll take" artifacts in the joined text. 1.2s keeps
+# splits at deliberate, sentence-scale pauses; don't lower it back to make
+# chunks commit sooner without weighing that cost.
+CHUNK_SILENCE_SEC = 1.2
 CHUNK_MIN_NEW_SEC = 1.0     # don't commit chunks shorter than this
 CHUNK_TAIL_GUARD_SEC = 0.4  # never commit into the (possibly unflushed) tail
 CHUNK_FRAME_SEC = 0.03      # analysis frame size for level detection
