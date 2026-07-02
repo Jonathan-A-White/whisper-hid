@@ -26,6 +26,7 @@ import atexit
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -40,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.3.0"
+SERVER_VERSION = "1.4.0"
 
 # --- Configuration ---
 
@@ -62,6 +63,13 @@ PARAKEET_MODEL_NAME = "parakeet-tdt-0.6b-v2"
 PARAKEET_DIR_NAME = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
 PARAKEET_CATALOG_SIZE_MB = 640
 PARAKEET_THREADS = int(os.environ.get("PARAKEET_THREADS", "4"))
+
+# Chunked (streaming) transcription. STT_CHUNKED: "auto" (default) probes at
+# startup whether recordings can be decoded while still being written and, if
+# so, transcribes silence-delimited chunks in the background during recording
+# (may switch the recording format to AMR-WB when AAC isn't partial-decodable);
+# "off" disables the probe and the feature.
+STT_CHUNKED = os.environ.get("STT_CHUNKED", "auto").lower()
 
 # --- Runtime settings (mutable via /settings API) ---
 
@@ -95,6 +103,8 @@ log_buffer = deque(maxlen=200)
 start_time = time.time()
 audio_format = "aac"       # detected at startup: "aac" or "amr_wb"
 audio_ext = "aac"          # file extension for recordings
+chunked_supported = False  # set by detect_chunked_support() at startup
+chunk_session = None       # active ChunkedSession while recording (guarded by recording_lock)
 
 
 CORRECTIONS_FILE = os.path.join(
@@ -688,16 +698,20 @@ def load_model():
     add_log("info", f"Model loaded: {model_name} ({model_size_mb} MB)")
 
 
-def transcode_to_wav(input_path: str, output_path: str) -> bool:
+def transcode_to_wav(input_path: str, output_path: str, quiet: bool = False) -> bool:
     """Transcode any audio format to 16kHz mono WAV using ffmpeg.
 
     When WHISPER_NOISE_REDUCTION=1 is set, applies FFT-based noise reduction
     (afftdn) before transcoding. This helps with noisy environments but adds
     ~100-200ms of processing time.
+
+    quiet=True skips the info logs (used by the chunked-transcription poller,
+    which transcodes every couple of seconds and would flood the log buffer).
     """
     input_size = os.path.getsize(input_path) if os.path.isfile(input_path) else 0
     denoise = get_noise_reduction()
-    add_log("info", f"Transcode: input={input_path} size={input_size}B denoise={denoise}")
+    if not quiet:
+        add_log("info", f"Transcode: input={input_path} size={input_size}B denoise={denoise}")
     try:
         cmd = ["ffmpeg", "-y", "-i", input_path]
         if denoise:
@@ -710,7 +724,8 @@ def transcode_to_wav(input_path: str, output_path: str) -> bool:
             timeout=30,
         )
         if result.returncode != 0:
-            add_log("warn", f"ffmpeg exited {result.returncode}: {result.stderr[-300:]}")
+            if not quiet:
+                add_log("warn", f"ffmpeg exited {result.returncode}: {result.stderr[-300:]}")
             return False
         out_size = os.path.getsize(output_path) if os.path.isfile(output_path) else 0
         # Extract duration from ffmpeg stderr (e.g. "Duration: 00:00:06.12")
@@ -719,9 +734,11 @@ def transcode_to_wav(input_path: str, output_path: str) -> bool:
             if "Duration:" in line:
                 duration_line = line.strip()
                 break
-        add_log("info", f"Transcode: output={out_size}B {duration_line}")
+        if not quiet:
+            add_log("info", f"Transcode: output={out_size}B {duration_line}")
         if out_size < 1000:
-            add_log("warn", f"WAV too small after transcode ({out_size}B) — likely silence or corrupt input")
+            if not quiet:
+                add_log("warn", f"WAV too small after transcode ({out_size}B) — likely silence or corrupt input")
             return False
         return True
     except subprocess.TimeoutExpired:
@@ -804,13 +821,21 @@ _whisper_extra_flags: list[str] | None = None
 SILENCE_MARKERS = ["[BLANK_AUDIO]", "(silence)", "[silence]"]
 
 
+def _clean_raw_text(text: str) -> str:
+    """Strip silence markers and collapse whitespace — no corrections/symbols.
+
+    Used for per-chunk output in chunked mode, where corrections and symbol
+    replacements must run once over the joined text (a phrase could span a
+    chunk boundary)."""
+    for marker in SILENCE_MARKERS:
+        text = text.replace(marker, "")
+    return " ".join(text.split())
+
+
 def _postprocess_text(text: str, source: str) -> str:
     """Shared transcription cleanup: strip silence markers, collapse
     whitespace, apply word corrections."""
-    for marker in SILENCE_MARKERS:
-        text = text.replace(marker, "")
-    # Collapse all whitespace (including newlines between segments) into single spaces
-    text = " ".join(text.split())
+    text = _clean_raw_text(text)
 
     if not text:
         add_log("warn", f"{source}: no speech detected")
@@ -829,23 +854,28 @@ def _postprocess_text(text: str, source: str) -> str:
     return text
 
 
-def run_transcription(wav_path: str) -> tuple[str, int]:
+def run_transcription(wav_path: str, postprocess: bool = True) -> tuple[str, int]:
     """Transcribe a WAV file with the active engine. Returns (text, duration_ms).
 
     Uses Parakeet (in-process sherpa-onnx) when active, falling back to
     whisper.cpp if Parakeet is unavailable or fails.
+
+    postprocess=False returns marker-stripped raw text without corrections or
+    symbol replacements (chunked mode post-processes the joined text once).
     """
     if active_engine == "parakeet" and _parakeet_recognizer is not None:
         try:
             text, duration_ms = run_parakeet_raw(wav_path)
             add_log("info", f"Parakeet: took={duration_ms}ms")
+            if not postprocess:
+                return _clean_raw_text(text), duration_ms
             return _postprocess_text(text, "Parakeet"), duration_ms
         except Exception as e:
             add_log("warn", f"Parakeet failed ({e}), falling back to whisper")
-    return run_whisper(wav_path)
+    return run_whisper(wav_path, postprocess=postprocess)
 
 
-def run_whisper(wav_path: str) -> tuple[str, int]:
+def run_whisper(wav_path: str, postprocess: bool = True) -> tuple[str, int]:
     """Run whisper.cpp on a WAV file. Returns (text, duration_ms).
 
     Prefers the persistent whisper-server (model already loaded, fast).
@@ -861,6 +891,8 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
         try:
             text, duration_ms = _transcribe_via_server(wav_path)
             add_log("info", f"Whisper (server): took={duration_ms}ms")
+            if not postprocess:
+                return _clean_raw_text(text), duration_ms
             return _postprocess_text(text, "Whisper (server)"), duration_ms
         except Exception as e:
             add_log("warn", f"Whisper server request failed ({e}), falling back to subprocess")
@@ -898,7 +930,316 @@ def run_whisper(wav_path: str) -> tuple[str, int]:
             add_log("info", f"Whisper stderr: {line.strip()}")
 
     # Parse output — whisper.cpp prints transcription to stdout
+    if not postprocess:
+        return _clean_raw_text(result.stdout.strip()), duration_ms
     return _postprocess_text(result.stdout.strip(), "Whisper"), duration_ms
+
+
+# --- Chunked (streaming) transcription ---
+#
+# PTT recordings are normally transcribed only after the user taps Stop, so a
+# long take pays the full engine cost as one wait at the end. When the
+# recording file can be decoded while still being written (ADTS AAC or raw
+# AMR-WB — probed at startup, MP4-container AAC cannot), a background thread
+# snapshots the growing file every couple of seconds, finds silence
+# boundaries, and transcribes completed chunks immediately. Tapping Stop then
+# only costs the final uncommitted tail. Any failure in this path degrades to
+# the plain stop-time transcription — it never breaks a dictation.
+
+CHUNK_POLL_SEC = 2.0        # how often the poller snapshots the recording
+CHUNK_SILENCE_SEC = 0.6     # minimum pause length that ends a chunk
+CHUNK_MIN_NEW_SEC = 1.0     # don't commit chunks shorter than this
+CHUNK_TAIL_GUARD_SEC = 0.4  # never commit into the (possibly unflushed) tail
+CHUNK_FRAME_SEC = 0.03      # analysis frame size for level detection
+CHUNK_LEVEL_FLOOR = 120.0   # absolute mean-abs level below which is silence
+
+
+def _read_wav_pcm(wav_path: str) -> tuple[bytes, int]:
+    """Read a 16-bit mono PCM WAV as (raw sample bytes, sample_rate)."""
+    import wave
+
+    with wave.open(wav_path, "rb") as w:
+        if w.getsampwidth() != 2 or w.getnchannels() != 1:
+            raise RuntimeError("Expected 16-bit mono WAV")
+        return w.readframes(w.getnframes()), w.getframerate()
+
+
+def _frame_levels(pcm: bytes, sample_rate: int, frame_sec: float = CHUNK_FRAME_SEC) -> list[float]:
+    """Mean absolute amplitude per non-overlapping frame of 16-bit PCM."""
+    import array
+
+    samples = array.array("h", pcm[: len(pcm) - (len(pcm) % 2)])
+    frame = max(1, int(sample_rate * frame_sec))
+    n_frames = len(samples) // frame
+    if n_frames == 0:
+        return []
+    try:
+        import numpy as np
+
+        arr = np.frombuffer(samples, dtype=np.int16)[: n_frames * frame]
+        return np.abs(arr.reshape(n_frames, frame).astype(np.int32)).mean(axis=1).tolist()
+    except ImportError:
+        levels = []
+        for i in range(n_frames):
+            chunk = samples[i * frame : (i + 1) * frame]
+            levels.append(sum(abs(s) for s in chunk) / frame)
+        return levels
+
+
+def find_commit_boundary(
+    levels: list[float],
+    frame_sec: float,
+    committed_sec: float,
+    total_sec: float,
+    silence_sec: float = CHUNK_SILENCE_SEC,
+    min_new_sec: float = CHUNK_MIN_NEW_SEC,
+    tail_guard_sec: float = CHUNK_TAIL_GUARD_SEC,
+    level_floor: float = CHUNK_LEVEL_FLOOR,
+) -> tuple[float, bool] | None:
+    """Find a safe point to commit transcription up to.
+
+    Scans frame levels after committed_sec for silence runs (level below an
+    adaptive threshold) of at least silence_sec, staying tail_guard_sec away
+    from the end of the decoded audio (the encoder may not have flushed it).
+    Returns (boundary_sec, segment_has_speech) for the LAST qualifying silence
+    run — committing as much audio as possible per poll — or None if there is
+    no qualifying boundary yet.
+    """
+    if not levels:
+        return None
+
+    # Adaptive silence threshold: a multiple of the quiet end (p10 ~ room
+    # noise), capped by a fraction of the loud end (p95 ~ speech) so that a
+    # buffer with few or no pauses doesn't push the threshold into speech
+    # levels. level_floor keeps digital near-silence classified as silence.
+    sorted_levels = sorted(levels)
+    p10 = sorted_levels[int(0.10 * (len(sorted_levels) - 1))]
+    p95 = sorted_levels[int(0.95 * (len(sorted_levels) - 1))]
+    threshold = max(level_floor, min(3.0 * p10, 0.2 * p95))
+
+    end_limit = min(total_sec, len(levels) * frame_sec) - tail_guard_sec
+    if end_limit - committed_sec < min_new_sec:
+        return None
+
+    first_frame = max(0, int(committed_sec / frame_sec))
+    last_frame = min(len(levels), int(end_limit / frame_sec))
+
+    boundary = None
+    run_start = None
+    for i in range(first_frame, last_frame + 1):
+        is_silent = i < last_frame and levels[i] < threshold
+        if is_silent and run_start is None:
+            run_start = i
+        elif not is_silent and run_start is not None:
+            run_len_sec = (i - run_start) * frame_sec
+            if run_len_sec >= silence_sec:
+                boundary = (run_start + i) / 2 * frame_sec
+            run_start = None
+
+    if boundary is None or boundary - committed_sec < min_new_sec:
+        return None
+
+    boundary_frame = int(boundary / frame_sec)
+    has_speech = any(
+        levels[i] >= threshold for i in range(first_frame, min(boundary_frame, len(levels)))
+    )
+    return boundary, has_speech
+
+
+def _write_wav_slice(src_wav: str, dst_wav: str, start_sec: float, end_sec: float | None) -> float:
+    """Write [start_sec, end_sec) of a WAV to a new file. Returns slice seconds."""
+    import wave
+
+    with wave.open(src_wav, "rb") as src:
+        rate = src.getframerate()
+        n_total = src.getnframes()
+        start = min(n_total, max(0, int(start_sec * rate)))
+        end = n_total if end_sec is None else min(n_total, max(start, int(end_sec * rate)))
+        src.setpos(start)
+        frames = src.readframes(end - start)
+        with wave.open(dst_wav, "wb") as dst:
+            dst.setparams(src.getparams())
+            dst.writeframes(frames)
+    return (end - start) / rate
+
+
+class ChunkedSession:
+    """Background transcriber for an in-progress PTT recording.
+
+    Snapshots the growing recording file on a timer, decodes it, and
+    transcribes up to the last silence boundary. State (texts, committed_sec,
+    engine_ms) is only mutated by the poller thread; readers must call
+    finish() first.
+    """
+
+    def __init__(self, audio_file: str):
+        self.audio_file = audio_file
+        self.committed_sec = 0.0
+        self.texts: list[str] = []
+        self.engine_ms = 0
+        self.chunks = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="chunked-transcriber"
+        )
+
+    def start(self):
+        self._thread.start()
+
+    def finish(self, timeout: float = 30.0) -> bool:
+        """Stop the poller and wait for it. Returns True if it exited cleanly."""
+        self._stop.set()
+        self._thread.join(timeout=timeout)
+        return not self._thread.is_alive()
+
+    def has_results(self) -> bool:
+        return bool(self.texts) or self.committed_sec > 0.5
+
+    def _run(self):
+        while not self._stop.wait(CHUNK_POLL_SEC):
+            try:
+                self._poll_once()
+            except Exception as e:
+                add_log("warn", f"Chunked: poller failed ({e}) — remaining audio will be transcribed at stop")
+                return
+
+    def _poll_once(self):
+        if not os.path.isfile(self.audio_file) or os.path.getsize(self.audio_file) < 4096:
+            return
+        snap = self.audio_file + ".part"
+        wav = snap + ".wav"
+        chunk_wav = snap + ".chunk.wav"
+        try:
+            # Snapshot first: ffmpeg reading the live file races the encoder.
+            shutil.copyfile(self.audio_file, snap)
+            if not transcode_to_wav(snap, wav, quiet=True):
+                return  # header not flushed yet — retry next poll
+            pcm, rate = _read_wav_pcm(wav)
+            levels = _frame_levels(pcm, rate)
+            found = find_commit_boundary(
+                levels, CHUNK_FRAME_SEC, self.committed_sec, len(pcm) / 2 / rate
+            )
+            if found is None:
+                return
+            boundary, has_speech = found
+            if has_speech:
+                _write_wav_slice(wav, chunk_wav, self.committed_sec, boundary)
+                with transcribe_lock:
+                    if self._stop.is_set():
+                        return  # stop already ran; leave the tail to it
+                    text, ms = run_transcription(chunk_wav, postprocess=False)
+                self.engine_ms += ms
+                self.chunks += 1
+                if text:
+                    self.texts.append(text)
+                add_log(
+                    "info",
+                    f"Chunked: committed {self.committed_sec:.1f}-{boundary:.1f}s "
+                    f"({ms}ms) -> {text[:60]!r}",
+                )
+            else:
+                add_log("info", f"Chunked: skipped silence {self.committed_sec:.1f}-{boundary:.1f}s")
+            self.committed_sec = boundary
+        finally:
+            for p in (snap, wav, chunk_wav):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+
+
+def _finish_chunked_transcription(session: "ChunkedSession", wav_path: str) -> tuple[str, int]:
+    """Transcribe the uncommitted tail of a chunked session and assemble the
+    final text. Must be called with transcribe_lock held and the session's
+    poller already finished."""
+    tail_wav = wav_path + ".tail.wav"
+    try:
+        tail_sec = _write_wav_slice(wav_path, tail_wav, session.committed_sec, None)
+        if tail_sec > 0.1:
+            tail_text, tail_ms = run_transcription(tail_wav, postprocess=False)
+        else:
+            tail_text, tail_ms = "", 0
+    finally:
+        try:
+            os.unlink(tail_wav)
+        except OSError:
+            pass
+
+    parts = [t for t in [*session.texts, tail_text] if t]
+    text = _postprocess_text(" ".join(parts), "Chunked")
+    add_log(
+        "info",
+        f"Chunked: {session.chunks} chunk(s) pre-transcribed "
+        f"({session.engine_ms}ms), tail {tail_sec:.1f}s ({tail_ms}ms)",
+    )
+    return text, session.engine_ms + tail_ms
+
+
+def probe_partial_decode(fmt: str, ext: str) -> bool:
+    """Check whether a recording in the given format can be decoded while the
+    recorder is still writing it (required for chunked transcription).
+
+    Records for ~2.5s, copies the in-progress file, and tries to ffmpeg-decode
+    the copy. ADTS AAC and raw AMR-WB pass; MP4-container AAC fails (the moov
+    atom is only written when the recording stops).
+    """
+    with tempfile.TemporaryDirectory() as td:
+        raw = os.path.join(td, f"probe.{ext}")
+        snap = os.path.join(td, f"snap.{ext}")
+        wav = os.path.join(td, "probe.wav")
+        rec_cmd = ["termux-microphone-record", "-f", raw, "-l", "0"]
+        if fmt == "amr_wb":
+            rec_cmd += ["-e", "amr_wb", "-b", "23850"]
+        try:
+            subprocess.run(rec_cmd, timeout=5)
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return False
+        ok = False
+        try:
+            time.sleep(2.5)
+            if os.path.isfile(raw) and os.path.getsize(raw) > 0:
+                shutil.copyfile(raw, snap)
+                r = subprocess.run(
+                    ["ffmpeg", "-y", "-i", snap, "-ar", "16000", "-ac", "1",
+                     "-c:a", "pcm_s16le", wav],
+                    capture_output=True, timeout=10,
+                )
+                # Require ≥0.5s of decoded audio (16kHz mono s16 = 32000 B/s)
+                ok = r.returncode == 0 and os.path.isfile(wav) and os.path.getsize(wav) > 16000
+        finally:
+            try:
+                subprocess.run(["termux-microphone-record", "-q"], timeout=5)
+                time.sleep(0.5)
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                pass
+        return ok
+
+
+def detect_chunked_support():
+    """Decide whether chunked transcription is possible on this device.
+
+    Probes the detected recording format first; if that isn't
+    partial-decodable (typical for AAC in an MP4 container), tries AMR-WB —
+    raw AMR streams are always readable mid-write — and switches the recording
+    format to it. AMR-WB is 16kHz wideband speech coding, which matches the
+    16kHz input both engines use anyway.
+    """
+    global chunked_supported, audio_format, audio_ext
+
+    if STT_CHUNKED == "off":
+        add_log("info", "Chunked transcription: disabled (STT_CHUNKED=off)")
+        return
+    if probe_partial_decode(audio_format, audio_ext):
+        chunked_supported = True
+        add_log("info", f"Chunked transcription: enabled ({audio_format} decodes mid-recording)")
+        return
+    if audio_format != "amr_wb" and probe_partial_decode("amr_wb", "amr"):
+        audio_format, audio_ext = "amr_wb", "amr"
+        chunked_supported = True
+        add_log("info", "Chunked transcription: enabled — switched recording format to AMR-WB "
+                        "(AAC recordings on this device can't be decoded mid-write)")
+        return
+    add_log("info", "Chunked transcription: unavailable (recordings can't be decoded mid-write)")
 
 
 # --- CORS helpers ---
@@ -986,7 +1327,7 @@ def transcribe_start():
         return jsonify({"error": "model_not_loaded", "message": "Whisper model is not loaded."}), 503
 
     with recording_lock:
-        global recording_process, recording_file
+        global recording_process, recording_file, chunk_session
 
         if recording_process is not None:
             return jsonify({"ok": False, "error": "already_recording", "message": "Already recording."}), 409
@@ -1004,6 +1345,9 @@ def transcribe_start():
             recording_process = subprocess.Popen(rec_cmd)
             add_log("info", f"Recording started: {recording_file}")
             print(f"Recording started: {recording_file}")
+            if chunked_supported:
+                chunk_session = ChunkedSession(recording_file)
+                chunk_session.start()
             return jsonify({"ok": True, "message": "Recording started"})
         except FileNotFoundError:
             recording_process = None
@@ -1016,7 +1360,7 @@ def transcribe_start():
 def transcribe_stop():
     """PTT: stop recording, transcribe captured audio, return text."""
     with recording_lock:
-        global recording_process, recording_file
+        global recording_process, recording_file, chunk_session
 
         if recording_process is None:
             return jsonify({"ok": False, "error": "not_recording", "message": "No active recording to stop."}), 400
@@ -1041,6 +1385,14 @@ def transcribe_stop():
         recording_process = None
         audio_file = recording_file
         recording_file = None
+        session = chunk_session
+        chunk_session = None
+
+    # Stop the chunk poller BEFORE taking transcribe_lock — an in-flight
+    # chunk transcription needs that lock to complete.
+    if session is not None and not session.finish():
+        add_log("warn", "Chunked: poller did not stop in time — falling back to full-file transcription")
+        session = None
 
     if not audio_file or not os.path.isfile(audio_file):
         add_log("error", "Recording file not found after stop")
@@ -1060,17 +1412,25 @@ def transcribe_stop():
                 add_log("error", "Failed to transcode recording")
                 return jsonify({"error": "transcode_failed", "message": "Failed to convert audio to WAV."}), 500
 
-            text, duration_ms = run_transcription(wav_path)
+            chunked_used = session is not None and session.has_results()
+            if chunked_used:
+                text, duration_ms = _finish_chunked_transcription(session, wav_path)
+            else:
+                text, duration_ms = run_transcription(wav_path)
             wav_size = os.path.getsize(wav_path)
             audio_duration_sec = round((wav_size - 44) / 32000, 1)  # 16kHz mono PCM
             speed_ratio = round(audio_duration_sec / (duration_ms / 1000), 1) if duration_ms > 0 else 0
             add_log("info", f'PTT transcribed {duration_ms}ms ({speed_ratio}x) -> "{text[:80]}"')
-            return jsonify({
+            payload = {
                 "text": text,
                 "duration_ms": duration_ms,
                 "audio_duration_sec": audio_duration_sec,
                 "speed_ratio": speed_ratio,
-            })
+            }
+            if chunked_used:
+                payload["chunked"] = True
+                payload["chunks"] = session.chunks + 1
+            return jsonify(payload)
         except RuntimeError as e:
             add_log("error", f"PTT transcription failed: {e}")
             return jsonify({"error": "transcription_failed", "message": str(e)}), 500
@@ -1099,6 +1459,7 @@ def status():
             "recording": is_recording,
             "whisper_server_mode": _is_whisper_server_alive(),
             "symbol_mode": bool(symbol_settings.get("enabled")),
+            "chunked": chunked_supported,
         })
     else:
         return jsonify({
@@ -1765,6 +2126,7 @@ if __name__ == "__main__":
     load_model()
     select_engine()
     detect_audio_format()
+    detect_chunked_support()
 
     whisper_bin = WHISPER_BIN or find_whisper_bin()
     if whisper_bin:

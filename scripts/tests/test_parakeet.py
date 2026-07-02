@@ -253,7 +253,7 @@ class TestRunTranscription:
                 raise RuntimeError("boom")
 
         server._parakeet_recognizer = BrokenRecognizer()
-        server.run_whisper = lambda wav_path: ("from whisper", 42)
+        server.run_whisper = lambda wav_path, postprocess=True: ("from whisper", 42)
 
         wav = tmp_path / "test.wav"
         write_wav(wav)
@@ -263,7 +263,7 @@ class TestRunTranscription:
 
     def test_whisper_used_when_engine_whisper(self, server, tmp_path):
         server.active_engine = "whisper"
-        server.run_whisper = lambda wav_path: ("whisper text", 10)
+        server.run_whisper = lambda wav_path, postprocess=True: ("whisper text", 10)
         text, _ = server.run_transcription(str(tmp_path / "missing.wav"))
         assert text == "whisper text"
 

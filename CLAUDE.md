@@ -175,6 +175,38 @@ Two interchangeable backends (tried in this order by `load_parakeet()`):
   parakeet_onnx modules injected into sys.modules — no model download
   needed; fbank golden values verified against kaldi-native-fbank)
 
+### Chunked (streaming) transcription
+Long dictations normally pay the whole transcription cost as one wait after
+tapping Stop. When the recording file is decodable *while still being written*,
+the server instead transcribes silence-delimited chunks in the background
+during the recording, so Stop only costs the final uncommitted tail (~1s
+instead of ~duration/10 with Parakeet).
+
+- **Format matters**: ADTS AAC and raw AMR-WB streams decode mid-write;
+  AAC in an MP4 container does not (moov atom is written at stop). This is
+  probed at startup (`detect_chunked_support()`): if the detected format
+  fails the probe, the server tries AMR-WB and switches recording to it
+  (16kHz wideband speech codec — matches the 16kHz input the engines use).
+- **How it works**: `ChunkedSession` snapshots the growing file every 2s
+  (copy first — ffmpeg racing the encoder is unreliable), decodes it, finds
+  silence boundaries via per-frame levels (`find_commit_boundary()`, adaptive
+  threshold), and transcribes new complete chunks. Silent-only spans (thinking
+  pauses) advance the committed pointer without an engine call.
+- **Post-processing runs ONCE on the joined text** at stop — chunks are
+  transcribed raw (`run_transcription(..., postprocess=False)`) so word
+  corrections and symbol phrases spanning a chunk boundary still match.
+  Don't "fix" this by post-processing per chunk.
+- **Failure = fallback, never breakage**: any poller error, a probe failure,
+  or an unjoinable thread degrades to the plain stop-time transcription of
+  the full file. The committed prefix is still used when valid.
+- **Config**: `STT_CHUNKED` env var — `auto` (default) or `off`.
+- **Status**: `GET /status` includes `"chunked": bool`; `/transcribe/stop`
+  responses include `"chunked": true` and `"chunks": N` when it was used.
+  Look for "Chunked: committed X-Ys" lines in `/logs`.
+- Tests: `pytest scripts/tests/test_chunked.py` (boundary detection on
+  synthetic levels, WAV slicing, poller with mocked decode/engine, join+
+  postprocess assembly).
+
 ### Persistent whisper-server mode
 The server can use a long-running `whisper-server` process (from whisper.cpp) that
 loads the model once and serves inference requests via HTTP on port 9878. This
