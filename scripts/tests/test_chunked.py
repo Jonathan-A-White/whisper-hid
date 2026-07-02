@@ -69,12 +69,12 @@ def write_wav(path: str, *segments, rate: int = 16000):
 
 class TestFindCommitBoundary:
     def test_boundary_at_silence_between_speech(self, server):
-        # 2s speech, 1s silence, 1s speech (+ tail padding past the guard)
-        levels = levels_of((SPEECH, 2.0), (SILENCE, 1.0), (SPEECH, 1.0))
+        # 2s speech, 1.5s silence, 1s speech (+ tail padding past the guard)
+        levels = levels_of((SPEECH, 2.0), (SILENCE, 1.5), (SPEECH, 1.0))
         found = server.find_commit_boundary(levels, FRAME, 0.0, len(levels) * FRAME)
         assert found is not None
         boundary, has_speech = found
-        assert 2.3 <= boundary <= 2.7  # midpoint of the 2.0-3.0s silence run
+        assert 2.5 <= boundary <= 3.0  # midpoint of the 2.0-3.5s silence run
         assert has_speech is True
 
     def test_pure_silence_advances_without_speech(self, server):
@@ -86,12 +86,14 @@ class TestFindCommitBoundary:
         assert has_speech is False
 
     def test_short_pause_is_not_a_boundary(self, server):
-        # 0.3s pause is below CHUNK_SILENCE_SEC
-        levels = levels_of((SPEECH, 2.0), (SILENCE, 0.3), (SPEECH, 2.0))
-        assert server.find_commit_boundary(levels, FRAME, 0.0, len(levels) * FRAME) is None
+        # Pauses below CHUNK_SILENCE_SEC (1.2s) must not split — a 1s
+        # mid-sentence thinking pause would get sentence-cased per chunk
+        for pause in (0.3, 1.0):
+            levels = levels_of((SPEECH, 2.0), (SILENCE, pause), (SPEECH, 2.0))
+            assert server.find_commit_boundary(levels, FRAME, 0.0, len(levels) * FRAME) is None
 
     def test_no_new_boundary_after_committed(self, server):
-        levels = levels_of((SPEECH, 2.0), (SILENCE, 1.0), (SPEECH, 1.0))
+        levels = levels_of((SPEECH, 2.0), (SILENCE, 1.5), (SPEECH, 1.0))
         total = len(levels) * FRAME
         first = server.find_commit_boundary(levels, FRAME, 0.0, total)
         assert first is not None
@@ -116,6 +118,45 @@ class TestFindCommitBoundary:
 
     def test_empty_levels(self, server):
         assert server.find_commit_boundary([], FRAME, 0.0, 0.0) is None
+
+    # Speech requires sustained above-threshold frames (>= CHUNK_MIN_SPEECH_SEC
+    # accumulated) or one loud frame — a single breath-level blip is silence.
+    BREATH = 300.0  # above CHUNK_LEVEL_FLOOR (120) but below the loud escape (360)
+
+    def test_breath_blip_is_not_speech(self, server):
+        levels = levels_of((SILENCE, 1.0), (self.BREATH, 0.12), (SILENCE, 3.0))
+        found = server.find_commit_boundary(levels, FRAME, 0.0, len(levels) * FRAME)
+        assert found is not None
+        boundary, has_speech = found
+        assert boundary > 1.12  # committed past the blip
+        assert has_speech is False
+
+    def test_scattered_blips_are_not_speech(self, server):
+        # Several transients that don't accumulate to CHUNK_MIN_SPEECH_SEC
+        levels = levels_of(
+            (SILENCE, 0.8), (self.BREATH, 0.06),
+            (SILENCE, 0.8), (self.BREATH, 0.06),
+            (SILENCE, 0.8), (self.BREATH, 0.06),
+            (SILENCE, 3.0),
+        )
+        found = server.find_commit_boundary(levels, FRAME, 0.0, len(levels) * FRAME)
+        assert found is not None
+        assert found[1] is False
+
+    def test_short_quiet_word_is_speech(self, server):
+        # 0.3s of quiet speech (barely above the floor) must be transcribed
+        levels = levels_of((SILENCE, 1.0), (150.0, 0.3), (SILENCE, 3.0))
+        found = server.find_commit_boundary(levels, FRAME, 0.0, len(levels) * FRAME)
+        assert found is not None
+        assert found[1] is True
+
+    def test_short_loud_word_is_speech(self, server):
+        # Shorter than CHUNK_MIN_SPEECH_SEC but loud — the loud-frame escape
+        # hatch must keep a clipped exclamation from being dropped
+        levels = levels_of((SILENCE, 1.0), (SPEECH, 0.15), (SILENCE, 3.0))
+        found = server.find_commit_boundary(levels, FRAME, 0.0, len(levels) * FRAME)
+        assert found is not None
+        assert found[1] is True
 
 
 class TestWavHelpers:
@@ -173,8 +214,8 @@ class TestChunkedSession:
         with open(rec, "wb") as f:
             f.write(b"\0" * 8192)  # size gate only; decode is mocked
         prepared = str(tmp_path / "partial.wav")
-        # 1.5s speech, 1s pause, 0.5s speech (still being spoken)
-        write_wav(prepared, (3000, 1.5), (0, 1.0), (3000, 0.5))
+        # 1.5s speech, 1.5s pause, 0.5s speech (still being spoken)
+        write_wav(prepared, (3000, 1.5), (0, 1.5), (3000, 0.5))
         self._mock_decode(server, prepared)
 
         calls = []
@@ -191,7 +232,7 @@ class TestChunkedSession:
         assert session.texts == ["hello there"]
         assert session.chunks == 1
         assert session.engine_ms == 42
-        assert 1.7 <= session.committed_sec <= 2.3  # middle of the pause
+        assert 2.0 <= session.committed_sec <= 2.5  # middle of the pause
         assert calls[0][1] is False  # raw mode — postprocess happens once at stop
 
         # Same audio again: no new boundary, no state change
@@ -215,6 +256,25 @@ class TestChunkedSession:
         session._poll_once()
         assert session.texts == []
         assert session.committed_sec > 1.0  # advanced past the silence
+
+    def test_poll_skips_breath_blip_chunk(self, server, tmp_path):
+        rec = str(tmp_path / "rec.aac")
+        with open(rec, "wb") as f:
+            f.write(b"\0" * 8192)
+        prepared = str(tmp_path / "partial.wav")
+        # A 0.12s breath transient (mean-abs ~255) in otherwise silent audio
+        write_wav(prepared, (0, 1.0), (400, 0.12), (0, 3.0))
+        self._mock_decode(server, prepared)
+
+        def fail_engine(wav_path, postprocess=True):
+            raise AssertionError("engine must not run on a breath blip")
+
+        server.run_transcription = fail_engine
+
+        session = server.ChunkedSession(rec)
+        session._poll_once()
+        assert session.texts == []
+        assert session.committed_sec > 1.12  # advanced past the blip
 
     def test_poll_ignores_missing_or_tiny_file(self, server, tmp_path):
         session = server.ChunkedSession(str(tmp_path / "nope.aac"))
