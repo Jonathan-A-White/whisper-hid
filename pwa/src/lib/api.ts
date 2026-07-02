@@ -206,13 +206,32 @@ export async function resetSymbols(): Promise<SymbolConfig> {
   return res.json();
 }
 
-// --- Speech cleanup (local LLM removes disfluencies, fixes punctuation) ---
+// --- Speech cleanup (local LLM rewrites the transcript) ---
+
+export interface CleanupStyleInfo {
+  name: string;
+  label: string;
+  description: string;
+}
+
+export interface CleanupModelInfo {
+  name: string;
+  file: string;
+  size_mb: number;
+  description: string;
+  downloaded: boolean;
+  active: boolean;
+}
 
 export interface CleanupConfig {
   enabled: boolean;
   /** true when the llama-server is running with its model loaded */
   available: boolean;
+  /** file name of the active model, or null when none is installed */
   model: string | null;
+  models: CleanupModelInfo[];
+  style: string;
+  styles: CleanupStyleInfo[];
 }
 
 export async function getCleanup(): Promise<CleanupConfig> {
@@ -220,15 +239,56 @@ export async function getCleanup(): Promise<CleanupConfig> {
   return res.json();
 }
 
-export async function putCleanup(enabled: boolean): Promise<CleanupConfig> {
+export async function putCleanup(partial: {
+  enabled?: boolean;
+  style?: string;
+  model?: string;
+}): Promise<CleanupConfig> {
   const res = await whisperFetch("/cleanup", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify(partial),
   });
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || "Failed to save cleanup setting");
+  }
+  return res.json();
+}
+
+// --- Voice editing (LLM applies a spoken instruction to pending text) ---
+
+export async function applyVoiceEdit(
+  text: string,
+  command: string
+): Promise<{ text: string; duration_ms: number }> {
+  const res = await whisperFetch("/edit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, command }),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || "Edit failed");
+  }
+  return res.json();
+}
+
+// --- Correction suggestions (LLM scans recent transcripts) ---
+
+export interface CorrectionSuggestion {
+  wrong: string;
+  right: string;
+}
+
+export async function suggestCorrections(): Promise<{
+  suggestions: CorrectionSuggestion[];
+  transcripts: number;
+}> {
+  const res = await whisperFetch("/corrections/suggest", { method: "POST" });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || "Suggestion request failed");
   }
   return res.json();
 }

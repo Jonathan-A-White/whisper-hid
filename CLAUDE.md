@@ -279,12 +279,31 @@ A post-transcription word correction system fixes these automatically.
 ### API endpoints
 - `GET /corrections` — returns the current dictionary
 - `PUT /corrections` — replaces the entire dictionary (body = JSON object)
-- Tests: `pytest scripts/tests/test_corrections.py`
+- `POST /corrections/suggest` — the cleanup LLM scans recent transcripts
+  (in-memory `recent_transcripts` deque, never persisted) for likely
+  mishearings and returns advisory `{"wrong", "right"}` pairs. Nothing is
+  saved until the user accepts one (the PWA then PUTs as usual). 503 when
+  the LLM is down; a malformed LLM reply yields `[]`, never an error
+  (`_parse_suggestions()`).
+- Tests: `pytest scripts/tests/test_corrections.py` and
+  `scripts/tests/test_llm_features.py` (suggestions)
+
+### Context-aware corrections (glossary injection)
+The regex pass can't fix contextual mishearings ("cloud" vs "Claude" depends
+on the sentence). So the corrections dictionary's *values* — the vocabulary
+the user actually means — are injected into the cleanup LLM's system prompt
+as a glossary (`_glossary_terms()`, capped at 40 terms). While cleanup is
+enabled, the LLM fixes these in context; the regex pass still runs after it
+as the deterministic backstop. Appended at the END of the system prompt so
+the static prefix stays byte-identical across glossary edits.
 
 ### PWA UI
 - `WordCorrections` component in `pwa/src/components/WordCorrections.tsx`
-- Shown in Settings view — lets users add/remove correction entries
-- Calls `getCorrections()` / `putCorrections()` from `pwa/src/lib/api.ts`
+- Shown in Settings view — lets users add/remove correction entries, plus a
+  "✨ Suggest corrections" button that surfaces LLM suggestions with
+  one-tap accept
+- Calls `getCorrections()` / `putCorrections()` / `suggestCorrections()`
+  from `pwa/src/lib/api.ts`
 
 ### CORS gotcha
 The CORS `Access-Control-Allow-Methods` header in `cors_headers()` must
@@ -331,13 +350,15 @@ A small local LLM (Qwen3-1.7B Q4_K_M by default) rewrites the final
 transcript: filler words (um/uh) and false starts removed, spoken
 self-corrections resolved ("meet at 3 no wait 4pm" → "meet at 4pm"),
 punctuation/capitalization/sentence breaks fixed. Runs on the phone next to
-Parakeet — no network.
+Parakeet — no network. The same resident llama-server also powers cleanup
+*styles*, voice editing (`POST /edit`), correction suggestions
+(`POST /corrections/suggest`), and glossary-aware corrections.
 
 ### How it works
 - A resident `llama-server` (built from llama.cpp, same Termux build story as
   whisper.cpp) runs on localhost:9879, launched at whisper-server startup and
   mirroring the persistent whisper-server lifecycle. The model stays loaded
-  (~1.3 GB RAM) so flipping the toggle never pays a load wait.
+  (~1.3 GB RAM for the 1.7B) so flipping the toggle never pays a load wait.
 - `apply_cleanup()` is called from `_postprocess_text()` BEFORE word
   corrections and symbols, so corrections/symbol phrases still match the
   cleaned text. In chunked mode this means it runs ONCE on the joined full
@@ -346,35 +367,73 @@ Parakeet — no network.
 - **Skipped while symbol mode is on** — CLI dictation wants verbatim text and
   the LLM would mangle "/help" or "foo-bar" back into prose.
 - **Failure = fallback, never breakage**: server not ready, request error, or
-  a degenerate response (empty / outside a 0.35–1.6 length ratio window,
+  a degenerate response (empty / outside the style's length-ratio window,
   `_cleanup_result_ok()`) all deliver the raw transcript. Look for
-  "Cleanup applied"/"Cleanup rejected"/"Cleanup failed" in `/logs`.
-- Prompting: system prompt + few-shot pairs (`CLEANUP_EXAMPLES`) pin down
-  "remove, don't rewrite"; `/no_think` disables Qwen3 thinking mode and any
-  `<think>` block is stripped from the reply. llama-server KV-caches the
-  shared prompt prefix across requests. `max_tokens` is capped relative to
-  input length so a runaway generation can't stall Stop.
+  "Cleanup [style] applied"/"rejected"/"Cleanup failed" in `/logs`.
+- Prompting: per-style system prompt + few-shot pairs pin down the rewrite;
+  `/no_think` disables Qwen3 thinking mode and any `<think>` block is
+  stripped from the reply. llama-server KV-caches the shared prompt prefix
+  across requests (per style — switching styles re-pays prompt processing
+  once). `max_tokens` is capped relative to input length so a runaway
+  generation can't stall Stop.
 - **Latency**: adds roughly 3–7s after Stop for typical dictations (scales
-  with length) — that's the accepted tradeoff; the toggle is the escape hatch.
+  with length, ~2x that on the 4B model) — that's the accepted tradeoff;
+  the toggle is the escape hatch.
+
+### Cleanup styles (rewrite flavors)
+`CLEANUP_STYLES` defines one active rewrite flavor at a time
+(`cleanup_settings["style"]`): `standard` (plain cleanup), `prompt`
+(restructure dictation into a Claude Code prompt — bullets, identifiers kept
+verbatim), `commit` (git commit message), `slack` (tidy chat message),
+`email` (polished prose), `bug` (concise bug report). Each style declares
+its own sanity ratio window (a commit summary legitimately compresses a
+ramble far below the standard 0.35 floor — don't share one window). The PWA
+exposes a style `<select>` next to the `CleanupToggle` pill on the Talk
+screen. Styles are still skipped in symbol mode.
+
+### Cleanup models (1.7B vs 4B)
+`CLEANUP_MODEL_CATALOG` in whisper-server.py knows `qwen3-1.7b` (default,
+~1.1 GB file) and `qwen3-4b` (~2.4 GB file, needs ~3 GB free RAM, roughly 2x
+slower, noticeably smarter rewrites/edits). `PUT /cleanup {"model": name}`
+persists the selection and restarts the llama-server with that GGUF;
+`"available"` stays false until the new model finishes loading (the PWA
+`CleanupSettings` section in Settings polls until it comes back). A missing
+file returns 404 with the `./update-model.sh cleanup-4b` hint. `CLEANUP_MODEL`
+(env) still overrides the *default* file; a persisted runtime selection wins
+when its file is on disk (`active_cleanup_model_file()`).
+
+### Voice editing (`POST /edit`)
+Body `{"text", "command"}` — the LLM applies a spoken instruction ("replace
+Mike with Sarah", "delete the last sentence", "make it more formal") to the
+pending text and returns `{"text": edited}`. Used by the PWA edit-before-send
+buffer (`EditBuffer`): with "Edit before send" enabled and the LLM up, an
+"🎙 Edit by voice" button records an instruction via the normal
+`/transcribe/start`+`stop` flow and applies it to the buffer. Any error or a
+degenerate reply (empty, or >4x growth) returns 5xx and the caller keeps its
+original text — the endpoint never partially applies an edit.
 
 ### Config / API
-- `GET /cleanup` → `{"enabled", "available", "model"}`; `PUT /cleanup
-  {"enabled": bool}` — persisted in `scripts/cleanup-settings.json`
+- `GET /cleanup` → `{"enabled", "available", "model", "models", "style",
+  "styles"}`; `PUT /cleanup` merges any of `{"enabled": bool, "style": str,
+  "model": str}` — persisted in `scripts/cleanup-settings.json`
   (gitignored, per-device)
-- `/status` includes `"cleanup_mode"` (toggle) and `"cleanup_available"`
-  (llama-server up with model loaded)
+- `/status` includes `"cleanup_mode"` (toggle), `"cleanup_available"`
+  (llama-server up with model loaded), and `"cleanup_style"`
 - Env: `STT_CLEANUP` (`auto`/`off` — whether the llama-server is started at
   all), `CLEANUP_SERVER_PORT` (9879), `CLEANUP_MODEL` (GGUF filename),
   `CLEANUP_THREADS` (4), `CLEANUP_TIMEOUT_SEC` (45)
 - Install: setup-termux.sh builds llama.cpp (`-DGGML_NATIVE=OFF`,
-  `-DLLAMA_CURL=OFF`, non-fatal) and downloads the model;
-  `./update-model.sh cleanup` re-downloads the model alone. The model
-  filename is duplicated in whisper-server.py, setup-termux.sh, and
-  update-model.sh — keep all three in sync.
-- PWA: `CleanupToggle` pill on the Talk screen (hidden when unavailable,
-  except while enabled so it can still be turned off)
-- Tests: `pytest scripts/tests/test_cleanup.py` (fake `_cleanup_request` —
-  no llama-server or model needed)
+  `-DLLAMA_CURL=OFF`, non-fatal) and downloads the 1.7B model;
+  `./update-model.sh cleanup` re-downloads it, `./update-model.sh cleanup-4b`
+  adds the 4B. Model file names are duplicated in whisper-server.py
+  (`CLEANUP_MODEL_CATALOG`), setup-termux.sh, and update-model.sh — keep all
+  three in sync.
+- PWA: `CleanupToggle` pill + style picker on the Talk screen (hidden when
+  unavailable, except while enabled so it can still be turned off);
+  `CleanupSettings` model selector in Settings; voice edit in `EditBuffer`
+- Tests: `pytest scripts/tests/test_cleanup.py` (cleanup, styles, models)
+  and `scripts/tests/test_llm_features.py` (/edit, suggestions) — fake
+  request helpers, no llama-server or model needed
 
 ## Component versioning
 All three components expose version info, displayed together in PWA Settings.

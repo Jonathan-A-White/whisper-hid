@@ -4,6 +4,7 @@ import { whisperStatus, hidStatus, getModels, switchModel, getWhisperSettings, p
 import { WordCorrections } from "./WordCorrections";
 import { SymbolReplacements } from "./SymbolReplacements";
 import { ModelBenchmark } from "./ModelBenchmark";
+import { CleanupSettings } from "./CleanupSettings";
 
 interface SettingsViewProps {
   settings: Settings;
@@ -228,6 +229,9 @@ export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewPr
           <p className="text-xs text-red-400 mt-1">{modelError}</p>
         )}
       </div>
+
+      {/* Speech cleanup model selector */}
+      <CleanupSettings />
 
       {/* Model benchmark */}
       {models.length > 0 && (

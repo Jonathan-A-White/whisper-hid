@@ -45,7 +45,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.6.1"
+SERVER_VERSION = "1.7.0"
 
 # --- Configuration ---
 
@@ -74,8 +74,26 @@ PARAKEET_THREADS = int(os.environ.get("PARAKEET_THREADS", "4"))
 # separate runtime toggle (PUT /cleanup, persisted to CLEANUP_SETTINGS_FILE).
 STT_CLEANUP = os.environ.get("STT_CLEANUP", "auto").lower()
 CLEANUP_SERVER_PORT = int(os.environ.get("CLEANUP_SERVER_PORT", "9879"))
-# Keep the model file name in sync with setup-termux.sh and update-model.sh.
-CLEANUP_MODEL_FILE = os.environ.get("CLEANUP_MODEL", "Qwen3-1.7B-Q4_K_M.gguf")
+# Known cleanup models. "name" is the API/UI identifier (like whisper model
+# names); keep the file names in sync with setup-termux.sh and update-model.sh.
+# The first entry is the default. CLEANUP_MODEL (env) overrides the default
+# file; a runtime selection (PUT /cleanup {"model": ...}) is persisted in
+# CLEANUP_SETTINGS_FILE and wins when its file is on disk.
+CLEANUP_MODEL_CATALOG = [
+    {
+        "name": "qwen3-1.7b",
+        "file": "Qwen3-1.7B-Q4_K_M.gguf",
+        "size_mb": 1120,
+        "description": "Default — fast, ~1.4 GB RAM",
+    },
+    {
+        "name": "qwen3-4b",
+        "file": "Qwen3-4B-Q4_K_M.gguf",
+        "size_mb": 2400,
+        "description": "Smarter rewrites/edits — ~3 GB RAM, roughly 2x slower",
+    },
+]
+CLEANUP_MODEL_FILE = os.environ.get("CLEANUP_MODEL", CLEANUP_MODEL_CATALOG[0]["file"])
 CLEANUP_THREADS = int(os.environ.get("CLEANUP_THREADS", "4"))
 CLEANUP_TIMEOUT_SEC = int(os.environ.get("CLEANUP_TIMEOUT_SEC", "45"))
 
@@ -115,6 +133,9 @@ recording_file = None
 recording_lock = threading.Lock()
 transcribe_lock = threading.Lock()
 log_buffer = deque(maxlen=200)
+# Recent final transcripts, kept in memory for POST /corrections/suggest
+# (the LLM scans them for recurring misrecognitions). Never persisted.
+recent_transcripts = deque(maxlen=20)
 start_time = time.time()
 audio_format = "aac"       # detected at startup: "aac" or "amr_wb"
 audio_ext = "aac"          # file extension for recordings
@@ -478,25 +499,35 @@ CLEANUP_SETTINGS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "cleanup-settings.json"
 )
 
-cleanup_settings: dict = {"enabled": False}
+# "style" picks the rewrite flavor (a key of CLEANUP_STYLES); "model" is a
+# catalog name selected at runtime, or None for the default model.
+CLEANUP_DEFAULT_SETTINGS: dict = {"enabled": False, "style": "standard", "model": None}
+
+cleanup_settings: dict = dict(CLEANUP_DEFAULT_SETTINGS)
 
 
 def load_cleanup_settings():
-    """Load the speech cleanup toggle from its JSON file."""
+    """Load the speech cleanup settings (toggle, style, model) from JSON."""
     global cleanup_settings
+    cleanup_settings = dict(CLEANUP_DEFAULT_SETTINGS)
     if not os.path.isfile(CLEANUP_SETTINGS_FILE):
-        cleanup_settings = {"enabled": False}
         return
     try:
         with open(CLEANUP_SETTINGS_FILE, "r") as f:
             data = json.load(f)
-        cleanup_settings = {"enabled": bool(data.get("enabled", False))}
     except (json.JSONDecodeError, OSError):
-        cleanup_settings = {"enabled": False}
+        return
+    cleanup_settings["enabled"] = bool(data.get("enabled", False))
+    style = data.get("style")
+    if isinstance(style, str) and style in CLEANUP_STYLES:
+        cleanup_settings["style"] = style
+    model = data.get("model")
+    if isinstance(model, str) and _cleanup_model_by_name(model):
+        cleanup_settings["model"] = model
 
 
 def save_cleanup_settings():
-    """Save the speech cleanup toggle to its JSON file."""
+    """Save the speech cleanup settings to their JSON file."""
     try:
         with open(CLEANUP_SETTINGS_FILE, "w") as f:
             json.dump(cleanup_settings, f, indent=2)
@@ -505,7 +536,37 @@ def save_cleanup_settings():
         add_log("error", f"Failed to save cleanup settings: {e}")
 
 
+def _cleanup_model_by_name(name: str) -> dict | None:
+    """Look up a CLEANUP_MODEL_CATALOG entry by its name."""
+    return next((m for m in CLEANUP_MODEL_CATALOG if m["name"] == name), None)
+
+
+def _cleanup_model_present(filename: str) -> bool:
+    """True when a cleanup GGUF exists on disk with a plausible size.
+
+    Requires a plausible size, not just existence: a failed download can leave
+    a tiny error-page file (e.g. 15 bytes of "Entry not found"), which would
+    otherwise make llama-server start and immediately exit.
+    """
+    path = os.path.join(MODEL_DIR, filename)
+    return os.path.isfile(path) and os.path.getsize(path) > 10 * 1024 * 1024
+
+
+def active_cleanup_model_file() -> str:
+    """File name of the cleanup model to serve.
+
+    The runtime selection (PUT /cleanup {"model": ...}) wins when its file is
+    on disk; otherwise the default (CLEANUP_MODEL env var or catalog head).
+    """
+    selected = cleanup_settings.get("model")
+    entry = _cleanup_model_by_name(selected) if isinstance(selected, str) else None
+    if entry and _cleanup_model_present(entry["file"]):
+        return entry["file"]
+    return CLEANUP_MODEL_FILE
+
+
 _cleanup_server_proc: subprocess.Popen | None = None
+_cleanup_loaded_file = ""  # basename of the GGUF the running llama-server loaded
 
 
 def find_cleanup_bin() -> str:
@@ -517,15 +578,10 @@ def find_cleanup_bin() -> str:
 
 
 def find_cleanup_model() -> str:
-    """Locate the cleanup GGUF model file.
-
-    Requires a plausible size, not just existence: a failed download can leave
-    a tiny error-page file (e.g. 15 bytes of "Entry not found"), which would
-    otherwise make llama-server start and immediately exit.
-    """
-    c = os.path.join(MODEL_DIR, CLEANUP_MODEL_FILE)
-    if os.path.isfile(c) and os.path.getsize(c) > 10 * 1024 * 1024:
-        return c
+    """Locate the active cleanup GGUF model file (empty string if missing)."""
+    filename = active_cleanup_model_file()
+    if _cleanup_model_present(filename):
+        return os.path.join(MODEL_DIR, filename)
     return ""
 
 
@@ -588,6 +644,8 @@ def start_cleanup_server() -> bool:
     except (FileNotFoundError, OSError) as e:
         add_log("error", f"Failed to start cleanup llama-server: {e}")
         return False
+    global _cleanup_loaded_file
+    _cleanup_loaded_file = os.path.basename(model_file)
 
     def _watch_ready(proc):
         deadline = time.time() + 180
@@ -610,7 +668,7 @@ def start_cleanup_server() -> bool:
 
 def stop_cleanup_server():
     """Stop the resident cleanup llama-server."""
-    global _cleanup_server_proc
+    global _cleanup_server_proc, _cleanup_loaded_file
 
     if _cleanup_server_proc is not None:
         add_log("info", f"Stopping cleanup llama-server (pid={_cleanup_server_proc.pid})")
@@ -623,6 +681,17 @@ def stop_cleanup_server():
         except Exception:
             pass
         _cleanup_server_proc = None
+    _cleanup_loaded_file = ""
+
+
+def restart_cleanup_server() -> bool:
+    """Restart the cleanup llama-server (e.g. after a model switch).
+
+    Readiness is asynchronous, same as at startup: /cleanup "available" stays
+    false until the new model finishes loading.
+    """
+    stop_cleanup_server()
+    return start_cleanup_server()
 
 
 atexit.register(stop_cleanup_server)
@@ -669,25 +738,185 @@ CLEANUP_EXAMPLES = [
 ]
 
 
+# --- Cleanup styles ---
+#
+# Each style is a different rewrite flavor through the same llama-server:
+# "standard" is the original transcript cleanup; the others restructure the
+# dictation toward a target format (Claude Code prompt, commit message, chat
+# message, email prose, bug report). One style is active at a time
+# (cleanup_settings["style"], PUT /cleanup {"style": ...}) — the PWA exposes
+# it as a picker next to the Cleanup pill. "ratio" is the per-style sanity
+# window for _cleanup_result_ok: restructuring styles legitimately change
+# length more than plain cleanup (a commit summary compresses a ramble),
+# so each declares how much shrink/growth is plausible.
+#
+# NOTE: llama-server KV-caches the system prompt + few-shots per style;
+# switching styles re-pays prompt processing once, then it's warm again.
+
+CLEANUP_STYLES: dict[str, dict] = {
+    "standard": {
+        "label": "Clean up",
+        "description": "Remove fillers and false starts, fix punctuation",
+        "system": CLEANUP_SYSTEM_PROMPT,
+        "examples": CLEANUP_EXAMPLES,
+        "ratio": (0.35, 1.6),
+    },
+    "prompt": {
+        "label": "Claude prompt",
+        "description": "Restructure the dictation into a crisp coding-assistant prompt",
+        "system": (
+            "/no_think You turn raw dictated speech into a clear written prompt for a "
+            "coding assistant (Claude Code). Rewrite the transcript with:\n"
+            "- filler words, false starts, and thinking-out-loud preamble removed\n"
+            "- spoken self-corrections resolved, keeping only the corrected version\n"
+            "- multi-part requests split into short lines starting with \"- \"\n"
+            "- file names, code identifiers, commands, and technical terms kept verbatim\n"
+            "Keep every requirement and detail the speaker gave. Never invent requirements, "
+            "add pleasantries, or answer the request yourself. Reply with ONLY the "
+            "rewritten prompt."
+        ),
+        "examples": [
+            (
+                "um so in the whisper server can you uh add a retry to the download "
+                "function like three times with backoff and also it should log each failure",
+                "In the whisper server, add a retry to the download function:\n"
+                "- retry 3 times with backoff\n"
+                "- log each failure",
+            ),
+            (
+                "okay refactor the settings view no wait the status bar so the dot "
+                "colors come from a single map",
+                "Refactor the status bar so the dot colors come from a single map.",
+            ),
+        ],
+        "ratio": (0.3, 2.0),
+    },
+    "commit": {
+        "label": "Commit message",
+        "description": "Turn the dictation into a git commit message",
+        "system": (
+            "/no_think You turn a dictated description of a code change into a git "
+            "commit message. The first line is an imperative summary under 72 "
+            "characters. Add a short body (after a blank line) only when the speaker "
+            "gave details beyond the summary. Remove filler words and false starts, "
+            "resolve spoken self-corrections. Never invent details the speaker did "
+            "not say. Reply with ONLY the commit message."
+        ),
+        "examples": [
+            (
+                "um this fixes the uh the race in the chunk poller where stop could "
+                "run before the last snapshot finished",
+                "Fix race in chunk poller between stop and the last snapshot\n\n"
+                "Stop could run before the last snapshot finished.",
+            ),
+            (
+                "add a dark mode toggle to settings",
+                "Add a dark mode toggle to settings",
+            ),
+        ],
+        "ratio": (0.15, 1.6),
+    },
+    "slack": {
+        "label": "Chat message",
+        "description": "Casual but tidy chat/Slack message",
+        "system": (
+            "/no_think You turn raw dictated speech into a tidy chat message (Slack). "
+            "Remove filler words, false starts, and stutters; resolve spoken "
+            "self-corrections; fix punctuation and capitalization. Keep the speaker's "
+            "casual tone and wording — do not formalize, do not add greetings, "
+            "sign-offs, or emoji. Reply with ONLY the message."
+        ),
+        "examples": [
+            (
+                "hey um can someone take a look at the the staging deploy it's been "
+                "stuck for like twenty minutes no wait thirty minutes",
+                "Hey, can someone take a look at the staging deploy? It's been stuck "
+                "for like thirty minutes.",
+            ),
+        ],
+        "ratio": (0.35, 1.6),
+    },
+    "email": {
+        "label": "Email",
+        "description": "Polished professional email prose",
+        "system": (
+            "/no_think You turn raw dictated speech into polished email prose: "
+            "complete sentences, professional tone, paragraphs where natural. Remove "
+            "filler words and false starts, resolve spoken self-corrections, fix "
+            "punctuation. Keep all of the speaker's content and meaning — do not "
+            "summarize, and do not add greetings or sign-offs the speaker did not "
+            "say. Reply with ONLY the email text."
+        ),
+        "examples": [
+            (
+                "um just following up on the invoice from last week can you uh let me "
+                "know when it's been processed thanks",
+                "Just following up on the invoice from last week. Could you let me "
+                "know when it has been processed? Thanks.",
+            ),
+        ],
+        "ratio": (0.35, 1.8),
+    },
+    "bug": {
+        "label": "Bug report",
+        "description": "Structure the dictation into a concise bug report",
+        "system": (
+            "/no_think You turn a dictated description of a software problem into a "
+            "concise bug report. Start with a one-line summary. Then, only using "
+            "details the speaker actually gave, add short lines for what happened, "
+            "what was expected, and steps or context. Remove filler words and false "
+            "starts, resolve spoken self-corrections. Never invent details. Reply "
+            "with ONLY the bug report."
+        ),
+        "examples": [
+            (
+                "so um when I tap stop right after starting a recording the app just "
+                "spins forever it should uh just return no speech detected",
+                "Tapping Stop right after starting a recording hangs forever.\n"
+                "What happened: the app spins forever.\n"
+                "Expected: it returns \"no speech detected\".",
+            ),
+        ],
+        "ratio": (0.3, 2.2),
+    },
+}
+
+
+def _active_style() -> str:
+    """Name of the active cleanup style, falling back to standard."""
+    style = cleanup_settings.get("style")
+    return style if isinstance(style, str) and style in CLEANUP_STYLES else "standard"
+
+
+def _glossary_terms() -> list[str]:
+    """Terms the speaker is known to use, derived from word corrections.
+
+    The correction dictionary's *values* are the vocabulary the user actually
+    means (names, technical terms). Injected into the cleanup system prompt so
+    the LLM can fix contextual mishearings the whole-word regex pass can't —
+    e.g. "cloud" vs "Claude" depending on the sentence.
+    """
+    seen: set[str] = set()
+    terms: list[str] = []
+    for right in word_corrections.values():
+        term = right.strip()
+        if term and term.lower() not in seen:
+            seen.add(term.lower())
+            terms.append(term)
+    return terms[:40]
+
+
 def _strip_think(text: str) -> str:
     """Drop the <think>…</think> block Qwen3 emits even with /no_think."""
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
 
 
-def _cleanup_request(text: str) -> str:
-    """Ask the llama-server to clean one transcript. Returns the raw reply."""
-    messages = [{"role": "system", "content": CLEANUP_SYSTEM_PROMPT}]
-    for raw, cleaned in CLEANUP_EXAMPLES:
-        messages.append({"role": "user", "content": raw})
-        messages.append({"role": "assistant", "content": cleaned})
-    messages.append({"role": "user", "content": text})
-
+def _llm_chat(messages: list[dict], max_tokens: int) -> str:
+    """One chat completion against the resident llama-server."""
     payload = {
         "messages": messages,
         "temperature": 0,
-        # Output is at most about as long as the input; cap generation so a
-        # runaway response can't stall the Stop request for the full timeout.
-        "max_tokens": max(64, len(text) // 2),
+        "max_tokens": max_tokens,
     }
     req = urllib.request.Request(
         f"http://127.0.0.1:{CLEANUP_SERVER_PORT}/v1/chat/completions",
@@ -700,19 +929,52 @@ def _cleanup_request(text: str) -> str:
     return _strip_think(result["choices"][0]["message"]["content"])
 
 
-def _cleanup_result_ok(original: str, cleaned: str) -> bool:
+def _build_cleanup_messages(text: str) -> list[dict]:
+    """Build the chat messages for the active style, with the glossary."""
+    style = CLEANUP_STYLES[_active_style()]
+    system = style["system"]
+    glossary = _glossary_terms()
+    if glossary:
+        # Appended (not prepended) so the static part of the system prompt
+        # stays byte-identical across glossary edits.
+        system += (
+            "\nThe speaker often uses these terms — when a transcribed word is "
+            "clearly a mishearing of one of them, use the term instead: "
+            + ", ".join(glossary)
+        )
+    messages = [{"role": "system", "content": system}]
+    for raw, cleaned in style["examples"]:
+        messages.append({"role": "user", "content": raw})
+        messages.append({"role": "assistant", "content": cleaned})
+    messages.append({"role": "user", "content": text})
+    return messages
+
+
+def _cleanup_request(text: str) -> str:
+    """Ask the llama-server to rewrite one transcript. Returns the raw reply."""
+    # Output is at most a bit longer than the input; cap generation so a
+    # runaway response can't stall the Stop request for the full timeout.
+    # Restructuring styles get more headroom (bullets/sections add characters).
+    if _active_style() == "standard":
+        max_tokens = max(64, len(text) // 2)
+    else:
+        max_tokens = max(128, len(text))
+    return _llm_chat(_build_cleanup_messages(text), max_tokens)
+
+
+def _cleanup_result_ok(original: str, cleaned: str, bounds: tuple[float, float] = (0.35, 1.6)) -> bool:
     """Sanity guard: a degenerate LLM response must never replace the
     transcript. Empty output, heavy truncation, or padding with commentary
     all land outside this length window; legitimate cleanup (fillers out,
-    punctuation in) stays within it."""
+    punctuation in) stays within it. Bounds are per-style (CLEANUP_STYLES)."""
     if not cleaned:
         return False
     ratio = len(cleaned) / len(original)
-    return 0.35 <= ratio <= 1.6
+    return bounds[0] <= ratio <= bounds[1]
 
 
 def apply_cleanup(text: str) -> str:
-    """Run LLM speech cleanup on a final transcript.
+    """Run LLM speech cleanup (in the active style) on a final transcript.
 
     Returns the input unchanged when cleanup is disabled, symbol mode is on
     (verbatim CLI dictation — the LLM would mangle "/help" or "foo-bar"),
@@ -728,6 +990,7 @@ def apply_cleanup(text: str) -> str:
         add_log("warn", "Cleanup enabled but llama-server not ready — using raw text")
         return text
 
+    style = _active_style()
     t0 = time.time()
     try:
         cleaned = _cleanup_request(text)
@@ -736,12 +999,137 @@ def apply_cleanup(text: str) -> str:
         return text
     ms = int((time.time() - t0) * 1000)
 
-    if not _cleanup_result_ok(text, cleaned):
-        add_log("warn", f"Cleanup rejected ({len(text)} -> {len(cleaned)} chars, {ms}ms) — using raw text")
+    if not _cleanup_result_ok(text, cleaned, CLEANUP_STYLES[style]["ratio"]):
+        add_log("warn", f"Cleanup [{style}] rejected ({len(text)} -> {len(cleaned)} chars, {ms}ms) — using raw text")
         return text
     if cleaned != text:
-        add_log("info", f"Cleanup applied ({ms}ms): {text[:60]!r} -> {cleaned[:60]!r}")
+        add_log("info", f"Cleanup [{style}] applied ({ms}ms): {text[:60]!r} -> {cleaned[:60]!r}")
     return cleaned
+
+
+# --- Voice editing (LLM applies a spoken instruction to pending text) ---
+#
+# Used by the PWA's edit-before-send buffer: the user dictates an instruction
+# ("replace Mike with Sarah", "delete the last sentence", "make it more
+# formal") and POST /edit applies it to the held transcript before it is
+# typed over HID. Same llama-server, own prompt.
+
+EDIT_SYSTEM_PROMPT = (
+    "/no_think You apply a spoken editing instruction to a piece of text. The "
+    "user message contains the text and the instruction. Apply exactly what the "
+    "instruction asks and nothing else — keep all other wording, punctuation, "
+    "and formatting unchanged. Never add commentary. If the instruction cannot "
+    "be applied to the text, reply with the text unchanged. Reply with ONLY "
+    "the edited text."
+)
+
+EDIT_EXAMPLES = [
+    (
+        ("Send the report to Mike by Friday.", "replace Mike with Sarah"),
+        "Send the report to Sarah by Friday.",
+    ),
+    (
+        (
+            "The fix works. We should ship it tomorrow. I tested it twice.",
+            "delete the last sentence",
+        ),
+        "The fix works. We should ship it tomorrow.",
+    ),
+    (
+        ("hey can you look at the login bug", "make it more formal"),
+        "Could you please look at the login bug?",
+    ),
+]
+
+
+def _format_edit_input(text: str, command: str) -> str:
+    return f"Text:\n{text}\n\nInstruction: {command}"
+
+
+def _edit_request(text: str, command: str) -> str:
+    """Ask the llama-server to apply one edit instruction. Raw reply."""
+    messages = [{"role": "system", "content": EDIT_SYSTEM_PROMPT}]
+    for (ex_text, ex_command), edited in EDIT_EXAMPLES:
+        messages.append({"role": "user", "content": _format_edit_input(ex_text, ex_command)})
+        messages.append({"role": "assistant", "content": edited})
+    messages.append({"role": "user", "content": _format_edit_input(text, command)})
+    # Edits can grow the text ("add ... at the end") but a reply several times
+    # the input is a runaway, not an edit.
+    return _llm_chat(messages, max_tokens=max(128, len(text)))
+
+
+# --- Correction suggestions (LLM scans recent transcripts for mishearings) ---
+
+SUGGEST_SYSTEM_PROMPT = (
+    "/no_think You review speech-to-text transcripts for recurring "
+    "misrecognitions of names and technical terms. Reply with ONLY a JSON "
+    "array of corrections, each {\"wrong\": \"<transcribed word>\", "
+    "\"right\": \"<intended word>\"}. Only include corrections you are "
+    "confident about — words that in context are clearly a mishearing of a "
+    "name, product, or technical term. Never include ordinary words used "
+    "normally. Reply with [] when there are none."
+)
+
+
+def _remember_transcript(text: str):
+    """Keep a final transcript for later correction suggestions."""
+    if text and len(text) >= 12:
+        recent_transcripts.append(text)
+
+
+def _suggest_request(transcripts: list[str], existing: dict[str, str]) -> str:
+    """Ask the llama-server for correction suggestions. Raw reply."""
+    parts = []
+    if existing:
+        parts.append(
+            "Already-known corrections (do not repeat these): "
+            + ", ".join(f"{w} -> {r}" for w, r in existing.items())
+        )
+    parts.append("Transcripts:")
+    parts.extend(f"- {t}" for t in transcripts)
+    messages = [
+        {"role": "system", "content": SUGGEST_SYSTEM_PROMPT},
+        {"role": "user", "content": "\n".join(parts)},
+    ]
+    return _llm_chat(messages, max_tokens=512)
+
+
+def _parse_suggestions(reply: str, existing: dict[str, str]) -> list[dict]:
+    """Extract usable {"wrong", "right"} pairs from an LLM reply.
+
+    A malformed reply yields [] — suggestions are advisory, never an error.
+    """
+    match = re.search(r"\[.*\]", reply, re.DOTALL)
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    existing_lower = {k.lower() for k in existing}
+    out: list[dict] = []
+    seen: set[str] = set()
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        wrong = item.get("wrong")
+        right = item.get("right")
+        if not isinstance(wrong, str) or not isinstance(right, str):
+            continue
+        wrong, right = wrong.strip(), right.strip()
+        if not wrong or not right or len(wrong) > 40 or len(right) > 40:
+            continue
+        if wrong.lower() == right.lower() or wrong.lower() in existing_lower:
+            continue
+        if wrong.lower() in seen:
+            continue
+        seen.add(wrong.lower())
+        out.append({"wrong": wrong, "right": right})
+        if len(out) >= 10:
+            break
+    return out
 
 
 # --- Parakeet engine (sherpa-onnx or onnxruntime, in-process) ---
@@ -1740,6 +2128,7 @@ def transcribe():
                 audio_duration_sec = round((wav_size - 44) / 32000, 1)  # 16kHz mono PCM
                 speed_ratio = round(audio_duration_sec / (duration_ms / 1000), 1) if duration_ms > 0 else 0
                 add_log("info", f'Transcribed {duration_ms}ms ({speed_ratio}x) -> "{text[:80]}"')
+                _remember_transcript(text)
                 return jsonify({
                     "text": text,
                     "duration_ms": duration_ms,
@@ -1861,6 +2250,7 @@ def transcribe_stop():
             audio_duration_sec = round((wav_size - 44) / 32000, 1)  # 16kHz mono PCM
             speed_ratio = round(audio_duration_sec / (duration_ms / 1000), 1) if duration_ms > 0 else 0
             add_log("info", f'PTT transcribed {duration_ms}ms ({speed_ratio}x) -> "{text[:80]}"')
+            _remember_transcript(text)
             payload = {
                 "text": text,
                 "duration_ms": duration_ms,
@@ -1901,6 +2291,7 @@ def status():
             "symbol_mode": bool(symbol_settings.get("enabled")),
             "cleanup_mode": bool(cleanup_settings.get("enabled")),
             "cleanup_available": _is_cleanup_server_alive(),
+            "cleanup_style": _active_style(),
             "chunked": chunked_supported,
         })
     else:
@@ -2118,32 +2509,201 @@ def reset_symbols():
     return jsonify(symbol_settings)
 
 
-# --- Speech cleanup toggle ---
+# --- Speech cleanup (toggle, style, model) ---
+
+def _cleanup_models() -> list[dict]:
+    """Catalog of known cleanup models with download/active status."""
+    active_file = active_cleanup_model_file()
+    models = []
+    seen = set()
+    for entry in CLEANUP_MODEL_CATALOG:
+        downloaded = _cleanup_model_present(entry["file"])
+        seen.add(entry["file"])
+        models.append({
+            **entry,
+            "downloaded": downloaded,
+            "active": downloaded and entry["file"] == active_file,
+        })
+    # A custom CLEANUP_MODEL env var outside the catalog still shows up.
+    if CLEANUP_MODEL_FILE not in seen:
+        downloaded = _cleanup_model_present(CLEANUP_MODEL_FILE)
+        size_mb = 0
+        if downloaded:
+            size_mb = round(os.path.getsize(os.path.join(MODEL_DIR, CLEANUP_MODEL_FILE)) / (1024 * 1024))
+        models.append({
+            "name": CLEANUP_MODEL_FILE,
+            "file": CLEANUP_MODEL_FILE,
+            "size_mb": size_mb,
+            "description": "Custom (CLEANUP_MODEL env var)",
+            "downloaded": downloaded,
+            "active": downloaded and CLEANUP_MODEL_FILE == active_file,
+        })
+    return models
+
 
 def _cleanup_state() -> dict:
     return {
         "enabled": bool(cleanup_settings.get("enabled")),
         "available": _is_cleanup_server_alive(),
-        "model": CLEANUP_MODEL_FILE if find_cleanup_model() else None,
+        "model": active_cleanup_model_file() if find_cleanup_model() else None,
+        "models": _cleanup_models(),
+        "style": _active_style(),
+        "styles": [
+            {"name": name, "label": s["label"], "description": s["description"]}
+            for name, s in CLEANUP_STYLES.items()
+        ],
     }
 
 
 @app.route("/cleanup", methods=["GET"])
 def get_cleanup():
-    """Return the speech cleanup state: {"enabled", "available", "model"}."""
+    """Return the speech cleanup state:
+    {"enabled", "available", "model", "models", "style", "styles"}."""
     return jsonify(_cleanup_state())
 
 
 @app.route("/cleanup", methods=["PUT"])
 def put_cleanup():
-    """Enable or disable speech cleanup. Body: {"enabled": bool}."""
+    """Update speech cleanup settings — partial merge like PUT /symbols.
+
+    Body keys (each optional, at least one required):
+      "enabled": bool — apply cleanup to transcripts
+      "style":   str  — a CLEANUP_STYLES name (rewrite flavor)
+      "model":   str  — a CLEANUP_MODEL_CATALOG name; restarts the
+                        llama-server with that GGUF ("available" stays false
+                        until the new model finishes loading)
+    """
     data = request.get_json(silent=True)
-    if data is None or not isinstance(data, dict) or not isinstance(data.get("enabled"), bool):
-        return jsonify({"error": "invalid_body", "message": "Request body must be JSON with a boolean 'enabled'."}), 400
-    cleanup_settings["enabled"] = data["enabled"]
+    if data is None or not isinstance(data, dict) or not any(
+        k in data for k in ("enabled", "style", "model")
+    ):
+        return jsonify({
+            "error": "invalid_body",
+            "message": "Request body must be JSON with 'enabled', 'style', and/or 'model'.",
+        }), 400
+
+    if "enabled" in data and not isinstance(data["enabled"], bool):
+        return jsonify({"error": "invalid_value", "message": "'enabled' must be a boolean."}), 400
+    if "style" in data and data["style"] not in CLEANUP_STYLES:
+        return jsonify({
+            "error": "invalid_style",
+            "message": f"'style' must be one of {sorted(CLEANUP_STYLES)}.",
+        }), 400
+    if "model" in data:
+        entry = _cleanup_model_by_name(data["model"]) if isinstance(data["model"], str) else None
+        if entry is None:
+            return jsonify({
+                "error": "invalid_model",
+                "message": f"'model' must be one of {[m['name'] for m in CLEANUP_MODEL_CATALOG]}.",
+            }), 400
+        if not _cleanup_model_present(entry["file"]):
+            return jsonify({
+                "error": "model_not_found",
+                "message": f"Model not downloaded. In Termux run: ./update-model.sh cleanup-4b"
+                if entry["name"] == "qwen3-4b"
+                else f"Model not downloaded. In Termux run: ./update-model.sh cleanup",
+            }), 404
+
+    if "enabled" in data:
+        cleanup_settings["enabled"] = data["enabled"]
+        add_log("info", f"Speech cleanup {'enabled' if data['enabled'] else 'disabled'}")
+    if "style" in data:
+        cleanup_settings["style"] = data["style"]
+        add_log("info", f"Cleanup style set to: {data['style']}")
+
+    model_changed = False
+    if "model" in data:
+        entry = _cleanup_model_by_name(data["model"])
+        previous_file = active_cleanup_model_file()
+        cleanup_settings["model"] = data["model"]
+        model_changed = entry["file"] != previous_file or (
+            _cleanup_loaded_file and _cleanup_loaded_file != entry["file"]
+        )
+
     save_cleanup_settings()
-    add_log("info", f"Speech cleanup {'enabled' if data['enabled'] else 'disabled'}")
+
+    if model_changed and STT_CLEANUP != "off":
+        add_log("info", f"Cleanup model switched to: {cleanup_settings['model']} — restarting llama-server")
+        restart_cleanup_server()
+
     return jsonify(_cleanup_state())
+
+
+@app.route("/edit", methods=["POST"])
+def edit_text():
+    """Apply a spoken editing instruction to a piece of text via the LLM.
+
+    Body: {"text": "...", "command": "replace Mike with Sarah"}
+    Returns {"text": <edited>}. The caller keeps its original text on any
+    error — this endpoint never partially applies an edit.
+    """
+    data = request.get_json(silent=True)
+    if (
+        data is None
+        or not isinstance(data, dict)
+        or not isinstance(data.get("text"), str)
+        or not isinstance(data.get("command"), str)
+        or not data["text"].strip()
+        or not data["command"].strip()
+    ):
+        return jsonify({
+            "error": "invalid_body",
+            "message": "Request body must be JSON with non-empty 'text' and 'command' strings.",
+        }), 400
+
+    if not _is_cleanup_server_alive():
+        return jsonify({
+            "error": "llm_unavailable",
+            "message": "Cleanup LLM is not running or still loading.",
+        }), 503
+
+    text = data["text"]
+    command = data["command"].strip()
+    t0 = time.time()
+    try:
+        edited = _edit_request(text, command)
+    except Exception as e:
+        add_log("warn", f"Voice edit failed ({e})")
+        return jsonify({"error": "edit_failed", "message": str(e)}), 502
+    ms = int((time.time() - t0) * 1000)
+
+    # Degenerate-reply guard: empty output or runaway growth is not an edit.
+    # (Shrinkage is legitimate — "delete everything after the first line".)
+    if not edited or len(edited) > 4 * (len(text) + len(command)) + 64:
+        add_log("warn", f"Voice edit rejected ({len(text)} -> {len(edited)} chars, {ms}ms)")
+        return jsonify({"error": "edit_rejected", "message": "The model returned a degenerate edit."}), 502
+
+    add_log("info", f"Voice edit applied ({ms}ms): {command[:60]!r}")
+    return jsonify({"text": edited, "duration_ms": ms})
+
+
+@app.route("/corrections/suggest", methods=["POST"])
+def suggest_corrections():
+    """Ask the LLM to propose word corrections from recent transcripts.
+
+    Returns {"suggestions": [{"wrong", "right"}, ...], "transcripts": N}.
+    Suggestions are advisory — nothing is saved until the user accepts one
+    (the PWA then PUTs the updated dictionary as usual).
+    """
+    transcripts = list(recent_transcripts)
+    if not transcripts:
+        return jsonify({"suggestions": [], "transcripts": 0})
+
+    if not _is_cleanup_server_alive():
+        return jsonify({
+            "error": "llm_unavailable",
+            "message": "Cleanup LLM is not running or still loading.",
+        }), 503
+
+    try:
+        reply = _suggest_request(transcripts, word_corrections)
+    except Exception as e:
+        add_log("warn", f"Correction suggestions failed ({e})")
+        return jsonify({"error": "suggest_failed", "message": str(e)}), 502
+
+    suggestions = _parse_suggestions(reply, word_corrections)
+    add_log("info", f"Correction suggestions: {len(suggestions)} from {len(transcripts)} transcripts")
+    return jsonify({"suggestions": suggestions, "transcripts": len(transcripts)})
 
 
 # --- Settings ---

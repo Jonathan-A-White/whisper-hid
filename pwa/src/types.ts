@@ -39,6 +39,10 @@ export interface WhisperStatus {
   model_size_mb?: number;
   recording?: boolean;
   message?: string;
+  /** true when the cleanup llama-server is up with its model loaded */
+  cleanup_available?: boolean;
+  cleanup_mode?: boolean;
+  cleanup_style?: string;
 }
 
 export interface ModelInfo {
