@@ -38,16 +38,21 @@ the first send after a (re)connect pays the cost. **Don't remove this delay** to
 shave latency; without it the first dictation after any reconnect loses its
 opening words. Look for "Waiting Nms for HID link to settle" in HID `/logs`.
 
-## Bluetooth HID typing: throughput for large text
-Typing speed is bounded by HID reports sent, not just the keystroke delay.
-`HidKeyMapper.buildReports()` merges each character's key-up into the next
-character's key-down — a report carrying a new keycode implicitly releases
-the previous key (same as a fast typist overlapping keys), so prose costs
-~1 report/char instead of 2. An explicit all-up report is inserted only for
-repeated keycodes ("ll") and modifier transitions ('aB' — the HID spec
-doesn't order modifier bits vs. keycode changes within one report, so
-merging across a shift boundary can mis-case characters on some hosts), plus
-one final release. Don't "simplify" back to down/up pairs per char.
+## Bluetooth HID typing: throughput and reliability for large text
+`HidKeyMapper.buildReports()` emits an explicit key-down + all-up pair per
+character (2 reports/char). A merged stream (key-up folded into the next
+key-down, ~1 report/char, like a fast typist overlapping keys) was tried to
+double throughput and **REVERTED after field testing**: on a real host it
+produced bursts of dropped characters and dropped Shifts ("i'd") on every
+send, at every keystroke delay tried (0–20ms) — while the pair stream at the
+same report rate has always been clean on the same host. The stack/host path
+silently loses occasional reports (`sendReport()` still returns true, same
+class of problem as the post-connect settle window above), and a merged
+stream has zero redundancy: every lost report corrupts text. The pair stream
+degrades gracefully — a lost release is healed by the next key-down
+(implicit release), so one lost report costs at most one character. Don't
+re-merge key-ups to shave latency; typing speed comes from lowering
+`keystrokeDelayMs` instead.
 
 `keystrokeDelayMs` is the pause after each report (skipped entirely at 0).
 The PWA's Keystroke delay setting is sent as `delay_ms` in each `/type`
@@ -55,11 +60,11 @@ request body and sticks until the next override; `/status` reports it as
 `keystroke_delay_ms`. At 0 delay the stack can refuse to queue a report
 under congestion — `sendReportReliably()` retries with a short backoff.
 
-**Stuck-key hazard**: with the merged stream a key is held down *between*
-reports, so losing the release (a dropped report, an abort mid-stream)
-leaves the host's typematic auto-repeat typing that key forever — the
-classic symptom is endless trailing spaces (the appended " " is the last
-key of every dictation). Three guards, all load-bearing:
+**Stuck-key hazard**: if the *final* release of a send is lost (a dropped
+report, an abort mid-stream), there is no later key-down to heal it and the
+host's typematic auto-repeat types that key forever — the classic symptom
+is endless trailing spaces (the appended " " is the last key of every
+dictation). Three guards, all load-bearing:
 1. If a report can't be sent after retries, the rest of the text is
    ABORTED (never skip-and-continue — a skipped release = stuck key).
 2. Every send task releases all keys in a `finally` (`releaseAllKeys()`,
