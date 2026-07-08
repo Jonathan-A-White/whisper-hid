@@ -53,9 +53,23 @@ one final release. Don't "simplify" back to down/up pairs per char.
 The PWA's Keystroke delay setting is sent as `delay_ms` in each `/type`
 request body and sticks until the next override; `/status` reports it as
 `keystroke_delay_ms`. At 0 delay the stack can refuse to queue a report
-under congestion — `sendReportReliably()` retries with a short backoff and
-logs "keystroke dropped" if the budget runs out (check HID `/logs` if text
-arrives with missing characters).
+under congestion — `sendReportReliably()` retries with a short backoff.
+
+**Stuck-key hazard**: with the merged stream a key is held down *between*
+reports, so losing the release (a dropped report, an abort mid-stream)
+leaves the host's typematic auto-repeat typing that key forever — the
+classic symptom is endless trailing spaces (the appended " " is the last
+key of every dictation). Three guards, all load-bearing:
+1. If a report can't be sent after retries, the rest of the text is
+   ABORTED (never skip-and-continue — a skipped release = stuck key).
+2. Every send task releases all keys in a `finally` (`releaseAllKeys()`,
+   larger retry budget) no matter how it exits.
+3. `POST /stop` (auth) is the kill switch: bumps `typeGeneration` so the
+   running send and everything queued behind it bail, then forces a
+   release. The PWA "⏹ Stop typing" button on the Talk screen calls it and
+   also aborts the client-side 500-char chunk loop in `hidType()` (later
+   chunks are separate `/type` requests the service hasn't seen yet).
+   `/status` exposes `"typing": bool` (any send running or queued).
 
 ## Bluetooth headset mic
 Termux records from Android's *default* input, so using a Bluetooth headset's

@@ -329,11 +329,32 @@ export async function hidLogs() {
 
 const HID_TYPE_CHUNK_SIZE = 500;
 
+// Bumped by hidStop(). Large texts go out as multiple sequential /type
+// requests; the chunk loop below checks this between chunks so a stop
+// request also kills the chunks that haven't been submitted yet (the HID
+// service can only cancel what it has already received).
+let typeEpoch = 0;
+
+/**
+ * Kill switch: stop the HID service's in-progress typing (it releases any
+ * held key so the host stops auto-repeating) and abort any chunked hidType
+ * loop still submitting text from this client.
+ */
+export async function hidStop() {
+  typeEpoch++;
+  const res = await hidFetch("/stop", { method: "POST" });
+  if (res.status === 403) {
+    throw new Error("AUTH_FAILED");
+  }
+  return res.json();
+}
+
 export async function hidType(
   text: string,
   append: string = " ",
   delayMs?: number
 ) {
+  const epoch = typeEpoch;
   // delay_ms carries the PWA's "Keystroke delay" setting to the HID service
   // (sticky there until the next override).
   const delayField = delayMs !== undefined ? { delay_ms: delayMs } : {};
@@ -359,6 +380,7 @@ export async function hidType(
 
   let lastResult: unknown;
   for (let i = 0; i < chunks.length; i++) {
+    if (typeEpoch !== epoch) return lastResult; // stopped mid-send
     const isLast = i === chunks.length - 1;
     const res = await hidFetch("/type", {
       method: "POST",

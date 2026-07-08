@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   hidStatus,
   hidType,
+  hidStop,
   hidRestart,
   hidHeadsetMic,
   clearToken,
@@ -113,6 +114,22 @@ export function useHidService(settings: Settings) {
     flushingRef.current = false;
   }, [queue, getAppendString, settings.keystrokeDelay]);
 
+  // Kill switch: stop in-progress typing on the phone (releases any stuck
+  // key) and drop anything still queued client-side. Optimistically clears
+  // the typing flag; the 3s status poll corrects any drift.
+  const stopTransmission = useCallback(async () => {
+    setQueue((prev) => prev.filter((q) => q.status !== "pending"));
+    setStatus((prev) => (prev ? { ...prev, typing: false } : prev));
+    try {
+      await hidStop();
+    } catch (e) {
+      if (e instanceof Error && e.message === "AUTH_FAILED") {
+        setAuthError(true);
+        clearToken();
+      }
+    }
+  }, []);
+
   const sendNewline = useCallback(async () => {
     if (status?.bluetooth !== "connected") return;
     try {
@@ -167,6 +184,7 @@ export function useHidService(settings: Settings) {
     queue,
     sendText,
     sendNewline,
+    stopTransmission,
     restart,
     setHeadsetMic,
   };

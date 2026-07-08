@@ -78,6 +78,11 @@ class BluetoothHidService : Service() {
         private const val SEND_RETRY_ATTEMPTS = 4
         private const val SEND_RETRY_BACKOFF_MS = 20L
 
+        // Bigger budget for the all-keys-up release: losing it leaves a key
+        // held at the host, which auto-repeats it forever (see releaseAllKeys).
+        private const val RELEASE_RETRY_ATTEMPTS = 10
+        private const val RELEASE_RETRY_BACKOFF_MS = 50L
+
         // Standard USB HID keyboard descriptor (boot protocol compatible).
         private val HID_DESCRIPTOR = byteArrayOf(
             0x05.toByte(), 0x01.toByte(), // Usage Page (Generic Desktop)
@@ -133,6 +138,15 @@ class BluetoothHidService : Service() {
     // via "delay_ms" (the PWA sends its Keystroke delay setting). 0 = send at
     // whatever rate the BT stack accepts; sendReportReliably absorbs congestion.
     @Volatile var keystrokeDelayMs: Long = 10L
+
+    // Cancellation for in-progress/queued sends: each send task captures the
+    // generation at enqueue and bails as soon as it no longer matches.
+    // POST /stop bumps it (see cancelTransmission).
+    private val typeGeneration = java.util.concurrent.atomic.AtomicLong(0)
+
+    // Number of send tasks currently running (0 or 1 with the single-threaded
+    // executor, but queued tasks make "busy" outlast one task). For /status.
+    private val typing = java.util.concurrent.atomic.AtomicInteger(0)
 
     // Wall-clock time the current link reached CONNECTED, used to enforce the
     // post-connect settle window before the first keystroke (see sendString).
@@ -724,33 +738,87 @@ class BluetoothHidService : Service() {
 
     // sendReport() returns false when the stack can't queue the report (tx
     // congestion — likely at low/zero keystroke delay on long text). Back off
-    // briefly and retry so a burst doesn't silently drop keystrokes mid-text.
+    // briefly and retry. Returns false if the report could not be sent —
+    // callers must then ABORT the rest of the text: with the merged report
+    // stream a key is held down between reports, so skipping a report and
+    // carrying on (or worse, skipping the release) leaves a key stuck at the
+    // host, whose typematic auto-repeat then types it forever.
     private fun sendReportReliably(
         hid: BluetoothHidDevice,
         device: BluetoothDevice,
         bytes: ByteArray,
-    ) {
+    ): Boolean {
         repeat(SEND_RETRY_ATTEMPTS) {
-            if (hid.sendReport(device, REPORT_ID.toInt(), bytes)) return
+            if (hid.sendReport(device, REPORT_ID.toInt(), bytes)) return true
             Thread.sleep(SEND_RETRY_BACKOFF_MS)
         }
-        addLog("warn", "sendReport failed after $SEND_RETRY_ATTEMPTS attempts; keystroke dropped")
+        return false
+    }
+
+    // Force all keys up. Must succeed if humanly possible — a lost release
+    // leaves the host auto-repeating the last key. Bigger retry budget than
+    // normal reports; safe to call from any thread.
+    private fun releaseAllKeys(hid: BluetoothHidDevice, device: BluetoothDevice) {
+        try {
+            repeat(RELEASE_RETRY_ATTEMPTS) {
+                if (hid.sendReport(device, REPORT_ID.toInt(), HidKeyMapper.KEY_UP_REPORT)) return
+                Thread.sleep(RELEASE_RETRY_BACKOFF_MS)
+            }
+            addLog("error", "Could not send key release after $RELEASE_RETRY_ATTEMPTS attempts — a key may be stuck at the host")
+        } catch (_: SecurityException) {
+            addLog("error", "Missing permission for key release")
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+    }
+
+    /**
+     * Kill switch: abandon the in-progress send and everything queued behind
+     * it, and immediately release any held key. Bumping [typeGeneration]
+     * makes the running executor task bail at its next iteration and makes
+     * every task queued before this call exit without typing; the direct
+     * release below unsticks the host right away (it may interleave with one
+     * final in-flight report, but the task's own finally-release runs after,
+     * so all keys still end up released).
+     */
+    fun cancelTransmission() {
+        typeGeneration.incrementAndGet()
+        addLog("info", "Transmission cancelled — releasing keys")
+        val device = connectedDevice ?: return
+        val hid = hidDevice ?: return
+        releaseAllKeys(hid, device)
     }
 
     fun sendString(text: String) {
         val device = connectedDevice ?: return
         val hid = hidDevice ?: return
+        val gen = typeGeneration.get()
 
         executor.execute {
-            waitForConnectSettle()
-            for (bytes in HidKeyMapper.buildReports(text)) {
-                try {
-                    sendReportReliably(hid, device, bytes)
+            if (typeGeneration.get() != gen) return@execute // cancelled while queued
+            typing.incrementAndGet()
+            try {
+                waitForConnectSettle()
+                for (bytes in HidKeyMapper.buildReports(text)) {
+                    if (typeGeneration.get() != gen) {
+                        addLog("info", "Send aborted by stop request")
+                        return@execute
+                    }
+                    if (!sendReportReliably(hid, device, bytes)) {
+                        addLog("warn", "sendReport failed after $SEND_RETRY_ATTEMPTS attempts — aborting rest of text")
+                        return@execute
+                    }
                     if (keystrokeDelayMs > 0) Thread.sleep(keystrokeDelayMs)
-                } catch (e: SecurityException) {
-                    addLog("error", "Missing permission for sendReport")
-                    return@execute
                 }
+            } catch (e: SecurityException) {
+                addLog("error", "Missing permission for sendReport")
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } finally {
+                // Whatever happened above — completion, abort, cancel, or a
+                // crash mid-stream — never leave a key held at the host.
+                releaseAllKeys(hid, device)
+                typing.decrementAndGet()
             }
         }
     }
@@ -759,21 +827,29 @@ class BluetoothHidService : Service() {
         val device = connectedDevice ?: return
         val hid = hidDevice ?: return
         val report = HidKeyMapper.backspaceReport()
+        val gen = typeGeneration.get()
 
         executor.execute {
-            waitForConnectSettle()
-            repeat(count) {
-                try {
+            if (typeGeneration.get() != gen) return@execute
+            typing.incrementAndGet()
+            try {
+                waitForConnectSettle()
+                for (i in 0 until count) {
+                    if (typeGeneration.get() != gen) return@execute
                     // Repeated same-key presses need an explicit release
                     // between them, so backspace can't use the merged stream.
-                    sendReportReliably(hid, device, HidKeyMapper.toBytes(report))
+                    if (!sendReportReliably(hid, device, HidKeyMapper.toBytes(report))) return@execute
                     if (keystrokeDelayMs > 0) Thread.sleep(keystrokeDelayMs)
-                    sendReportReliably(hid, device, HidKeyMapper.KEY_UP_REPORT)
+                    if (!sendReportReliably(hid, device, HidKeyMapper.KEY_UP_REPORT)) return@execute
                     if (keystrokeDelayMs > 0) Thread.sleep(keystrokeDelayMs)
-                } catch (e: SecurityException) {
-                    addLog("error", "Missing permission for sendReport")
-                    return@execute
                 }
+            } catch (e: SecurityException) {
+                addLog("error", "Missing permission for sendReport")
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } finally {
+                releaseAllKeys(hid, device)
+                typing.decrementAndGet()
             }
         }
     }
@@ -876,6 +952,7 @@ class BluetoothHidService : Service() {
 
             when (request.path) {
                 "/type" -> handleType(request, output)
+                "/stop" -> handleStop(request, output)
                 "/backspace" -> handleBackspace(request, output)
                 "/status" -> handleStatus(request, output)
                 "/logs" -> handleLogs(request, output)
@@ -974,6 +1051,28 @@ class BluetoothHidService : Service() {
         }
     }
 
+    // Kill switch for runaway typing: abandons the in-progress send and the
+    // queue behind it, and forces an all-keys-up release so a stuck key stops
+    // auto-repeating at the host. Safe to call any time, even when idle.
+    private fun handleStop(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (!validateToken(request)) {
+            sendResponse(output, 403, JSONObject().put("error", "forbidden"))
+            return
+        }
+        if (request.method != "POST") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
+            return
+        }
+
+        try {
+            cancelTransmission()
+            sendResponse(output, 200, JSONObject().put("ok", true))
+        } catch (e: Exception) {
+            sendResponse(output, 500, JSONObject().put("ok", false).put("error", e.message ?: "unknown"))
+        }
+    }
+
     private fun handleBackspace(request: HttpRequest, output: OutputStream) {
         if (request.method == "OPTIONS") { sendPreflight(output); return }
         if (!validateToken(request)) {
@@ -1015,6 +1114,7 @@ class BluetoothHidService : Service() {
         json.put("version", BuildConfig.APP_VERSION)
         json.put("uptime_seconds", (System.currentTimeMillis() - startTime) / 1000)
         json.put("keystroke_delay_ms", keystrokeDelayMs)
+        json.put("typing", typing.get() > 0)
 
         json.put("headset_mic", headsetMicJson())
 
