@@ -746,10 +746,10 @@ class BluetoothHidService : Service() {
     // sendReport() returns false when the stack can't queue the report (tx
     // congestion — likely at low/zero keystroke delay on long text). Back off
     // briefly and retry. Returns false if the report could not be sent —
-    // callers must then ABORT the rest of the text: with the merged report
-    // stream a key is held down between reports, so skipping a report and
-    // carrying on (or worse, skipping the release) leaves a key stuck at the
-    // host, whose typematic auto-repeat then types it forever.
+    // callers must then ABORT the rest of the text: silently skipping reports
+    // corrupts the message mid-word, and a skipped all-up release leaves a
+    // key held at the host, whose typematic auto-repeat then types it
+    // forever until the next key-down arrives.
     private fun sendReportReliably(
         hid: BluetoothHidDevice,
         device: BluetoothDevice,
@@ -843,8 +843,6 @@ class BluetoothHidService : Service() {
                 waitForConnectSettle()
                 for (i in 0 until count) {
                     if (typeGeneration.get() != gen) return@execute
-                    // Repeated same-key presses need an explicit release
-                    // between them, so backspace can't use the merged stream.
                     if (!sendReportReliably(hid, device, HidKeyMapper.toBytes(report))) return@execute
                     if (keystrokeDelayMs > 0) Thread.sleep(keystrokeDelayMs)
                     if (!sendReportReliably(hid, device, HidKeyMapper.KEY_UP_REPORT)) return@execute

@@ -29,34 +29,27 @@ object HidKeyMapper {
     fun map(char: Char): HidReport? = CHAR_MAP[char]
 
     /**
-     * Build the HID report stream that types [text].
+     * Build the HID report stream that types [text]: an explicit key-down +
+     * all-up pair per character (2 reports/char).
      *
-     * Instead of a key-down + key-up pair per character (2 reports), the
-     * key-up is merged into the next character's key-down: a report carrying
-     * a different keycode implicitly releases the previous key, exactly like
-     * a fast typist overlapping keys on a real keyboard. An explicit all-up
-     * report is only inserted where the host couldn't otherwise see a new
-     * press: a repeated keycode ("ll") or a modifier change ('aB' — the HID
-     * spec doesn't order modifier bits vs. key changes within one report, so
-     * merging across a shift transition can mis-case the character on some
-     * hosts). A final all-up report releases the last key.
-     *
-     * Prose is mostly unshifted and rarely doubles letters, so this comes to
-     * ~1 report per character instead of 2 — about twice the typing rate for
-     * large text.
+     * A merged stream (key-up folded into the next key-down, ~1 report/char)
+     * was tried and REVERTED: field testing against a real host produced
+     * bursts of dropped characters and dropped Shifts on every send,
+     * regardless of keystroke delay (0-20ms tried) — while this pair stream
+     * at the same report rate has always been clean. Every report the stack
+     * or host drops silently corrupts a merged stream, and the pair stream
+     * degrades more gracefully: a lost release is healed by the next
+     * key-down (a report without the old keycode implicitly releases it), so
+     * one lost report costs at most one character. Don't re-merge key-ups to
+     * shave latency; typing speed comes from lowering keystrokeDelayMs.
      */
     fun buildReports(text: String): List<ByteArray> {
-        val reports = ArrayList<ByteArray>(text.length + 1)
-        var prev: HidReport? = null
+        val reports = ArrayList<ByteArray>(text.length * 2)
         for (char in text) {
             val report = map(char) ?: continue
-            if (prev != null && (prev.keycode == report.keycode || prev.modifier != report.modifier)) {
-                reports.add(KEY_UP_REPORT)
-            }
             reports.add(toBytes(report))
-            prev = report
+            reports.add(KEY_UP_REPORT)
         }
-        if (prev != null) reports.add(KEY_UP_REPORT)
         return reports
     }
 
