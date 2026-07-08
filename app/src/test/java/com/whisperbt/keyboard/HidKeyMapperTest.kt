@@ -94,4 +94,78 @@ class HidKeyMapperTest {
         val report = HidKeyMapper.map('\u00E9') // é
         assertNull(report)
     }
+
+    // --- buildReports (merged key-up stream) ---
+
+    private fun isKeyUp(bytes: ByteArray) = bytes.all { it == 0.toByte() }
+
+    @Test
+    fun `buildReports merges key-up into next key-down for distinct keys`() {
+        val reports = HidKeyMapper.buildReports("ab")
+        // a-down, b-down (implicitly releases a), final release
+        assertEquals(3, reports.size)
+        assertEquals(0x04.toByte(), reports[0][2])
+        assertEquals(0x05.toByte(), reports[1][2])
+        assertTrue(isKeyUp(reports[2]))
+    }
+
+    @Test
+    fun `buildReports inserts release between repeated keys`() {
+        val reports = HidKeyMapper.buildReports("aa")
+        // a-down, release, a-down, final release
+        assertEquals(4, reports.size)
+        assertTrue(isKeyUp(reports[1]))
+        assertEquals(0x04.toByte(), reports[2][2])
+    }
+
+    @Test
+    fun `buildReports inserts release on modifier change`() {
+        val reports = HidKeyMapper.buildReports("aB")
+        // a-down, release, shift+b-down, final release
+        assertEquals(4, reports.size)
+        assertTrue(isKeyUp(reports[1]))
+        assertEquals(0x02.toByte(), reports[2][0])
+        assertEquals(0x05.toByte(), reports[2][2])
+    }
+
+    @Test
+    fun `buildReports keeps shift held across consecutive uppercase`() {
+        val reports = HidKeyMapper.buildReports("AB")
+        // shift+a-down, shift+b-down, final release
+        assertEquals(3, reports.size)
+        assertEquals(0x02.toByte(), reports[0][0])
+        assertEquals(0x02.toByte(), reports[1][0])
+        assertTrue(isKeyUp(reports[2]))
+    }
+
+    @Test
+    fun `buildReports skips unmapped characters entirely`() {
+        assertTrue(HidKeyMapper.buildReports("é").isEmpty())
+        assertTrue(HidKeyMapper.buildReports("").isEmpty())
+    }
+
+    @Test
+    fun `buildReports always ends with a full release`() {
+        val reports = HidKeyMapper.buildReports("Hello, world!")
+        assertTrue(isKeyUp(reports.last()))
+        // Every non-release report carries exactly one keycode
+        for (r in reports) {
+            if (!isKeyUp(r)) {
+                assertTrue(r[2] != 0.toByte())
+                for (i in 3..7) assertEquals(0.toByte(), r[i])
+            }
+        }
+    }
+
+    @Test
+    fun `buildReports uses roughly one report per character for prose`() {
+        val text = "the quick brown fox jumps over the lazy dog"
+        val reports = HidKeyMapper.buildReports(text)
+        // Old scheme: 2 reports per char = 88. Merged stream should be far
+        // closer to 1 per char (releases only for doubled letters + final).
+        assertTrue(
+            "expected < 1.2 reports/char, got ${reports.size} for ${text.length} chars",
+            reports.size < text.length * 1.2
+        )
+    }
 }

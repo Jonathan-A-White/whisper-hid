@@ -38,6 +38,25 @@ the first send after a (re)connect pays the cost. **Don't remove this delay** to
 shave latency; without it the first dictation after any reconnect loses its
 opening words. Look for "Waiting Nms for HID link to settle" in HID `/logs`.
 
+## Bluetooth HID typing: throughput for large text
+Typing speed is bounded by HID reports sent, not just the keystroke delay.
+`HidKeyMapper.buildReports()` merges each character's key-up into the next
+character's key-down — a report carrying a new keycode implicitly releases
+the previous key (same as a fast typist overlapping keys), so prose costs
+~1 report/char instead of 2. An explicit all-up report is inserted only for
+repeated keycodes ("ll") and modifier transitions ('aB' — the HID spec
+doesn't order modifier bits vs. keycode changes within one report, so
+merging across a shift boundary can mis-case characters on some hosts), plus
+one final release. Don't "simplify" back to down/up pairs per char.
+
+`keystrokeDelayMs` is the pause after each report (skipped entirely at 0).
+The PWA's Keystroke delay setting is sent as `delay_ms` in each `/type`
+request body and sticks until the next override; `/status` reports it as
+`keystroke_delay_ms`. At 0 delay the stack can refuse to queue a report
+under congestion — `sendReportReliably()` retries with a short backoff and
+logs "keystroke dropped" if the budget runs out (check HID `/logs` if text
+arrives with missing characters).
+
 ## Bluetooth headset mic
 Termux records from Android's *default* input, so using a Bluetooth headset's
 mic requires system-wide SCO routing, handled by the Kotlin HID service

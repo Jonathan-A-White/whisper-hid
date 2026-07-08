@@ -121,6 +121,10 @@ export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewPr
           }
           className="w-full accent-sky-500"
         />
+        <p className="text-xs text-gray-500 mt-1">
+          Pause between keystrokes. 0 = fastest; raise it if the receiving
+          computer drops or scrambles characters.
+        </p>
       </div>
 
       {/* Toggle: Noise reduction */}
