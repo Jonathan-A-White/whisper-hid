@@ -639,7 +639,14 @@ class BluetoothHidService : Service() {
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     connectedDevice = null
-                    addLog("info", "BT disconnected")
+                    // Kill the in-progress send and anything queued behind it.
+                    // A held key can't be released over a dead link, and — worse —
+                    // hosts don't reliably release keys when the device vanishes
+                    // (a stuck key keeps auto-repeating until a real key-up or a
+                    // reboot). Letting queued sends survive would also blast stale
+                    // text into whatever window has focus after reconnect.
+                    typeGeneration.incrementAndGet()
+                    addLog("info", "BT disconnected — pending sends cancelled")
                     updateNotification("Disconnected — reconnecting...")
                     startReconnect()
                 }

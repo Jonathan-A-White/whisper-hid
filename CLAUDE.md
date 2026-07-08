@@ -71,6 +71,14 @@ key of every dictation). Three guards, all load-bearing:
    chunks are separate `/type` requests the service hasn't seen yet).
    `/status` exposes `"typing": bool` (any send running or queued).
 
+Field note: hosts do NOT reliably release held keys when the BT device
+disconnects — an observed runaway kept typing spaces after Bluetooth was
+turned off and only stopped on reboot (tapping the stuck key on the host's
+physical keyboard also clears it). So the release must be *delivered over
+the live link* — that's why `/stop` matters and why a BT disconnect bumps
+`typeGeneration` (can't release over a dead link; and queued sends must not
+blast stale text at whatever has focus after reconnect).
+
 ## Bluetooth headset mic
 Termux records from Android's *default* input, so using a Bluetooth headset's
 mic requires system-wide SCO routing, handled by the Kotlin HID service
