@@ -18,6 +18,9 @@ export interface HidStatus {
   reconnect_max?: number;
   next_retry_seconds?: number;
   failure_reason?: string;
+  /** true while the service is typing (or has sends queued); absent on older APKs */
+  typing?: boolean;
+  keystroke_delay_ms?: number;
   headset_mic?: {
     available: boolean;
     active: boolean;

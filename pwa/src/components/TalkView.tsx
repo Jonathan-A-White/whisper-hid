@@ -18,6 +18,7 @@ interface TalkViewProps {
   hid: {
     sendText: (text: string) => Promise<boolean>;
     sendNewline: () => Promise<void>;
+    stopTransmission: () => Promise<void>;
     status: HidStatus | null;
     queue: { id: string; text: string; status: string }[];
     setHeadsetMic: (enabled: boolean) => Promise<void>;
@@ -173,6 +174,24 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Kill switch — stops in-progress typing on the host and releases any
+          stuck (auto-repeating) key. Kept outside the edit-buffer branch so
+          it's reachable in every screen state. */}
+      {isConnected && (
+        <div className="flex-shrink-0 w-full mb-2 flex justify-center">
+          <button
+            onClick={() => hid.stopTransmission()}
+            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
+              hid.status?.typing
+                ? "bg-red-600 text-white animate-pulse hover:bg-red-500"
+                : "bg-gray-800 text-red-400 hover:bg-gray-700"
+            }`}
+          >
+            ⏹ Stop typing
+          </button>
         </div>
       )}
 
