@@ -136,6 +136,10 @@ gets no headset mic. "Zoom mode" releases the link without stopping anything:
 
 ## Build
 - Android app: `./gradlew assembleDebug` (output: app/build/outputs/apk/debug/)
+- Debug APKs are signed with the checked-in `app/debug.keystore` (standard
+  android/androiddebugkey credentials) so CI and local builds all share one
+  signature and updates install over the previous APK. Don't delete or
+  regenerate it — that forces users to uninstall/reinstall.
 - PWA: `cd pwa && npm install && npm run build` (output: pwa/dist/)
 - Termux scripts: Copy to phone, run setup-termux.sh once
 - CI builds APK on push to main, deploys PWA to GitHub Pages on push to main

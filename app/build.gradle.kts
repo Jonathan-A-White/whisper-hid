@@ -32,6 +32,18 @@ android {
         buildConfig = true
     }
 
+    // Checked-in debug keystore so every build (CI or local) carries the same
+    // signature — otherwise each ephemeral CI runner generates its own debug
+    // key and Android refuses to install updates over the previous APK.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
