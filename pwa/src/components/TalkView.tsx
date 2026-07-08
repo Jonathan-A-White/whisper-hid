@@ -43,6 +43,7 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
   const [lastEntryStats, setLastEntryStats] = useState<{ model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number } | null>(null);
   const [voiceEditState, setVoiceEditState] = useState<VoiceEditState>("idle");
   const [voiceEditError, setVoiceEditError] = useState<string | null>(null);
+  const [clipboardError, setClipboardError] = useState<string | null>(null);
 
   const handlePtt = useCallback(async () => {
     if (whisper.recording) {
@@ -118,6 +119,32 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
       await whisper.startRecording();
     }
   }, [voiceEditState, whisper, editText]);
+
+  // Type the phone clipboard on the connected host — lets text composed in
+  // another app (e.g. a prompt drafted in Claude) be delivered through the
+  // same HID path as dictation, without riding on a dummy recording.
+  const handleTypeClipboard = useCallback(async () => {
+    setClipboardError(null);
+    let text = "";
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      // Clipboard read blocked (permission denied / unsupported) — open the
+      // empty edit buffer so the text can be pasted in manually instead.
+      setEditText("");
+      return;
+    }
+    if (!text.trim()) {
+      setClipboardError("Clipboard is empty");
+      return;
+    }
+    setLastError(null);
+    setLastStats(null);
+    setLastText(text);
+    await store.addEntry(text);
+    await hid.sendText(text);
+    if (settings.newlineAfterEnd) await hid.sendNewline();
+  }, [hid, store, settings.newlineAfterEnd]);
 
   const handlePinnedTap = useCallback(
     async (text: string) => {
@@ -209,10 +236,29 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
             {/* Zoom mode quick toggle — release headset mic to the laptop */}
             <ZoomModeToggle status={hid.status} onToggle={hid.setHeadsetMic} />
 
+            {/* Type the phone clipboard on the host */}
+            <div className="mt-2 flex flex-col items-center">
+              <button
+                onClick={handleTypeClipboard}
+                className="px-4 py-1.5 rounded-full text-sm font-medium bg-gray-800 text-sky-400 hover:bg-gray-700 transition-colors"
+              >
+                ⌨️ Type clipboard
+              </button>
+              {clipboardError && (
+                <p className="mt-1 text-xs text-red-400 text-center">
+                  {clipboardError}
+                </p>
+              )}
+            </div>
+
             {/* Last transcription */}
             {lastText && !lastError && (
               <p className="mt-4 text-gray-400 text-sm max-w-xs text-center">
-                Last: &quot;{lastText}&quot;
+                Last: &quot;
+                {lastText.length > 140
+                  ? lastText.slice(0, 140) + "..."
+                  : lastText}
+                &quot;
               </p>
             )}
 
