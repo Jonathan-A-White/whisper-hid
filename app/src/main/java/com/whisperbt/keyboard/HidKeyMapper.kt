@@ -28,6 +28,38 @@ object HidKeyMapper {
     /** Map a character to its HID report, or null if unmapped. */
     fun map(char: Char): HidReport? = CHAR_MAP[char]
 
+    /**
+     * Build the HID report stream that types [text].
+     *
+     * Instead of a key-down + key-up pair per character (2 reports), the
+     * key-up is merged into the next character's key-down: a report carrying
+     * a different keycode implicitly releases the previous key, exactly like
+     * a fast typist overlapping keys on a real keyboard. An explicit all-up
+     * report is only inserted where the host couldn't otherwise see a new
+     * press: a repeated keycode ("ll") or a modifier change ('aB' — the HID
+     * spec doesn't order modifier bits vs. key changes within one report, so
+     * merging across a shift transition can mis-case the character on some
+     * hosts). A final all-up report releases the last key.
+     *
+     * Prose is mostly unshifted and rarely doubles letters, so this comes to
+     * ~1 report per character instead of 2 — about twice the typing rate for
+     * large text.
+     */
+    fun buildReports(text: String): List<ByteArray> {
+        val reports = ArrayList<ByteArray>(text.length + 1)
+        var prev: HidReport? = null
+        for (char in text) {
+            val report = map(char) ?: continue
+            if (prev != null && (prev.keycode == report.keycode || prev.modifier != report.modifier)) {
+                reports.add(KEY_UP_REPORT)
+            }
+            reports.add(toBytes(report))
+            prev = report
+        }
+        if (prev != null) reports.add(KEY_UP_REPORT)
+        return reports
+    }
+
     // HID keycodes for special keys
     const val KEY_ENTER: Byte = 0x28
     const val KEY_TAB: Byte = 0x2B

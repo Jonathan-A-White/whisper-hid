@@ -65,7 +65,7 @@ export function useHidService(settings: Settings) {
       }
 
       try {
-        await hidType(text, getAppendString());
+        await hidType(text, getAppendString(), settings.keystrokeDelay);
         return true;
       } catch (e) {
         if (e instanceof Error && e.message === "AUTH_FAILED") {
@@ -77,7 +77,7 @@ export function useHidService(settings: Settings) {
         return false;
       }
     },
-    [status?.bluetooth, getAppendString]
+    [status?.bluetooth, getAppendString, settings.keystrokeDelay]
   );
 
   const flushQueue = useCallback(async () => {
@@ -87,7 +87,7 @@ export function useHidService(settings: Settings) {
     const pending = queue.filter((q) => q.status === "pending");
     for (const item of pending) {
       try {
-        await hidType(item.text, getAppendString());
+        await hidType(item.text, getAppendString(), settings.keystrokeDelay);
         setQueue((prev) =>
           prev.map((q) => (q.id === item.id ? { ...q, status: "sent" } : q))
         );
@@ -111,7 +111,7 @@ export function useHidService(settings: Settings) {
     }, 2000);
 
     flushingRef.current = false;
-  }, [queue, getAppendString]);
+  }, [queue, getAppendString, settings.keystrokeDelay]);
 
   const sendNewline = useCallback(async () => {
     if (status?.bluetooth !== "connected") return;

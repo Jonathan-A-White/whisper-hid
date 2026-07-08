@@ -73,6 +73,11 @@ class BluetoothHidService : Service() {
         // warm-link sends see zero added latency.
         private const val CONNECT_SETTLE_MS = 1500L
 
+        // Retry budget for a sendReport() the stack refuses to queue
+        // (see sendReportReliably).
+        private const val SEND_RETRY_ATTEMPTS = 4
+        private const val SEND_RETRY_BACKOFF_MS = 20L
+
         // Standard USB HID keyboard descriptor (boot protocol compatible).
         private val HID_DESCRIPTOR = byteArrayOf(
             0x05.toByte(), 0x01.toByte(), // Usage Page (Generic Desktop)
@@ -124,7 +129,10 @@ class BluetoothHidService : Service() {
     private var connectedDevice: BluetoothDevice? = null
     private var lastKnownDevice: BluetoothDevice? = null
     private var btState = BtState.IDLE
-    var keystrokeDelayMs: Long = 10L
+    // Pause after each HID report while typing. Overridable per /type request
+    // via "delay_ms" (the PWA sends its Keystroke delay setting). 0 = send at
+    // whatever rate the BT stack accepts; sendReportReliably absorbs congestion.
+    @Volatile var keystrokeDelayMs: Long = 10L
 
     // Wall-clock time the current link reached CONNECTED, used to enforce the
     // post-connect settle window before the first keystroke (see sendString).
@@ -714,19 +722,31 @@ class BluetoothHidService : Service() {
         }
     }
 
+    // sendReport() returns false when the stack can't queue the report (tx
+    // congestion — likely at low/zero keystroke delay on long text). Back off
+    // briefly and retry so a burst doesn't silently drop keystrokes mid-text.
+    private fun sendReportReliably(
+        hid: BluetoothHidDevice,
+        device: BluetoothDevice,
+        bytes: ByteArray,
+    ) {
+        repeat(SEND_RETRY_ATTEMPTS) {
+            if (hid.sendReport(device, REPORT_ID.toInt(), bytes)) return
+            Thread.sleep(SEND_RETRY_BACKOFF_MS)
+        }
+        addLog("warn", "sendReport failed after $SEND_RETRY_ATTEMPTS attempts; keystroke dropped")
+    }
+
     fun sendString(text: String) {
         val device = connectedDevice ?: return
         val hid = hidDevice ?: return
 
         executor.execute {
             waitForConnectSettle()
-            for (char in text) {
-                val report = HidKeyMapper.map(char) ?: continue
+            for (bytes in HidKeyMapper.buildReports(text)) {
                 try {
-                    hid.sendReport(device, REPORT_ID.toInt(), HidKeyMapper.toBytes(report))
-                    Thread.sleep(keystrokeDelayMs)
-                    hid.sendReport(device, REPORT_ID.toInt(), HidKeyMapper.KEY_UP_REPORT)
-                    Thread.sleep(keystrokeDelayMs)
+                    sendReportReliably(hid, device, bytes)
+                    if (keystrokeDelayMs > 0) Thread.sleep(keystrokeDelayMs)
                 } catch (e: SecurityException) {
                     addLog("error", "Missing permission for sendReport")
                     return@execute
@@ -744,10 +764,12 @@ class BluetoothHidService : Service() {
             waitForConnectSettle()
             repeat(count) {
                 try {
-                    hid.sendReport(device, REPORT_ID.toInt(), HidKeyMapper.toBytes(report))
-                    Thread.sleep(keystrokeDelayMs)
-                    hid.sendReport(device, REPORT_ID.toInt(), HidKeyMapper.KEY_UP_REPORT)
-                    Thread.sleep(keystrokeDelayMs)
+                    // Repeated same-key presses need an explicit release
+                    // between them, so backspace can't use the merged stream.
+                    sendReportReliably(hid, device, HidKeyMapper.toBytes(report))
+                    if (keystrokeDelayMs > 0) Thread.sleep(keystrokeDelayMs)
+                    sendReportReliably(hid, device, HidKeyMapper.KEY_UP_REPORT)
+                    if (keystrokeDelayMs > 0) Thread.sleep(keystrokeDelayMs)
                 } catch (e: SecurityException) {
                     addLog("error", "Missing permission for sendReport")
                     return@execute
@@ -927,6 +949,10 @@ class BluetoothHidService : Service() {
             val json = parseJsonBody(request.body)
             val text = json.optString("text", "")
             val append = json.optString("append", " ")
+            // Optional per-request delay override, sent by the PWA from its
+            // "Keystroke delay" setting. Sticky until the next override.
+            val delayMs = json.optLong("delay_ms", -1L)
+            if (delayMs >= 0) keystrokeDelayMs = delayMs.coerceAtMost(100L)
 
             if (text.isEmpty()) {
                 sendResponse(output, 400, JSONObject().put("ok", false).put("error", "empty_text"))
@@ -988,6 +1014,7 @@ class BluetoothHidService : Service() {
         json.put("service", "running")
         json.put("version", BuildConfig.APP_VERSION)
         json.put("uptime_seconds", (System.currentTimeMillis() - startTime) / 1000)
+        json.put("keystroke_delay_ms", keystrokeDelayMs)
 
         json.put("headset_mic", headsetMicJson())
 

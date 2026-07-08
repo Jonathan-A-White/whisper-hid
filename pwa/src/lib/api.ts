@@ -329,14 +329,22 @@ export async function hidLogs() {
 
 const HID_TYPE_CHUNK_SIZE = 500;
 
-export async function hidType(text: string, append: string = " ") {
+export async function hidType(
+  text: string,
+  append: string = " ",
+  delayMs?: number
+) {
+  // delay_ms carries the PWA's "Keystroke delay" setting to the HID service
+  // (sticky there until the next override).
+  const delayField = delayMs !== undefined ? { delay_ms: delayMs } : {};
+
   // Break large text into chunks to avoid overwhelming the HID service's
   // simple HTTP server. Send chunks sequentially; only the last chunk
   // gets the append suffix.
   if (text.length <= HID_TYPE_CHUNK_SIZE) {
     const res = await hidFetch("/type", {
       method: "POST",
-      body: JSON.stringify({ text, append }),
+      body: JSON.stringify({ text, append, ...delayField }),
     });
     if (res.status === 403) {
       throw new Error("AUTH_FAILED");
@@ -357,6 +365,7 @@ export async function hidType(text: string, append: string = " ") {
       body: JSON.stringify({
         text: chunks[i],
         append: isLast ? append : "",
+        ...delayField,
       }),
     });
     if (res.status === 403) {
