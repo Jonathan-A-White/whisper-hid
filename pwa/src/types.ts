@@ -68,6 +68,9 @@ export interface Settings {
   appendNewline: boolean;
   appendSpace: boolean;
   newlineAfterEnd: boolean;
+  /** Type clipboard line breaks as "\" + Enter (Claude Code's
+   *  newline-without-submit escape) instead of flattening them. */
+  claudeCodeNewlines: boolean;
   keystrokeDelay: number;
   whisperModel: string;
   language: string;
@@ -78,6 +81,7 @@ export const DEFAULT_SETTINGS: Settings = {
   appendNewline: false,
   appendSpace: true,
   newlineAfterEnd: false,
+  claudeCodeNewlines: false,
   keystrokeDelay: 10,
   whisperModel: "base.en",
   language: "en",
