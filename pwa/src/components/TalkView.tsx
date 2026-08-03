@@ -139,13 +139,30 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
       setClipboardError("Clipboard is empty");
       return;
     }
+    // Embedded newlines are typed as real Enter keypresses on the host — in
+    // a chat box or CLI that submits the text mid-paste. Claude Code mode
+    // keeps the line structure by typing "\" + Enter (Claude Code's
+    // newline-without-submit escape) for each line break; otherwise the
+    // clipboard is flattened to one line unless the user has opted into
+    // newline separators. Either way "Newline after end of recording" alone
+    // decides the final Enter.
+    text = text.replace(/\r\n?/g, "\n").trim();
+    if (settings.claudeCodeNewlines) {
+      text = text.replace(/\n/g, "\\\n");
+    } else if (!settings.appendNewline) {
+      text = text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join(" ");
+    }
     setLastError(null);
     setLastStats(null);
     setLastText(text);
     await store.addEntry(text);
     await hid.sendText(text);
     if (settings.newlineAfterEnd) await hid.sendNewline();
-  }, [hid, store, settings.newlineAfterEnd]);
+  }, [hid, store, settings.claudeCodeNewlines, settings.appendNewline, settings.newlineAfterEnd]);
 
   const handlePinnedTap = useCallback(
     async (text: string) => {

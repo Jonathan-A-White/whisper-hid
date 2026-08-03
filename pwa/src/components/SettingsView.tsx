@@ -106,6 +106,27 @@ export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewPr
         />
       </label>
 
+      {/* Toggle: Claude Code newlines (clipboard) */}
+      <div>
+        <label className="flex items-center justify-between">
+          <span className="text-sm text-gray-300">
+            Claude Code newlines (clipboard)
+          </span>
+          <input
+            type="checkbox"
+            checked={settings.claudeCodeNewlines}
+            onChange={(e) => onUpdate({ claudeCodeNewlines: e.target.checked })}
+            className="w-5 h-5 accent-sky-500"
+          />
+        </label>
+        <p className="text-xs text-gray-500 mt-1">
+          Keep line breaks when typing the clipboard by sending them as
+          &quot;\&quot; + Enter, which Claude Code treats as a newline without
+          submitting the prompt. Leave off for other apps — they would show
+          stray backslashes.
+        </p>
+      </div>
+
       {/* Keystroke delay */}
       <div>
         <label className="text-sm text-gray-300 block mb-1">
