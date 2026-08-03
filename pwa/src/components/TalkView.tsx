@@ -139,13 +139,24 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
       setClipboardError("Clipboard is empty");
       return;
     }
+    // Embedded newlines are typed as real Enter keypresses on the host — in
+    // a chat box or CLI that submits the text mid-paste. Unless the user has
+    // opted into newline separators, flatten the clipboard to one line so
+    // "Newline after end of recording" alone decides the final Enter.
+    if (!settings.appendNewline) {
+      text = text
+        .split(/\r\n|[\r\n]/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join(" ");
+    }
     setLastError(null);
     setLastStats(null);
     setLastText(text);
     await store.addEntry(text);
     await hid.sendText(text);
     if (settings.newlineAfterEnd) await hid.sendNewline();
-  }, [hid, store, settings.newlineAfterEnd]);
+  }, [hid, store, settings.appendNewline, settings.newlineAfterEnd]);
 
   const handlePinnedTap = useCallback(
     async (text: string) => {
