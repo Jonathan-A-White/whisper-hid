@@ -538,7 +538,10 @@ original text — the endpoint never partially applies an edit.
 ## Component versioning
 All three components expose version info, displayed together in PWA Settings.
 Versions use the format `1.0.<commit-count>+<short-hash>` and are auto-generated
-at build time from git — no manual bumps needed.
+at build time from git — no manual bumps needed. Both generators run
+`git rev-list --count HEAD`, which returns 1 on `actions/checkout`'s default
+shallow clone, so **the CI workflows that ship a version must keep
+`fetch-depth: 0`** — without it every CI build reports `1.0.1`.
 
 ### PWA
 - Generated in `pwa/vite.config.ts` via Vite `define` → `__APP_VERSION__`
