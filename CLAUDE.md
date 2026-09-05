@@ -318,6 +318,11 @@ Two pieces make setup on a fresh phone (with Termux installed) nearly automatic:
   build-apk.yml) and opens the Android installer, then starts the Whisper
   server. Idempotent. Commands that might read stdin use `< /dev/null` so they
   don't swallow the piped script.
+- `scripts/update-apk.sh` — the APK half of bootstrap.sh on its own, for an
+  already-set-up phone: downloads the `latest-apk` release and opens the
+  installer. It stays in the repo checkout (`~/whisper-hid/scripts/`) rather
+  than being copied to `$INSTALL_DIR` like the server scripts, since it
+  updates the app, not the server.
 - PWA Setup Wizard (`pwa/src/components/SetupWizard.tsx`) — shown automatically
   when the PWA has no auth token (i.e., new phone), and reachable from
   Settings > Setup guide. Polls both `/status` endpoints (unauthenticated) to
