@@ -14,13 +14,6 @@ set -euo pipefail
 
 REPO_URL="https://github.com/Jonathan-A-White/whisper-hid"
 REPO_DIR="$HOME/whisper-hid"
-# Rolling release updated by CI on every push to main; fall back to the
-# latest tagged release if it doesn't exist yet.
-APK_URLS=(
-    "$REPO_URL/releases/download/latest-apk/app-debug.apk"
-    "$REPO_URL/releases/latest/download/app-debug.apk"
-)
-APK_PATH="$HOME/whisper-keyboard.apk"
 PWA_URL="https://jonathan-a-white.github.io/whisper-hid/"
 
 step() { echo ""; echo "==> $*"; }
@@ -60,21 +53,11 @@ step "[3/5] Running Termux setup (builds whisper.cpp — takes a few minutes on 
 bash "$REPO_DIR/scripts/setup-termux.sh" < /dev/null
 
 step "[4/5] Downloading latest Android app APK..."
-APK_OK=false
-for url in "${APK_URLS[@]}"; do
-    if curl -fSL --progress-bar --retry 3 -o "$APK_PATH" "$url" < /dev/null; then
-        APK_OK=true
-        break
-    fi
-done
-if [ "$APK_OK" = true ]; then
-    echo "  APK saved to $APK_PATH — opening Android installer..."
-    echo "  (If nothing happens, open the file manually and allow installs from Termux.)"
-    termux-open "$APK_PATH" || warn "Could not open installer automatically. Open $APK_PATH manually."
-else
-    warn "Could not download the APK from GitHub Releases."
-    warn "Download it manually from $REPO_URL/releases or build with ./gradlew assembleDebug."
-fi
+# update-apk.sh owns the whole download/stage/install dance, including the
+# allow-external-apps property termux-open needs and the shared-storage
+# fallback for when the installer still won't launch.
+bash "$REPO_DIR/scripts/update-apk.sh" < /dev/null \
+    || warn "APK install step failed. Re-run $REPO_DIR/scripts/update-apk.sh on its own."
 
 step "[5/5] Starting Whisper server..."
 bash "$REPO_DIR/scripts/start-whisper-server.sh" < /dev/null
