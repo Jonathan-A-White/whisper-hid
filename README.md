@@ -100,17 +100,41 @@ push to main).
 
 ## Updating
 
+One command does the whole phone — pull, restart the server on the new
+code, install the newest APK, and clear out old downloads:
+
+```bash
+~/whisper-hid/scripts/update-all.sh
+```
+
+Flags for doing less: `--no-pull`, `--no-server`, `--no-apk`, `--no-clean`
+(keep old APKs and CI artifact folders), `--no-open` (stage the APK without
+launching the installer).
+
+The pieces also run standalone:
+
 ```bash
 cd ~/whisper-hid
 git pull                            # Termux scripts + server
 ./scripts/update-apk.sh             # newest APK, opens the Android installer
-cd ~/whisper-stt && ./stop-whisper-server.sh && ~/whisper-hid/scripts/start-whisper-server.sh
+./scripts/stop-whisper-server.sh && ./scripts/start-whisper-server.sh
 ```
 
 `update-apk.sh` fetches the rolling `latest-apk` build and opens the
-installer; debug APKs are signed with a keystore checked into the repo, so
-updates install over the previous version without an uninstall. The PWA
-updates itself — CI deploys it to GitHub Pages on every push to main.
+installer. It also sets `allow-external-apps = true` in
+`~/.termux/termux.properties` (without it Termux's content provider refuses
+to hand the APK to Android's installer) and stages a copy in
+`~/storage/downloads`, so if the installer still won't launch you can tap
+the APK in the Files app under Downloads. If an app chooser appears, pick
+**Package installer**, not Termux.
+
+Debug APKs are signed with a keystore checked into the repo, so updates
+install over the previous version without an uninstall — but an APK built
+*before* that keystore landed has a different signature, and going from one
+of those to a current build fails with "App not installed" until you
+uninstall the old app first.
+
+The PWA updates itself — CI deploys it to GitHub Pages on every push to main.
 
 ## Speech Models
 
@@ -199,6 +223,7 @@ whisper-hid/
 │   ├── start-whisper-server.sh
 │   ├── stop-whisper-server.sh
 │   ├── update-model.sh
+│   ├── update-all.sh             # Update the whole phone: pull, server, APK
 │   ├── update-apk.sh             # Install the newest APK from GitHub Releases
 │   ├── diagnose-sigill.sh
 │   └── tests/                    # pytest suite for the server

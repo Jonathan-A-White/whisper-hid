@@ -352,9 +352,40 @@ Two pieces make setup on a fresh phone (with Termux installed) nearly automatic:
   don't swallow the piped script.
 - `scripts/update-apk.sh` — the APK half of bootstrap.sh on its own, for an
   already-set-up phone: downloads the `latest-apk` release and opens the
-  installer. It stays in the repo checkout (`~/whisper-hid/scripts/`) rather
-  than being copied to `$INSTALL_DIR` like the server scripts, since it
-  updates the app, not the server.
+  installer. bootstrap.sh calls it rather than duplicating the logic. It
+  stays in the repo checkout (`~/whisper-hid/scripts/`) rather than being
+  copied to `$INSTALL_DIR` like the server scripts, since it updates the
+  app, not the server.
+- `scripts/update-all.sh` — the routine "I merged things, update my phone"
+  path: `git pull`, restart the Whisper server (which re-copies the server
+  scripts), then `update-apk.sh`. Prints each component's `/status` version
+  at the end. `--no-pull/--no-server/--no-apk/--no-clean/--no-open` narrow it.
+
+### Getting an APK onto the phone is fiddly — three things bite
+1. **`allow-external-apps`**: `termux-open` hands the file to Android's
+   package installer through `TermuxContentProvider`, which refuses to serve
+   other apps unless `allow-external-apps = true` is in
+   `~/.termux/termux.properties` (then `termux-reload-settings`). Without it
+   you get a red "TermuxContentProvider requires ..." dialog and no
+   installer. `update-apk.sh` sets it idempotently.
+2. **The share can bounce back into Termux**: if an app chooser appears and
+   Termux is picked, you get "The following file does not exist:
+   $HOME/bin/termux-file-editor" — that's Termux receiving its own share.
+   So `update-apk.sh` stages a copy in `~/storage/downloads` (Android's
+   `/sdcard/Download`, same folder the Files app calls **Download** — the
+   plural is just Termux's symlink name) and opens *that* path, which goes
+   through Android's own file provider instead.
+   - Shell-written files don't trigger the media scanner, so the Files app
+     won't list the APK until `termux-media-scan` runs on it.
+   - `termux-setup-storage` prompts for confirmation when `~/storage`
+     already exists, which would block a non-interactive run — so it is only
+     invoked when `~/storage` is absent.
+3. **Signature mismatch**: APKs built before `app/debug.keystore` was checked
+   in were signed with a per-runner ephemeral debug key, so installing a
+   current build over one of those fails with "App not installed" until the
+   old app is uninstalled. Uninstalling also clears the service's
+   SharedPreferences (Zoom mode resets to enabled) and may require re-pairing
+   Bluetooth, since the HID SDP record goes with the app.
 - PWA Setup Wizard (`pwa/src/components/SetupWizard.tsx`) — shown automatically
   when the PWA has no auth token (i.e., new phone), and reachable from
   Settings > Setup guide. Polls both `/status` endpoints (unauthenticated) to
