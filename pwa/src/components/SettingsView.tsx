@@ -20,11 +20,15 @@ export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewPr
   const [modelSwitching, setModelSwitching] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
   const [noiseReduction, setNoiseReduction] = useState(false);
+  const [micSource, setMicSource] = useState("mic");
+  const [micSourceSelectable, setMicSourceSelectable] = useState(false);
+  const [micSourceError, setMicSourceError] = useState<string | null>(null);
 
   useEffect(() => {
     whisperStatus()
       .then((d) => {
         setWhisperVersion(d.version ?? null);
+        setMicSourceSelectable(d.mic_audio_source_selectable ?? false);
         if (d.model) {
           setActiveModel(d.model);
           onUpdate({ whisperModel: d.model });
@@ -38,7 +42,10 @@ export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewPr
       .then((d) => setModels(d.models))
       .catch(() => setModels([]));
     getWhisperSettings()
-      .then((s) => setNoiseReduction(s.noise_reduction))
+      .then((s) => {
+        setNoiseReduction(s.noise_reduction);
+        if (s.mic_audio_source) setMicSource(s.mic_audio_source);
+      })
       .catch(() => {});
   }, []);
 
@@ -167,6 +174,51 @@ export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewPr
           className="w-5 h-5 accent-sky-500"
         />
       </label>
+
+      {/* Mic audio source */}
+      {micSourceSelectable && (
+        <div>
+          <label className="text-sm text-gray-300 block mb-1">
+            Mic audio source
+          </label>
+          <select
+            value={micSource}
+            onChange={async (e) => {
+              const source = e.target.value;
+              const previous = micSource;
+              setMicSource(source);
+              setMicSourceError(null);
+              try {
+                const updated = await putWhisperSettings({
+                  mic_audio_source: source,
+                });
+                setMicSource(updated.mic_audio_source);
+              } catch (err) {
+                setMicSource(previous);
+                setMicSourceError(
+                  err instanceof Error ? err.message : "Failed to switch source"
+                );
+              }
+            }}
+            className="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm"
+          >
+            <option value="mic">Default (built-in mic)</option>
+            <option value="voice_communication">
+              Voice communication (Bluetooth headset)
+            </option>
+            <option value="voice_recognition">Voice recognition (no AGC)</option>
+            <option value="camcorder">Camcorder (rear mic)</option>
+          </select>
+          <p className="text-xs text-gray-500 mt-1">
+            Only change this if the headset dot is green but dictation still
+            picks up the phone's own mic. Run the mic test in the setup guide
+            after switching.
+          </p>
+          {micSourceError && (
+            <p className="text-xs text-red-400 mt-1">{micSourceError}</p>
+          )}
+        </div>
+      )}
 
       {/* Whisper model selector */}
       <div>

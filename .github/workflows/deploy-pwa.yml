@@ -25,6 +25,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # Full history — gitVersion() in pwa/vite.config.ts derives the
+          # version from `git rev-list --count HEAD`, which is 1 on the default
+          # shallow clone, so every deployed PWA would report 1.0.1.
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

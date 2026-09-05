@@ -46,6 +46,10 @@ export interface WhisperStatus {
   cleanup_available?: boolean;
   cleanup_mode?: boolean;
   cleanup_style?: string;
+  /** Android audio source used for mic capture (see WhisperSettings) */
+  mic_audio_source?: string;
+  /** false when the termux-api binary is missing, so only "mic" is possible */
+  mic_audio_source_selectable?: boolean;
 }
 
 export interface ModelInfo {
