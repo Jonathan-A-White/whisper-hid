@@ -29,14 +29,27 @@ returns success at the link layer during this window, so the leading keystrokes
 front (e.g. only "...what has been taught" of a longer sentence). Re-sending the
 same text seconds later works because the link is warm.
 
-`BluetoothHidService` guards against this: it records `connectedAtMs` when the
-link reaches CONNECTED and `waitForConnectSettle()` blocks the sender thread
-until `CONNECT_SETTLE_MS` (1.5s) has elapsed before the first keystroke. This
-runs inside the single-threaded keystroke executor, so it never blocks the HTTP
-handler (which already returned 200), and it's a no-op for warm-link sends — only
-the first send after a (re)connect pays the cost. **Don't remove this delay** to
-shave latency; without it the first dictation after any reconnect loses its
-opening words. Look for "Waiting Nms for HID link to settle" in HID `/logs`.
+The same thing happens on a link that stayed CONNECTED but sat **idle**: hosts
+power down the HID input path a few seconds after the last report (BT
+sniff/sub-rating, selective suspend, macOS/Windows keyboard sleep), and the
+first reports in only wake it — they're consumed, not typed. At 2 reports/char
+and 10ms delay a ~1s wake-up eats the first 25–50 characters, and the gap
+between one dictation and the next is always long enough to trigger it. This
+was the residual front-truncation seen after the settle delay alone shipped.
+
+`BluetoothHidService` guards against both with one mechanism: `linkWarmup()`
+(pure, unit-tested in `LinkWarmupTest`) decides how long to warm the link —
+the remainder of `CONNECT_SETTLE_MS` (1.5s) after `connectedAtMs`, or
+`IDLE_WAKE_MS` (1s) when `lastReportAtMs` is older than `IDLE_WAKE_AFTER_MS`
+(5s) or unset — and `waitForLinkReady()` spends that window pumping
+all-keys-up reports every 100ms (a no-op when delivered, so losing them costs
+nothing, but they wake the host and keep it awake). It runs inside the
+single-threaded keystroke executor, so it never blocks the HTTP handler (which
+already returned 200), honours `/stop` mid-wait, and is a no-op for warm-link
+sends — a queue of back-to-back sends pays it once. **Don't remove or shorten
+these waits** to shave latency; without them the first dictation after any
+reconnect or pause loses its opening words. Look for "Warming up HID link for
+Nms before typing (reason)" in HID `/logs` — it names which case fired.
 
 ## Bluetooth HID typing: throughput and reliability for large text
 `HidKeyMapper.buildReports()` emits an explicit key-down + all-up pair per

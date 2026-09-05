@@ -71,7 +71,22 @@ class BluetoothHidService : Service() {
         // truncated at the front. Hold off the first keystroke until the link
         // has settled. Only the first send after a (re)connect pays this cost;
         // warm-link sends see zero added latency.
-        private const val CONNECT_SETTLE_MS = 1500L
+        internal const val CONNECT_SETTLE_MS = 1500L
+
+        // The same front-truncation also happens on a link that has stayed
+        // CONNECTED but sat idle: hosts power down the HID input path after a
+        // few seconds without reports (BT sniff/sub-rating, selective
+        // suspend, macOS/Windows keyboard sleep) and the first reports that
+        // arrive only serve to wake it — they're consumed, not typed. At 2
+        // reports/char and 10ms delay a ~1s wake-up costs the first 25–50
+        // characters of a dictation, which is exactly the gap between
+        // finishing one dictation and typing the next. So a send onto a link
+        // that has been quiet for longer than IDLE_WAKE_AFTER_MS first pumps
+        // harmless all-keys-up reports for IDLE_WAKE_MS (see waitForLinkReady)
+        // to bring the host's input pipe back up before the first real key.
+        internal const val IDLE_WAKE_AFTER_MS = 5_000L
+        internal const val IDLE_WAKE_MS = 1_000L
+        private const val WAKE_PULSE_INTERVAL_MS = 100L
 
         // Retry budget for a sendReport() the stack refuses to queue
         // (see sendReportReliably).
@@ -123,6 +138,26 @@ class BluetoothHidService : Service() {
             0x81.toByte(), 0x00.toByte(), //   Input (Data, Array)
             0xC0.toByte()                 // End Collection
         )
+
+        // How long a send must warm the link up before its first real report,
+        // and why — or null when the link is already warm. Pure so it can be
+        // unit-tested; see waitForLinkReady for the mechanics.
+        internal data class LinkWarmup(val waitMs: Long, val reason: String)
+
+        internal fun linkWarmup(nowMs: Long, connectedAtMs: Long, lastReportAtMs: Long): LinkWarmup? {
+            val sinceConnect = nowMs - connectedAtMs
+            if (sinceConnect < CONNECT_SETTLE_MS) {
+                return LinkWarmup(CONNECT_SETTLE_MS - sinceConnect, "link connected ${sinceConnect}ms ago")
+            }
+            if (lastReportAtMs == 0L) {
+                return LinkWarmup(IDLE_WAKE_MS, "no report sent yet on this link")
+            }
+            val sinceReport = nowMs - lastReportAtMs
+            if (sinceReport > IDLE_WAKE_AFTER_MS) {
+                return LinkWarmup(IDLE_WAKE_MS, "link idle for ${sinceReport / 1000}s")
+            }
+            return null
+        }
     }
 
     // --- Connection state machine ---
@@ -149,8 +184,13 @@ class BluetoothHidService : Service() {
     private val typing = java.util.concurrent.atomic.AtomicInteger(0)
 
     // Wall-clock time the current link reached CONNECTED, used to enforce the
-    // post-connect settle window before the first keystroke (see sendString).
+    // post-connect settle window before the first keystroke (see waitForLinkReady).
     @Volatile private var connectedAtMs: Long = 0L
+
+    // Wall-clock time of the last report the stack accepted on the current
+    // link (0 = none yet). A long gap means the host has likely idled its
+    // input pipe and needs waking before real keys (see waitForLinkReady).
+    @Volatile private var lastReportAtMs: Long = 0L
 
     private val executor = Executors.newSingleThreadExecutor()
     private val handler = Handler(Looper.getMainLooper())
@@ -610,6 +650,7 @@ class BluetoothHidService : Service() {
                     lastKnownDevice = pluggedDevice
                     btState = BtState.CONNECTED
                     connectedAtMs = System.currentTimeMillis()
+                    lastReportAtMs = 0L
                     val name = try { pluggedDevice.name } catch (_: SecurityException) { "Unknown" }
                     addLog("info", "Already connected to $name")
                     updateNotification("Connected to $name")
@@ -631,6 +672,7 @@ class BluetoothHidService : Service() {
                     lastKnownDevice = device
                     btState = BtState.CONNECTED
                     connectedAtMs = System.currentTimeMillis()
+                    lastReportAtMs = 0L
                     cancelReconnect()
                     reconnectAttempt = 0
                     val name = try { device?.name } catch (_: SecurityException) { "Unknown" }
@@ -725,21 +767,30 @@ class BluetoothHidService : Service() {
 
     // --- Send keystrokes ---
 
-    // Block on the sender thread until the post-connect settle window has
-    // elapsed, so the host has finished setting up its input pipe before the
-    // first report. Runs inside the single-threaded executor, so it never
-    // blocks the HTTP handler that already returned 200. No-op once the link
-    // has been up longer than CONNECT_SETTLE_MS.
-    private fun waitForConnectSettle() {
-        val since = System.currentTimeMillis() - connectedAtMs
-        val remaining = CONNECT_SETTLE_MS - since
-        if (remaining > 0) {
-            addLog("info", "Waiting ${remaining}ms for HID link to settle before typing")
-            try {
-                Thread.sleep(remaining)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
+    // Make sure the host is actually listening before the first real report.
+    // Two cases share the mechanism (see linkWarmup): the post-connect settle
+    // window (host still setting up its input pipe) and an idle link the host
+    // has powered down (first reports only wake it). Reports sent into either
+    // are silently lost even though sendReport() succeeds, so the front of the
+    // message goes missing. During the warm-up we pump all-keys-up reports
+    // every WAKE_PULSE_INTERVAL_MS: they wake the host and keep it awake, and
+    // are a no-op when delivered (no key is down), so losing them costs
+    // nothing. Runs inside the single-threaded executor, so it never blocks
+    // the HTTP handler that already returned 200; a warm link pays nothing.
+    // Returns false if the send was cancelled (typeGeneration bumped) while
+    // waiting, so the caller bails without typing.
+    private fun waitForLinkReady(hid: BluetoothHidDevice, device: BluetoothDevice, gen: Long): Boolean {
+        val warmup = linkWarmup(System.currentTimeMillis(), connectedAtMs, lastReportAtMs) ?: return true
+        addLog("info", "Warming up HID link for ${warmup.waitMs}ms before typing (${warmup.reason})")
+        val deadline = System.currentTimeMillis() + warmup.waitMs
+        while (true) {
+            if (typeGeneration.get() != gen) return false
+            if (hid.sendReport(device, REPORT_ID.toInt(), HidKeyMapper.KEY_UP_REPORT)) {
+                lastReportAtMs = System.currentTimeMillis()
             }
+            val remaining = deadline - System.currentTimeMillis()
+            if (remaining <= 0) return true
+            Thread.sleep(minOf(WAKE_PULSE_INTERVAL_MS, remaining))
         }
     }
 
@@ -756,7 +807,10 @@ class BluetoothHidService : Service() {
         bytes: ByteArray,
     ): Boolean {
         repeat(SEND_RETRY_ATTEMPTS) {
-            if (hid.sendReport(device, REPORT_ID.toInt(), bytes)) return true
+            if (hid.sendReport(device, REPORT_ID.toInt(), bytes)) {
+                lastReportAtMs = System.currentTimeMillis()
+                return true
+            }
             Thread.sleep(SEND_RETRY_BACKOFF_MS)
         }
         return false
@@ -768,7 +822,10 @@ class BluetoothHidService : Service() {
     private fun releaseAllKeys(hid: BluetoothHidDevice, device: BluetoothDevice) {
         try {
             repeat(RELEASE_RETRY_ATTEMPTS) {
-                if (hid.sendReport(device, REPORT_ID.toInt(), HidKeyMapper.KEY_UP_REPORT)) return
+                if (hid.sendReport(device, REPORT_ID.toInt(), HidKeyMapper.KEY_UP_REPORT)) {
+                    lastReportAtMs = System.currentTimeMillis()
+                    return
+                }
                 Thread.sleep(RELEASE_RETRY_BACKOFF_MS)
             }
             addLog("error", "Could not send key release after $RELEASE_RETRY_ATTEMPTS attempts — a key may be stuck at the host")
@@ -805,7 +862,10 @@ class BluetoothHidService : Service() {
             if (typeGeneration.get() != gen) return@execute // cancelled while queued
             typing.incrementAndGet()
             try {
-                waitForConnectSettle()
+                if (!waitForLinkReady(hid, device, gen)) {
+                    addLog("info", "Send aborted by stop request")
+                    return@execute
+                }
                 for (bytes in HidKeyMapper.buildReports(text)) {
                     if (typeGeneration.get() != gen) {
                         addLog("info", "Send aborted by stop request")
@@ -840,7 +900,7 @@ class BluetoothHidService : Service() {
             if (typeGeneration.get() != gen) return@execute
             typing.incrementAndGet()
             try {
-                waitForConnectSettle()
+                if (!waitForLinkReady(hid, device, gen)) return@execute
                 for (i in 0 until count) {
                     if (typeGeneration.get() != gen) return@execute
                     if (!sendReportReliably(hid, device, HidKeyMapper.toBytes(report))) return@execute
