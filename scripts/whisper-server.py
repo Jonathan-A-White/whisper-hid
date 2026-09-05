@@ -45,7 +45,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.7.0"
+SERVER_VERSION = "1.8.0"
 
 # --- Configuration ---
 
@@ -59,6 +59,21 @@ ALLOWED_ORIGIN = os.environ.get(
 PORT = int(os.environ.get("WHISPER_PORT", "9876"))
 WHISPER_SERVER_PORT = int(os.environ.get("WHISPER_SERVER_PORT", "9878"))
 NOISE_REDUCTION = os.environ.get("WHISPER_NOISE_REDUCTION", "0").lower() in ("1", "true", "yes")
+
+# Android MediaRecorder.AudioSource values that Termux:API's MicRecorder
+# accepts via the "source" int extra (it defaults to MIC). The
+# termux-microphone-record wrapper exposes no flag for it, so anything other
+# than the default is recorded by calling the termux-api binary directly —
+# see _mic_record_cmd().
+MIC_AUDIO_SOURCES = {
+    "mic": 1,                   # AudioSource.MIC — Termux's default
+    "voice_communication": 7,   # AudioSource.VOICE_COMMUNICATION — BT headset (SCO) mic
+    "voice_recognition": 6,     # AudioSource.VOICE_RECOGNITION — no AGC/AEC
+    "camcorder": 5,             # AudioSource.CAMCORDER — rear/directional mic
+}
+MIC_AUDIO_SOURCE = os.environ.get("MIC_AUDIO_SOURCE", "mic").lower()
+if MIC_AUDIO_SOURCE not in MIC_AUDIO_SOURCES:
+    MIC_AUDIO_SOURCE = "mic"
 
 # Parakeet engine (sherpa-onnx). STT_ENGINE: "auto" prefers parakeet when
 # available, "whisper" forces whisper.cpp, "parakeet" requires parakeet.
@@ -114,12 +129,19 @@ def _init_runtime_settings():
     global runtime_settings
     runtime_settings = {
         "noise_reduction": NOISE_REDUCTION,
+        "mic_audio_source": MIC_AUDIO_SOURCE,
     }
 
 
 def get_noise_reduction() -> bool:
     """Return current noise reduction setting."""
     return bool(runtime_settings.get("noise_reduction", NOISE_REDUCTION))
+
+
+def get_mic_audio_source() -> str:
+    """Return the current mic audio source name (a MIC_AUDIO_SOURCES key)."""
+    source = runtime_settings.get("mic_audio_source", MIC_AUDIO_SOURCE)
+    return source if source in MIC_AUDIO_SOURCES else "mic"
 
 # --- State ---
 
@@ -1305,6 +1327,87 @@ def _encoder_flags(fmt: str) -> list[str]:
     return []  # aac — device default
 
 
+# --- Mic recording command ---
+#
+# Recording normally goes through the termux-microphone-record wrapper, which
+# always records from AudioSource.MIC. On some devices MIC does not follow the
+# system-wide Bluetooth SCO route that the Kotlin HID service sets up, so the
+# headset mic is reported active while Termux still captures the built-in mic.
+# Termux:API's MicRecorder does accept a "source" int extra (see
+# MicRecorderAPI.java: getIntExtra("source", AudioSource.MIC)), but the wrapper
+# has no flag for it — so a non-default source is recorded by invoking the
+# termux-api binary the wrapper itself calls. Selecting VOICE_COMMUNICATION
+# pins capture to the call-audio (SCO) path.
+#
+# Two details differ from the wrapper's own arguments and must be kept right:
+#   - the intent action is passed as "-a record" (without it MicRecorderService
+#     dispatches to its unknown-command handler and nothing records);
+#   - "limit" is in MILLISECONDS (the wrapper multiplies its -l seconds by
+#     1000), and a positive limit below 1000ms is clamped up by the service.
+# Bitrate is in bps here; the wrapper's "-b 23850" is multiplied by 1000 on its
+# way through, so passing 23850 directly is the value AMR-WB actually wants.
+
+_termux_api_bin: str | None = None
+_termux_api_probed_at = 0.0
+TERMUX_API_REPROBE_SEC = 30.0
+
+
+def _detect_termux_api_bin() -> str | None:
+    """Locate the termux-api binary used for non-default audio sources."""
+    global _termux_api_bin, _termux_api_probed_at
+    prefix = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
+    candidate = os.path.join(prefix, "libexec", "termux-api")
+    found = candidate if os.path.isfile(candidate) and os.access(candidate, os.X_OK) else None
+    # Only log the first probe and later changes — /status re-probes.
+    if found != _termux_api_bin or _termux_api_probed_at == 0.0:
+        add_log("info", f"termux-api binary: {found}" if found else
+                "termux-api binary not found — mic audio source locked to the wrapper default")
+    _termux_api_bin = found
+    _termux_api_probed_at = time.time()
+    return _termux_api_bin
+
+
+def _mic_source_selectable() -> bool:
+    """Whether a non-default mic audio source can be used on this device.
+
+    Re-probes periodically when the binary wasn't found, so installing
+    Termux:API afterwards doesn't require a server restart.
+    """
+    if (_termux_api_bin is None
+            and time.time() - _termux_api_probed_at > TERMUX_API_REPROBE_SEC):
+        _detect_termux_api_bin()
+    return _termux_api_bin is not None
+
+
+def _mic_record_cmd(path: str, limit_sec: int = 0, fmt: str | None = None) -> list[str]:
+    """Build the command that starts a mic recording.
+
+    Uses the termux-microphone-record wrapper (the field-tested default) unless
+    a non-default mic audio source is selected and the termux-api binary is
+    available. Recording is always stopped with `termux-microphone-record -q`,
+    which reaches the same service either way.
+    """
+    source = get_mic_audio_source()
+    if source != "mic" and _termux_api_bin:
+        cmd = [
+            _termux_api_bin, "MicRecorder",
+            "-a", "record",
+            "--es", "file", path,
+            "--ei", "limit", str(limit_sec * 1000),
+            "--ei", "source", str(MIC_AUDIO_SOURCES[source]),
+        ]
+        if fmt == "amr_wb":
+            cmd += ["--es", "encoder", "amr_wb", "--ei", "bitrate", "23850"]
+        elif fmt == "opus":
+            cmd += ["--es", "encoder", "opus"]
+        return cmd
+
+    cmd = ["termux-microphone-record", "-f", path, "-l", str(limit_sec)]
+    if fmt:
+        cmd += _encoder_flags(fmt)
+    return cmd
+
+
 def detect_audio_format():
     """Detect whether AAC or AMR-WB recording works on this device.
 
@@ -1319,7 +1422,7 @@ def detect_audio_format():
         test_wav = os.path.join(td, "test.wav")
         try:
             subprocess.run(
-                ["termux-microphone-record", "-f", test_raw, "-l", "1"],
+                _mic_record_cmd(test_raw, limit_sec=1),
                 timeout=5,
             )
             time.sleep(2)
@@ -1348,8 +1451,7 @@ def detect_audio_format():
         test_wav = os.path.join(td, "test_amr.wav")
         try:
             subprocess.run(
-                ["termux-microphone-record", "-f", test_raw, "-l", "1",
-                 "-e", "amr_wb", "-b", "23850"],
+                _mic_record_cmd(test_raw, limit_sec=1, fmt="amr_wb"),
                 timeout=5,
             )
             time.sleep(2)
@@ -2012,8 +2114,7 @@ def probe_partial_decode(fmt: str, ext: str) -> bool:
         raw = os.path.join(td, f"probe.{ext}")
         snap = os.path.join(td, f"snap.{ext}")
         wav = os.path.join(td, "probe.wav")
-        rec_cmd = ["termux-microphone-record", "-f", raw, "-l", "0"]
-        rec_cmd += _encoder_flags(fmt)
+        rec_cmd = _mic_record_cmd(raw, limit_sec=0, fmt=fmt)
         try:
             subprocess.run(rec_cmd, timeout=5)
         except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -2164,12 +2265,8 @@ def transcribe_start():
 
         recording_file = tempfile.mktemp(suffix=f".{audio_ext}")
         try:
-            rec_cmd = [
-                "termux-microphone-record",
-                "-f", recording_file,
-                "-l", "0",     # unlimited duration
-            ]
-            rec_cmd += _encoder_flags(audio_format)
+            # limit_sec=0 — unlimited duration, stopped by /transcribe/stop
+            rec_cmd = _mic_record_cmd(recording_file, limit_sec=0, fmt=audio_format)
             add_log("info", f"Recording cmd: {' '.join(rec_cmd)}")
             recording_process = subprocess.Popen(rec_cmd)
             add_log("info", f"Recording started: {recording_file}")
@@ -2293,6 +2390,8 @@ def status():
             "cleanup_available": _is_cleanup_server_alive(),
             "cleanup_style": _active_style(),
             "chunked": chunked_supported,
+            "mic_audio_source": get_mic_audio_source(),
+            "mic_audio_source_selectable": _mic_source_selectable(),
         })
     else:
         return jsonify({
@@ -2326,9 +2425,9 @@ def debug_test_pipeline():
         wav_file = os.path.join(td, "test.wav")
 
         # Step 1: Record 3 seconds
-        rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", "3"]
-        rec_cmd += _encoder_flags(audio_format)
+        rec_cmd = _mic_record_cmd(raw_file, limit_sec=3, fmt=audio_format)
         diag["rec_cmd"] = " ".join(rec_cmd)
+        diag["mic_audio_source"] = get_mic_audio_source()
 
         try:
             subprocess.run(rec_cmd, timeout=5)
@@ -2718,14 +2817,14 @@ def get_settings():
 def put_settings():
     """Update runtime settings.
 
-    Body: {"noise_reduction": true}
+    Body: {"noise_reduction": true, "mic_audio_source": "voice_communication"}
     Only known keys are accepted; unknown keys are ignored.
     """
     data = request.get_json(silent=True)
     if data is None or not isinstance(data, dict):
         return jsonify({"error": "invalid_body", "message": "Request body must be a JSON object."}), 400
 
-    known_keys = {"noise_reduction": bool}
+    known_keys = {"noise_reduction": bool, "mic_audio_source": str}
     for key, expected_type in known_keys.items():
         if key in data:
             if not isinstance(data[key], expected_type):
@@ -2733,6 +2832,16 @@ def put_settings():
                     "error": "invalid_value",
                     "message": f"'{key}' must be {expected_type.__name__}.",
                 }), 400
+            if key == "mic_audio_source" and data[key] not in MIC_AUDIO_SOURCES:
+                return jsonify({
+                    "error": "invalid_value",
+                    "message": f"'mic_audio_source' must be one of: {', '.join(sorted(MIC_AUDIO_SOURCES))}.",
+                }), 400
+            if key == "mic_audio_source" and data[key] != "mic" and not _mic_source_selectable():
+                return jsonify({
+                    "error": "unsupported",
+                    "message": "termux-api binary not found — only the 'mic' audio source is available.",
+                }), 409
             runtime_settings[key] = data[key]
 
     add_log("info", f"Settings updated: {runtime_settings}")
@@ -2866,8 +2975,7 @@ def _do_benchmark():
         else:
             # Record audio from mic
             raw_file = os.path.join(td, f"benchmark.{audio_ext}")
-            rec_cmd = ["termux-microphone-record", "-f", raw_file, "-l", str(duration)]
-            rec_cmd += _encoder_flags(audio_format)
+            rec_cmd = _mic_record_cmd(raw_file, limit_sec=duration, fmt=audio_format)
             try:
                 subprocess.run(rec_cmd, timeout=duration + 5)
                 time.sleep(duration + 1)
@@ -3157,6 +3265,7 @@ if __name__ == "__main__":
     load_cleanup_settings()
     load_model()
     select_engine()
+    _detect_termux_api_bin()
     detect_audio_format()
     detect_chunked_support()
 

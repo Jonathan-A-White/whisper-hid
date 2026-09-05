@@ -297,6 +297,12 @@ export async function suggestCorrections(): Promise<{
 
 export interface WhisperSettings {
   noise_reduction: boolean;
+  /**
+   * Android audio source used for mic capture: "mic" (default),
+   * "voice_communication" (pins capture to the Bluetooth headset's SCO
+   * channel), "voice_recognition" or "camcorder".
+   */
+  mic_audio_source: string;
 }
 
 export async function getWhisperSettings(): Promise<WhisperSettings> {

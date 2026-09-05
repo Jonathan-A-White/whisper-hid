@@ -130,6 +130,38 @@ mic requires system-wide SCO routing, handled by the Kotlin HID service
   the headset), check `/logs` for "SCO keep-alive stream started" (should
   appear once per headset connect) and "Audio focus request denied" entries.
 
+### Mic audio source (when SCO routing isn't enough)
+System-wide SCO routing assumes Android honours it for `AudioSource.MIC`,
+which is what `termux-microphone-record` always records from. On devices
+where it doesn't, the HID service reports the headset mic active (🎧 green)
+while Termux still captures the built-in mic — the giveaway is a `wideband`
+verdict in the mic test while wearing a headset.
+
+`runtime_settings["mic_audio_source"]` picks the Android `AudioSource`
+explicitly: `mic` (default, unchanged behaviour), `voice_communication`
+(pins capture to the call-audio/SCO path), `voice_recognition`, `camcorder`.
+- The wrapper script has no flag for it, so a non-default source is recorded
+  by calling the `termux-api` binary the wrapper itself calls
+  (`$PREFIX/libexec/termux-api MicRecorder`), which reads a `source` int
+  extra. Two arguments differ from the wrapper's and are load-bearing:
+  **`-a record`** (the intent action — without it `MicRecorderService`
+  dispatches to its unknown-command handler and nothing records) and
+  **`limit` in milliseconds** (the wrapper multiplies its `-l` seconds by
+  1000; the service clamps a positive limit under 1000ms up). Bitrate is bps
+  here, so AMR-WB takes `23850` directly rather than the wrapper's `-b 23850`
+  (which becomes 23,850,000).
+- Stopping is unchanged (`termux-microphone-record -q`) — it reaches the same
+  service either way.
+- Default `mic` keeps the exact field-tested wrapper command; only a
+  deliberate switch changes the recording path. Missing binary ⇒ the wrapper
+  is used anyway (never a failed recording), `PUT /settings` returns 409, and
+  `/status` reports `"mic_audio_source_selectable": false` so the PWA hides
+  the control.
+- Env `MIC_AUDIO_SOURCE` sets the startup default; `/settings` (PWA Settings
+  > Mic audio source) flips it at runtime; `/debug/test-pipeline` echoes the
+  active source next to `rec_cmd` so a mic test says which one it used.
+- Tests: `pytest scripts/tests/test_mic_source.py`
+
 ### Zoom mode (release headset mic to another device)
 A headset has a single call-audio (SCO) channel. Because the HID service
 holds it continuously (keep-alive stream + auto-retry), a laptop sharing the
