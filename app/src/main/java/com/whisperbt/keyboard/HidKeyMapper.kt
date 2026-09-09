@@ -36,17 +36,28 @@ object HidKeyMapper {
      *  - [BACKSLASH_ENTER]: Claude Code's escape — a literal "\" then Enter.
      *    Typed as text rather than a chord; Codex would show the backslash
      *    and submit, hence the split.
+     *  - [END_ENTER]: End, then Enter — an Enter that really submits in a CLI
+     *    composer that groups fast keystrokes into a paste. Codex CLI holds
+     *    such a burst in a side buffer and turns an Enter that arrives in
+     *    that state into a newline *inside the paste*; the state is cleared
+     *    by any non-character key, which End is (and it cannot move the
+     *    cursor, since typing always leaves it at the end of the line). So
+     *    the Enter behind it is seen as a keypress and sends the message.
+     *    Used only for the deliberate submit newline, never for line breaks
+     *    inside the text.
      */
     enum class NewlineMode {
         ENTER,
         CTRL_J,
-        BACKSLASH_ENTER;
+        BACKSLASH_ENTER,
+        END_ENTER;
 
         companion object {
             /** Parse the wire value from a /type body; unknown = [ENTER]. */
             fun fromWire(name: String?): NewlineMode = when (name?.lowercase()) {
                 "ctrl_j" -> CTRL_J
                 "backslash_enter" -> BACKSLASH_ENTER
+                "end_enter" -> END_ENTER
                 else -> ENTER
             }
         }
@@ -184,6 +195,7 @@ object HidKeyMapper {
         NewlineMode.ENTER -> listOf(enterReport())
         NewlineMode.CTRL_J -> listOf(ctrlJReport())
         NewlineMode.BACKSLASH_ENTER -> listOf(backslashReport(), enterReport())
+        NewlineMode.END_ENTER -> listOf(endReport(), enterReport())
     }
 
     // HID keycodes for special keys
@@ -193,11 +205,21 @@ object HidKeyMapper {
     const val KEY_SPACE: Byte = 0x2C
     const val KEY_J: Byte = 0x0D
     const val KEY_BACKSLASH: Byte = 0x31
+    const val KEY_END: Byte = 0x4D
 
     /** Ctrl+J — Codex CLI's "newline without submitting". */
     fun ctrlJReport() = HidReport(MOD_CTRL, KEY_J)
 
     fun backslashReport() = HidReport(MOD_NONE, KEY_BACKSLASH)
+
+    /**
+     * End — cursor to end of line, and the burst-breaker before a submit Enter.
+     *
+     * Chosen because it is the one navigation key that cannot move the cursor
+     * anywhere it was not already: a send always leaves it at the end of the
+     * last line typed.
+     */
+    fun endReport() = HidReport(MOD_NONE, KEY_END)
 
     fun enterReport() = HidReport(MOD_NONE, KEY_ENTER)
     fun tabReport() = HidReport(MOD_NONE, KEY_TAB)

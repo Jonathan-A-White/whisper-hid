@@ -437,6 +437,21 @@ class HidKeyMapperTest {
     }
 
     @Test
+    fun `end-enter newline mode presses End before the Enter`() {
+        val reports = HidKeyMapper.buildReports(
+            "\n", HidKeyMapper.NewlineMode.END_ENTER
+        )
+        // End, then Enter — each its own down/up pair. End breaks a CLI
+        // composer out of paste-burst state so the Enter behind it submits.
+        assertEquals(4, reports.size)
+        assertEquals(HidKeyMapper.KEY_END, reports[0][2])
+        assertEquals("End takes no modifier", 0x00.toByte(), reports[0][0])
+        assertTrue(isKeyUp(reports[1]))
+        assertEquals(HidKeyMapper.KEY_ENTER, reports[2][2])
+        assertTrue(isKeyUp(reports[3]))
+    }
+
+    @Test
     fun `soft newlines keep the down-release pair stream`() {
         for (mode in HidKeyMapper.NewlineMode.values()) {
             val reports = HidKeyMapper.buildReports("hi\nthere\n", mode)
@@ -467,6 +482,10 @@ class HidKeyMapperTest {
         assertEquals(
             HidKeyMapper.NewlineMode.ENTER,
             HidKeyMapper.NewlineMode.fromWire("enter")
+        )
+        assertEquals(
+            HidKeyMapper.NewlineMode.END_ENTER,
+            HidKeyMapper.NewlineMode.fromWire("end_enter")
         )
         // Older/unknown clients must still get a plain Enter, never nothing.
         assertEquals(HidKeyMapper.NewlineMode.ENTER, HidKeyMapper.NewlineMode.fromWire(null))

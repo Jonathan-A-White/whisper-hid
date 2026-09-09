@@ -257,7 +257,8 @@ newline-without-submit key, so the target has to be known before typing:
 | `codex`  | **Ctrl+J** | Codex CLI's newline binding. It also binds Shift+Enter, but most terminals can't distinguish it from Enter and submit instead — Ctrl+J is the terminal-independent one. Claude Code's `\` escape in Codex types a literal backslash *and* submits, which is the bug this replaced |
 
 - **One mechanism, all sends**: the PWA passes `newline_mode`
-  (`enter`/`ctrl_j`/`backslash_enter`) in every `/type` body;
+  (`enter`/`ctrl_j`/`backslash_enter`, plus `end_enter` for the submit
+  newline) in every `/type` body;
   `HidKeyMapper.buildReports()` expands a `\n` into that target's keystrokes
   (still key-down + all-up pairs — a soft newline is 1-2 pairs, never a
   merged stream). It applies to dictation, cleanup output, the edit buffer,
@@ -266,28 +267,48 @@ newline-without-submit key, so the target has to be known before typing:
   so an older PWA against a new APK behaves exactly as before.
 - **The final Enter stays hard**: "Newline after end of recording" is a
   deliberate submit, so `sendNewline()` always sends `newline_mode: "enter"`.
-- **…and it waits 250ms first, or it isn't a submit at all.** A CLI composer
-  groups keystrokes arriving in a burst into a *paste* and reads an Enter
-  close behind them as part of it — a newline, not a submit. Codex CLI is
-  explicit about it (`paste_burst.rs`: 3 chars at ≤8ms intervals starts a
-  burst, `PASTE_ENTER_SUPPRESS_WINDOW` = 120ms after it ends), and dictation
-  types at a few ms per character, so the Enter always landed inside that
-  window: line breaks looked right and the prompt just sat there unsent.
+- **…and in Codex it presses End first, or it isn't a submit at all.** A CLI
+  composer groups keystrokes arriving in a burst into a *paste* and reads an
+  Enter that arrives in that state as part of it — a newline, not a submit.
+  Codex CLI's `paste_burst.rs` is the readable version of the trap: 3 chars at
+  ≤8ms intervals start a burst, the burst is held in a side buffer (not in
+  the composer), and while `PasteBurst::is_active()` an Enter is appended to
+  that buffer instead of sending. Dictation types at a few ms per character,
+  so every dictation is one burst and the Enter behind it kept landing inside
+  it: the line breaks looked right and the prompt just sat there unsent.
   Claude Code's TUI submits on an Enter after a paste regardless, which is why
-  only Codex showed it. `sendNewline()` therefore sends `pre_delay_ms`
-  (`SUBMIT_SETTLE_MS`, 250ms) and `BluetoothHidService.sendString()` sleeps it
-  inside the keystroke executor before the first report — *after* the queued
-  text has finished typing, which is the only place the gap can be measured
-  (`/type` returns 200 as soon as the send is queued). It is a quiet pause: no
-  reports at all, because reports are what keep the burst alive. `/stop` still
-  cuts it short, an older APK ignores the field, and the wait is unconditional
-  — 250ms is imperceptible at the end of a dictation, and guessing which
-  composers do burst detection is not worth the correctness risk.
+  only Codex showed it.
+  Two guards, in order of who does the work:
+  1. **`submit_newline_mode` = `end_enter` for Codex** (`enter` for the
+     others). `HidKeyMapper.NewlineMode.END_ENTER` types **End, then Enter**.
+     Any non-character key makes the composer flush the burst and call
+     `clear_window_after_non_char()`, so the Enter behind it is unambiguously
+     a keypress. End is the one navigation key that cannot move the cursor
+     anywhere it was not already — a send always leaves it at the end of the
+     last line. This is the load-bearing half: it is a state change, not a
+     race. It is per-target because End at a *shell* prompt (plain mode) would
+     accept a fish/zsh autosuggestion, which is not harmless.
+  2. **A 250ms quiet gap before it** (`SUBMIT_SETTLE_MS` → `pre_delay_ms`,
+     slept by `BluetoothHidService.sendString()` inside the keystroke executor
+     — *after* the queued text has finished typing, which is the only place
+     the gap can be measured, since `/type` returns 200 as soon as the send is
+     queued). It is a quiet pause: no reports at all, because reports are what
+     keep a burst alive. `/stop` cuts it short and an older APK ignores the
+     field. **Waiting is not sufficient on its own** — this shipped first and
+     the field test still came back with a newline. The source says why: the
+     burst is cleared by `flush_if_due()` on a UI *tick*, and Codex's submit
+     path (`submit_keys` → `handle_submission` → `handle_paste_enter`) never
+     flushes on the way in, so an Enter can still meet an "active" burst
+     whatever the gap. Keep the pause for composers whose window is purely a
+     timer, but the End is what makes it deterministic.
+  Look for "Settling 250ms before typing" in HID `/logs` to confirm the new
+  APK is the one running.
 - **Stored server-side** (`PUT /target`, persisted in
   `scripts/target-settings.json`, gitignored) rather than in PWA settings —
   the server needs the same value, and one copy can't drift. `GET /target`
   returns the active target plus the catalog (unauthenticated);
-  `/status` adds `"target"` and `"target_newline_mode"`. Env `TARGET_MODE`
+  `/status` adds `"target"`, `"target_newline_mode"` and
+  `"target_submit_newline_mode"`. Env `TARGET_MODE`
   sets the startup default (`plain`).
 - **The mode is not just newlines** — it also:
   - names the assistant in the `prompt` cleanup style. That style's `system`

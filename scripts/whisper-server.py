@@ -45,7 +45,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.9.0"
+SERVER_VERSION = "1.9.1"
 
 # --- Configuration ---
 
@@ -189,6 +189,11 @@ TARGET_PROFILES: dict[str, dict] = {
         "description": "Normal text fields — Enter submits, pasted line breaks are flattened",
         # HidKeyMapper.NewlineMode wire value, sent by the PWA in /type
         "newline_mode": "enter",
+        # How the deliberate submit newline ("Newline after end of
+        # recording") is typed. Usually a plain Enter; a CLI composer that
+        # groups fast keystrokes into a paste needs a non-character key
+        # first to break out of that state (see "end_enter").
+        "submit_newline_mode": "enter",
         # Substituted into cleanup style prompts/labels
         "assistant": "a coding assistant",
         "short": "Coding",
@@ -204,6 +209,7 @@ TARGET_PROFILES: dict[str, dict] = {
         "label": "Claude Code",
         "description": "Line breaks typed as \"\\\" + Enter so they don't submit",
         "newline_mode": "backslash_enter",
+        "submit_newline_mode": "enter",
         "assistant": "a coding assistant (Claude Code)",
         "short": "Claude",
         "terms": ["Claude", "Claude Code"],
@@ -219,6 +225,11 @@ TARGET_PROFILES: dict[str, dict] = {
         "label": "Codex",
         "description": "Line breaks typed as Ctrl+J, Codex CLI's newline key",
         "newline_mode": "ctrl_j",
+        # Codex CLI buffers keystrokes that arrive in a burst as a paste and
+        # turns an Enter arriving in that state into a newline inside it, so
+        # dictation never submitted. End clears that state (any non-character
+        # key does) without moving the cursor.
+        "submit_newline_mode": "end_enter",
         "assistant": "a coding assistant (OpenAI Codex CLI)",
         "short": "Codex",
         "terms": ["Codex", "Codex CLI"],
@@ -280,12 +291,14 @@ def _target_state() -> dict:
     return {
         "target": active_target(),
         "newline_mode": target_profile()["newline_mode"],
+        "submit_newline_mode": target_profile()["submit_newline_mode"],
         "targets": [
             {
                 "name": name,
                 "label": p["label"],
                 "description": p["description"],
                 "newline_mode": p["newline_mode"],
+                "submit_newline_mode": p["submit_newline_mode"],
             }
             for name, p in TARGET_PROFILES.items()
         ],
@@ -2557,6 +2570,7 @@ def status():
             "cleanup_style": _active_style(),
             "target": active_target(),
             "target_newline_mode": target_profile()["newline_mode"],
+            "target_submit_newline_mode": target_profile()["submit_newline_mode"],
             "chunked": chunked_supported,
             "mic_audio_source": get_mic_audio_source(),
             "mic_audio_source_selectable": _mic_source_selectable(),

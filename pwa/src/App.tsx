@@ -41,7 +41,11 @@ export default function App() {
   // Which app the keystrokes are going to; its newline mode rides along with
   // every /type so line breaks don't submit a CLI prompt halfway through.
   const target = useTargetMode(settings, updateSettings);
-  const hid = useHidService(settings, target.newlineMode);
+  const hid = useHidService(
+    settings,
+    target.newlineMode,
+    target.submitNewlineMode
+  );
   const store = useTranscriptStore();
 
   // No auth token = first launch on a new phone. Show the guided setup

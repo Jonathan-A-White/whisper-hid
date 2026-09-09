@@ -70,8 +70,13 @@ export interface LogEntry {
   msg: string;
 }
 
-/** How a line break is typed on the host — see TargetMode. */
-export type NewlineMode = "enter" | "ctrl_j" | "backslash_enter";
+/**
+ * How a line break is typed on the host — see TargetMode.
+ *
+ * "end_enter" only ever appears as a *submit* newline: End (which breaks a
+ * CLI composer's paste-burst state without moving the cursor) and then Enter.
+ */
+export type NewlineMode = "enter" | "ctrl_j" | "backslash_enter" | "end_enter";
 
 /** Which app the keystrokes are going to (whisper server: GET/PUT /target). */
 export type TargetMode = "plain" | "claude" | "codex";
@@ -81,11 +86,15 @@ export interface TargetInfo {
   label: string;
   description: string;
   newline_mode: NewlineMode;
+  /** absent on servers older than 1.9.1 */
+  submit_newline_mode?: NewlineMode;
 }
 
 export interface TargetState {
   target: TargetMode;
   newline_mode: NewlineMode;
+  /** absent on servers older than 1.9.1 */
+  submit_newline_mode?: NewlineMode;
   targets: TargetInfo[];
 }
 
