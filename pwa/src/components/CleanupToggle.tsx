@@ -1,15 +1,22 @@
 import { useEffect, useState } from "react";
 import { getCleanup, putCleanup, type CleanupStyleInfo } from "../lib/api";
+import type { TargetMode } from "../types";
+
+interface CleanupToggleProps {
+  /** Active target app — the "prompt" style is named after it, so its label
+   *  is re-fetched when the target changes. */
+  target: TargetMode | null;
+}
 
 /**
  * Quick on/off pill for speech cleanup (a local LLM rewrites the final
  * transcript) plus a style picker for the rewrite flavor: plain cleanup,
- * Claude Code prompt, commit message, chat message, email, or bug report.
- * Cleanup adds a few seconds after Stop, so it lives on the Talk screen for
- * easy flipping. Hidden while the Whisper server is unreachable or the
- * cleanup model/binary isn't installed.
+ * coding-assistant prompt, commit message, chat message, email, or bug
+ * report. Cleanup adds a few seconds after Stop, so it lives on the Talk
+ * screen for easy flipping. Hidden while the Whisper server is unreachable
+ * or the cleanup model/binary isn't installed.
  */
-export function CleanupToggle() {
+export function CleanupToggle({ target }: CleanupToggleProps) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [available, setAvailable] = useState(false);
   const [style, setStyle] = useState("standard");
@@ -24,7 +31,7 @@ export function CleanupToggle() {
         setStyles(c.styles ?? []);
       })
       .catch(() => setEnabled(null));
-  }, []);
+  }, [target]);
 
   // Keep showing the pill while enabled-but-unavailable (e.g. the model is
   // still loading after a server restart) so it can be turned off.

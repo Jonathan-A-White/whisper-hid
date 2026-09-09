@@ -97,6 +97,57 @@ the live link* — that's why `/stop` matters and why a BT disconnect bumps
 `typeGeneration` (can't release over a dead link; and queued sends must not
 blast stale text at whatever has focus after reconnect).
 
+## Target app mode (Claude Code / Codex / plain text)
+
+Dictation lands in one of a few very different places, and the difference is
+not cosmetic: **a `\n` typed as Enter submits in a CLI composer**, so a
+multi-line send (a `prompt`-style cleanup with bullets, a pasted clipboard)
+arrives as several half-finished prompts. Each target has its own
+newline-without-submit key, so the target has to be known before typing:
+
+| target   | line break typed as | why |
+|----------|--------------------|-----|
+| `plain`  | real Enter (and the PWA flattens pasted line breaks) | normal text fields have no soft newline |
+| `claude` | `\` then Enter | Claude Code's documented escape |
+| `codex`  | **Ctrl+J** | Codex CLI's newline binding. It also binds Shift+Enter, but most terminals can't distinguish it from Enter and submit instead — Ctrl+J is the terminal-independent one. Claude Code's `\` escape in Codex types a literal backslash *and* submits, which is the bug this replaced |
+
+- **One mechanism, all sends**: the PWA passes `newline_mode`
+  (`enter`/`ctrl_j`/`backslash_enter`) in every `/type` body;
+  `HidKeyMapper.buildReports()` expands a `\n` into that target's keystrokes
+  (still key-down + all-up pairs — a soft newline is 1-2 pairs, never a
+  merged stream). It applies to dictation, cleanup output, the edit buffer,
+  pinned items and the clipboard alike — not just the clipboard, since the
+  `prompt` cleanup style emits bullet lines. Omitted/unknown = plain Enter,
+  so an older PWA against a new APK behaves exactly as before.
+- **The final Enter stays hard**: "Newline after end of recording" is a
+  deliberate submit, so `sendNewline()` always sends `newline_mode: "enter"`.
+- **Stored server-side** (`PUT /target`, persisted in
+  `scripts/target-settings.json`, gitignored) rather than in PWA settings —
+  the server needs the same value, and one copy can't drift. `GET /target`
+  returns the active target plus the catalog (unauthenticated);
+  `/status` adds `"target"` and `"target_newline_mode"`. Env `TARGET_MODE`
+  sets the startup default (`plain`).
+- **The mode is not just newlines** — it also:
+  - names the assistant in the `prompt` cleanup style. That style's `system`
+    and `label` carry `{assistant}`/`{short}` placeholders resolved per
+    target (`_resolve_target_text()`), so Codex mode stops the LLM writing
+    prompts addressed to Claude Code. Any new style that names an assistant
+    must use the placeholders, not a hardcoded name.
+  - leads the cleanup glossary with that assistant's vocabulary
+    (`TARGET_PROFILES[...]["terms"]`), which is where a context-dependent
+    mishearing like "codecs" → "Codex" gets fixed.
+  - layers a few built-in whole-word corrections under the user's dictionary
+    (`_effective_corrections()`): only unambiguous multi-word forms
+    ("cloud code" → "Claude Code", "code x" → "Codex"). Deliberately not
+    bare words — "codecs" can be genuine, so that call is the glossary's.
+    A user entry for the same phrase wins and drops the built-in.
+- **PWA**: `TargetModeToggle` pill on the Talk screen ("⌨️ Typing to X",
+  tap to cycle) backed by `useTargetMode`; Settings shows the active target
+  and points at the pill. A phone that had the old "Claude Code newlines
+  (clipboard)" checkbox on is migrated once to target `claude`.
+- Tests: `pytest scripts/tests/test_target.py`, `./gradlew test`
+  (`HidKeyMapperTest` newline-mode cases)
+
 ## Bluetooth headset mic
 Termux records from Android's *default* input, so using a Bluetooth headset's
 mic requires system-wide SCO routing, handled by the Kotlin HID service

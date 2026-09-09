@@ -12,3 +12,5 @@ __pycache__/
 scripts/symbol-replacements.json
 # Per-device speech cleanup toggle, set via the PWA
 scripts/cleanup-settings.json
+# Per-device target app mode (Claude Code / Codex / plain), set via the PWA
+scripts/target-settings.json

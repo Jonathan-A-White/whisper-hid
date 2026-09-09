@@ -853,7 +853,10 @@ class BluetoothHidService : Service() {
         releaseAllKeys(hid, device)
     }
 
-    fun sendString(text: String) {
+    fun sendString(
+        text: String,
+        newlineMode: HidKeyMapper.NewlineMode = HidKeyMapper.NewlineMode.ENTER
+    ) {
         val device = connectedDevice ?: return
         val hid = hidDevice ?: return
         val gen = typeGeneration.get()
@@ -866,7 +869,7 @@ class BluetoothHidService : Service() {
                     addLog("info", "Send aborted by stop request")
                     return@execute
                 }
-                for (bytes in HidKeyMapper.buildReports(text)) {
+                for (bytes in HidKeyMapper.buildReports(text, newlineMode)) {
                     if (typeGeneration.get() != gen) {
                         addLog("info", "Send aborted by stop request")
                         return@execute
@@ -1095,6 +1098,12 @@ class BluetoothHidService : Service() {
             // "Keystroke delay" setting. Sticky until the next override.
             val delayMs = json.optLong("delay_ms", -1L)
             if (delayMs >= 0) keystrokeDelayMs = delayMs.coerceAtMost(100L)
+            // How a "\n" in this request is typed. The PWA derives it from the
+            // active target app (Claude Code / Codex / plain text); omitted or
+            // unknown means a real Enter, which is what an older PWA expects.
+            val newlineMode = HidKeyMapper.NewlineMode.fromWire(
+                if (json.has("newline_mode")) json.optString("newline_mode") else null
+            )
 
             if (text.isEmpty()) {
                 sendResponse(output, 400, JSONObject().put("ok", false).put("error", "empty_text"))
@@ -1109,7 +1118,7 @@ class BluetoothHidService : Service() {
                 return
             }
 
-            sendString(text + append)
+            sendString(text + append, newlineMode)
             sendResponse(output, 200, JSONObject().put("ok", true))
         } catch (e: Exception) {
             sendResponse(output, 500, JSONObject().put("ok", false).put("error", e.message ?: "unknown"))

@@ -45,7 +45,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.8.0"
+SERVER_VERSION = "1.9.0"
 
 # --- Configuration ---
 
@@ -165,6 +165,133 @@ chunked_supported = False  # set by detect_chunked_support() at startup
 chunk_session = None       # active ChunkedSession while recording (guarded by recording_lock)
 
 
+# --- Target app mode (where the typed text is going) ---
+#
+# Dictation ends up in one of a few very different places, and the difference
+# is not cosmetic: a "\n" typed as Enter *submits* in a CLI composer, so a
+# multi-line send (a "prompt"-style cleanup with bullets, a pasted clipboard)
+# arrives as several half-finished prompts. Each target has its own
+# newline-without-submit key, so the mode has to be known before typing:
+#   claude — Claude Code: a literal "\" then Enter (its documented escape)
+#   codex  — Codex CLI: Ctrl+J. Codex also binds Shift+Enter, but most
+#            terminals can't distinguish it from Enter and submit instead.
+#   plain  — any normal text field: a real Enter, and the PWA flattens
+#            pasted line breaks rather than typing stray escapes.
+# The same mode also names the assistant in the "prompt" cleanup style and
+# seeds the glossary/corrections with that assistant's vocabulary.
+TARGET_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "target-settings.json"
+)
+
+TARGET_PROFILES: dict[str, dict] = {
+    "plain": {
+        "label": "Plain text",
+        "description": "Normal text fields — Enter submits, pasted line breaks are flattened",
+        # HidKeyMapper.NewlineMode wire value, sent by the PWA in /type
+        "newline_mode": "enter",
+        # Substituted into cleanup style prompts/labels
+        "assistant": "a coding assistant",
+        "short": "Coding",
+        # Vocabulary of this target, injected into the cleanup glossary
+        "terms": [],
+        # Deterministic regex corrections layered UNDER the user's dictionary.
+        # Deliberately only unambiguous multi-word mishearings — a bare word
+        # like "codecs" can be genuine, so that call is left to the glossary
+        # (context-aware) or to a user-added entry.
+        "corrections": {},
+    },
+    "claude": {
+        "label": "Claude Code",
+        "description": "Line breaks typed as \"\\\" + Enter so they don't submit",
+        "newline_mode": "backslash_enter",
+        "assistant": "a coding assistant (Claude Code)",
+        "short": "Claude",
+        "terms": ["Claude", "Claude Code"],
+        "corrections": {
+            "claude code": "Claude Code",
+            "cloud code": "Claude Code",
+            "clod code": "Claude Code",
+            "clawed code": "Claude Code",
+            "quad code": "Claude Code",
+        },
+    },
+    "codex": {
+        "label": "Codex",
+        "description": "Line breaks typed as Ctrl+J, Codex CLI's newline key",
+        "newline_mode": "ctrl_j",
+        "assistant": "a coding assistant (OpenAI Codex CLI)",
+        "short": "Codex",
+        "terms": ["Codex", "Codex CLI"],
+        "corrections": {
+            "codex cli": "Codex CLI",
+            "codecs cli": "Codex CLI",
+            "code x cli": "Codex CLI",
+            "code x": "Codex",
+        },
+    },
+}
+
+DEFAULT_TARGET = os.environ.get("TARGET_MODE", "plain").lower()
+if DEFAULT_TARGET not in TARGET_PROFILES:
+    DEFAULT_TARGET = "plain"
+
+target_settings: dict = {"target": DEFAULT_TARGET}
+
+
+def active_target() -> str:
+    """Name of the active target app mode, falling back to the default."""
+    target = target_settings.get("target")
+    return target if target in TARGET_PROFILES else DEFAULT_TARGET
+
+
+def target_profile() -> dict:
+    """The TARGET_PROFILES entry for the active target."""
+    return TARGET_PROFILES[active_target()]
+
+
+def load_target_settings():
+    """Load the target app mode from JSON (default when absent/corrupt)."""
+    global target_settings
+    target_settings = {"target": DEFAULT_TARGET}
+    if not os.path.isfile(TARGET_FILE):
+        return
+    try:
+        with open(TARGET_FILE, "r") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return
+    target = data.get("target")
+    if isinstance(target, str) and target in TARGET_PROFILES:
+        target_settings["target"] = target
+
+
+def save_target_settings():
+    """Persist the target app mode so a server restart keeps it."""
+    try:
+        with open(TARGET_FILE, "w") as f:
+            json.dump(target_settings, f, indent=2)
+            f.write("\n")
+    except OSError as e:
+        add_log("error", f"Failed to save target settings: {e}")
+
+
+def _target_state() -> dict:
+    """The GET /target payload: active mode plus the full catalog."""
+    return {
+        "target": active_target(),
+        "newline_mode": target_profile()["newline_mode"],
+        "targets": [
+            {
+                "name": name,
+                "label": p["label"],
+                "description": p["description"],
+                "newline_mode": p["newline_mode"],
+            }
+            for name, p in TARGET_PROFILES.items()
+        ],
+    }
+
+
 CORRECTIONS_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "word-corrections.json"
 )
@@ -194,15 +321,34 @@ def save_corrections():
         add_log("error", f"Failed to save corrections: {e}")
 
 
+def _effective_corrections() -> dict[str, str]:
+    """The user dictionary, layered over the active target's built-ins.
+
+    The target profile contributes names the assistant is always called by
+    ("cloud code" -> "Claude Code"). A user entry for the same phrase wins
+    and drops the built-in, so a built-in can be overridden — or neutralized
+    by mapping the phrase to itself — from the PWA.
+    """
+    user_keys = {k.lower() for k in word_corrections}
+    merged = {
+        wrong: right
+        for wrong, right in target_profile()["corrections"].items()
+        if wrong.lower() not in user_keys
+    }
+    merged.update(word_corrections)
+    return merged
+
+
 def apply_corrections(text: str) -> str:
     """Apply word corrections to transcribed text.
 
     Does case-insensitive whole-word matching, replacing with the exact
     value from the corrections dictionary.
     """
-    if not word_corrections:
+    corrections = _effective_corrections()
+    if not corrections:
         return text
-    for wrong, right in word_corrections.items():
+    for wrong, right in corrections.items():
         pattern = re.compile(r'\b' + re.escape(wrong) + r'\b', re.IGNORECASE)
         text = pattern.sub(right, text)
     return text
@@ -784,11 +930,14 @@ CLEANUP_STYLES: dict[str, dict] = {
         "ratio": (0.35, 1.6),
     },
     "prompt": {
-        "label": "Claude prompt",
+        # "{short}"/"{assistant}" name the active target app (TARGET_PROFILES)
+        # — the prompt is written for whichever assistant is being dictated
+        # at, so switching to Codex mode stops it saying "Claude Code".
+        "label": "{short} prompt",
         "description": "Restructure the dictation into a crisp coding-assistant prompt",
         "system": (
-            "/no_think You turn raw dictated speech into a clear written prompt for a "
-            "coding assistant (Claude Code). Rewrite the transcript with:\n"
+            "/no_think You turn raw dictated speech into a clear written prompt for "
+            "{assistant}. Rewrite the transcript with:\n"
             "- filler words, false starts, and thinking-out-loud preamble removed\n"
             "- spoken self-corrections resolved, keeping only the corrected version\n"
             "- multi-part requests split into short lines starting with \"- \"\n"
@@ -910,6 +1059,19 @@ def _active_style() -> str:
     return style if isinstance(style, str) and style in CLEANUP_STYLES else "standard"
 
 
+def _resolve_target_text(text: str) -> str:
+    """Fill a cleanup style's target placeholders from the active profile.
+
+    Styles that name the assistant they are writing for ("prompt") carry
+    "{assistant}"/"{short}" instead of a hardcoded name. Plain str.replace,
+    not str.format — the prompts contain literal braces of their own.
+    """
+    profile = target_profile()
+    return text.replace("{assistant}", profile["assistant"]).replace(
+        "{short}", profile["short"]
+    )
+
+
 def _glossary_terms() -> list[str]:
     """Terms the speaker is known to use, derived from word corrections.
 
@@ -917,10 +1079,14 @@ def _glossary_terms() -> list[str]:
     means (names, technical terms). Injected into the cleanup system prompt so
     the LLM can fix contextual mishearings the whole-word regex pass can't —
     e.g. "cloud" vs "Claude" depending on the sentence.
+
+    The active target's own names lead the list: they are the words most
+    likely to be said (and misheard) while dictating at it, and the LLM is
+    the only pass that can tell a misheard "codecs" from a real one.
     """
     seen: set[str] = set()
     terms: list[str] = []
-    for right in word_corrections.values():
+    for right in list(target_profile()["terms"]) + list(word_corrections.values()):
         term = right.strip()
         if term and term.lower() not in seen:
             seen.add(term.lower())
@@ -954,7 +1120,7 @@ def _llm_chat(messages: list[dict], max_tokens: int) -> str:
 def _build_cleanup_messages(text: str) -> list[dict]:
     """Build the chat messages for the active style, with the glossary."""
     style = CLEANUP_STYLES[_active_style()]
-    system = style["system"]
+    system = _resolve_target_text(style["system"])
     glossary = _glossary_terms()
     if glossary:
         # Appended (not prepended) so the static part of the system prompt
@@ -2389,6 +2555,8 @@ def status():
             "cleanup_mode": bool(cleanup_settings.get("enabled")),
             "cleanup_available": _is_cleanup_server_alive(),
             "cleanup_style": _active_style(),
+            "target": active_target(),
+            "target_newline_mode": target_profile()["newline_mode"],
             "chunked": chunked_supported,
             "mic_audio_source": get_mic_audio_source(),
             "mic_audio_source_selectable": _mic_source_selectable(),
@@ -2599,6 +2767,39 @@ def put_symbols():
     return jsonify(symbol_settings)
 
 
+@app.route("/target", methods=["GET"])
+def get_target():
+    """Return the target app mode: {"target", "newline_mode", "targets"}.
+
+    Unauthenticated like the other read endpoints; the PWA reads
+    "newline_mode" from here and sends it to the HID service with each
+    /type, so the mapping from target app to keystrokes lives in one place.
+    """
+    return jsonify(_target_state())
+
+
+@app.route("/target", methods=["PUT"])
+def put_target():
+    """Set the target app mode. Body: {"target": "claude"|"codex"|"plain"}."""
+    data = request.get_json(silent=True)
+    if data is None or not isinstance(data, dict) or "target" not in data:
+        return jsonify({
+            "error": "invalid_body",
+            "message": "Request body must be JSON with a 'target'.",
+        }), 400
+    target = data["target"]
+    if not isinstance(target, str) or target not in TARGET_PROFILES:
+        return jsonify({
+            "error": "invalid_target",
+            "message": f"'target' must be one of {sorted(TARGET_PROFILES)}.",
+        }), 400
+
+    target_settings["target"] = target
+    save_target_settings()
+    add_log("info", f"Target app set to: {target}")
+    return jsonify(_target_state())
+
+
 @app.route("/symbols/reset", methods=["POST"])
 def reset_symbols():
     """Restore the default symbol entries (keeps the enabled flag)."""
@@ -2648,7 +2849,11 @@ def _cleanup_state() -> dict:
         "models": _cleanup_models(),
         "style": _active_style(),
         "styles": [
-            {"name": name, "label": s["label"], "description": s["description"]}
+            {
+                "name": name,
+                "label": _resolve_target_text(s["label"]),
+                "description": s["description"],
+            }
             for name, s in CLEANUP_STYLES.items()
         ],
     }
@@ -3263,6 +3468,7 @@ if __name__ == "__main__":
     load_corrections()
     load_symbols()
     load_cleanup_settings()
+    load_target_settings()
     load_model()
     select_engine()
     _detect_termux_api_bin()

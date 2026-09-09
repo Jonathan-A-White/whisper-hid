@@ -1,3 +1,5 @@
+import type { NewlineMode, TargetMode, TargetState } from "../types";
+
 const WHISPER_BASE = "http://localhost:9876";
 const HID_BASE = "http://localhost:9877";
 
@@ -163,6 +165,27 @@ export async function putCorrections(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(corrections),
   });
+  return res.json();
+}
+
+// --- Target app mode (Claude Code / Codex / plain text) ---
+
+export async function getTarget(): Promise<TargetState> {
+  const res = await whisperFetch("/target");
+  if (!res.ok) throw new Error("Target mode unavailable");
+  return res.json();
+}
+
+export async function putTarget(target: TargetMode): Promise<TargetState> {
+  const res = await whisperFetch("/target", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ target }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || "Failed to set target app");
+  }
   return res.json();
 }
 
@@ -358,12 +381,18 @@ export async function hidStop() {
 export async function hidType(
   text: string,
   append: string = " ",
-  delayMs?: number
+  delayMs?: number,
+  newlineMode?: NewlineMode
 ) {
   const epoch = typeEpoch;
   // delay_ms carries the PWA's "Keystroke delay" setting to the HID service
   // (sticky there until the next override).
   const delayField = delayMs !== undefined ? { delay_ms: delayMs } : {};
+  // newline_mode says how a "\n" is typed on the host: a real Enter (which
+  // submits in a CLI composer) or the target app's newline-without-submit
+  // key. Omitted = Enter, which is also what an older APK does with it.
+  const newlineField =
+    newlineMode && newlineMode !== "enter" ? { newline_mode: newlineMode } : {};
 
   // Break large text into chunks to avoid overwhelming the HID service's
   // simple HTTP server. Send chunks sequentially; only the last chunk
@@ -371,7 +400,7 @@ export async function hidType(
   if (text.length <= HID_TYPE_CHUNK_SIZE) {
     const res = await hidFetch("/type", {
       method: "POST",
-      body: JSON.stringify({ text, append, ...delayField }),
+      body: JSON.stringify({ text, append, ...delayField, ...newlineField }),
     });
     if (res.status === 403) {
       throw new Error("AUTH_FAILED");
@@ -394,6 +423,7 @@ export async function hidType(
         text: chunks[i],
         append: isLast ? append : "",
         ...delayField,
+        ...newlineField,
       }),
     });
     if (res.status === 403) {

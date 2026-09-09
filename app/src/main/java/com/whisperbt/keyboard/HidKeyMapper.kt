@@ -7,15 +7,50 @@ package com.whisperbt.keyboard
  *   [modifier, 0x00, key1, key2, key3, key4, key5, key6]
  *
  * Modifier bits:
+ *   0x01 = Left Ctrl
  *   0x02 = Left Shift
  */
 object HidKeyMapper {
 
     private const val MOD_NONE: Byte = 0x00
+    private const val MOD_CTRL: Byte = 0x01
     private const val MOD_SHIFT: Byte = 0x02
 
     /** A key-down report for a single character. */
     data class HidReport(val modifier: Byte, val keycode: Byte)
+
+    /**
+     * How a `\n` in the text is delivered to the host.
+     *
+     * A plain Enter submits in a CLI composer, so a multi-line send arrives
+     * as several separate prompts. Each target app has its own
+     * newline-without-submit key, and the PWA picks one per request
+     * ("newline_mode" in the /type body):
+     *
+     *  - [ENTER]: a real Enter. Correct for plain text fields, and for the
+     *    deliberate final Enter that submits ("Newline after end of
+     *    recording").
+     *  - [CTRL_J]: Codex CLI's newline binding. Shift+Enter is *also* bound
+     *    there but most terminals can't distinguish it from Enter, so they
+     *    submit instead — Ctrl+J is the terminal-independent one.
+     *  - [BACKSLASH_ENTER]: Claude Code's escape — a literal "\" then Enter.
+     *    Typed as text rather than a chord; Codex would show the backslash
+     *    and submit, hence the split.
+     */
+    enum class NewlineMode {
+        ENTER,
+        CTRL_J,
+        BACKSLASH_ENTER;
+
+        companion object {
+            /** Parse the wire value from a /type body; unknown = [ENTER]. */
+            fun fromWire(name: String?): NewlineMode = when (name?.lowercase()) {
+                "ctrl_j" -> CTRL_J
+                "backslash_enter" -> BACKSLASH_ENTER
+                else -> ENTER
+            }
+        }
+    }
 
     /** An all-zeros report that releases all keys. */
     val KEY_UP_REPORT = ByteArray(8)
@@ -42,15 +77,34 @@ object HidKeyMapper {
      * key-down (a report without the old keycode implicitly releases it), so
      * one lost report costs at most one character. Don't re-merge key-ups to
      * shave latency; typing speed comes from lowering keystrokeDelayMs.
+     *
+     * [newlineMode] decides what a `\n` types: a real Enter (submits in a CLI
+     * composer) or the target app's newline-without-submit key. A soft
+     * newline can expand to more than one keystroke, but every one of them
+     * still follows the key-down + all-up pair rule.
      */
-    fun buildReports(text: String): List<ByteArray> {
+    fun buildReports(
+        text: String,
+        newlineMode: NewlineMode = NewlineMode.ENTER
+    ): List<ByteArray> {
         val reports = ArrayList<ByteArray>(text.length * 2)
         for (char in text) {
-            val report = map(char) ?: continue
-            reports.add(toBytes(report))
-            reports.add(KEY_UP_REPORT)
+            val keys =
+                if (char == '\n') newlineKeys(newlineMode)
+                else listOfNotNull(map(char))
+            for (key in keys) {
+                reports.add(toBytes(key))
+                reports.add(KEY_UP_REPORT)
+            }
         }
         return reports
+    }
+
+    /** The key-down reports one newline expands to under [mode]. */
+    private fun newlineKeys(mode: NewlineMode): List<HidReport> = when (mode) {
+        NewlineMode.ENTER -> listOf(enterReport())
+        NewlineMode.CTRL_J -> listOf(ctrlJReport())
+        NewlineMode.BACKSLASH_ENTER -> listOf(backslashReport(), enterReport())
     }
 
     // HID keycodes for special keys
@@ -58,6 +112,13 @@ object HidKeyMapper {
     const val KEY_TAB: Byte = 0x2B
     const val KEY_BACKSPACE: Byte = 0x2A
     const val KEY_SPACE: Byte = 0x2C
+    const val KEY_J: Byte = 0x0D
+    const val KEY_BACKSLASH: Byte = 0x31
+
+    /** Ctrl+J — Codex CLI's "newline without submitting". */
+    fun ctrlJReport() = HidReport(MOD_CTRL, KEY_J)
+
+    fun backslashReport() = HidReport(MOD_NONE, KEY_BACKSLASH)
 
     fun enterReport() = HidReport(MOD_NONE, KEY_ENTER)
     fun tabReport() = HidReport(MOD_NONE, KEY_TAB)
