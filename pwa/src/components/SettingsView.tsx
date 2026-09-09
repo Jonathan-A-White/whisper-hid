@@ -10,11 +10,18 @@ interface SettingsViewProps {
   settings: Settings;
   onUpdate: (partial: Partial<Settings>) => void;
   onShowSetup: () => void;
+  /**
+   * Open the debug log. Its only other entry point is the status banner's
+   * "View Debug Log" button, which appears solely when Bluetooth has failed
+   * — so the logs were unreachable in exactly the case you usually want
+   * them: typing works but the text arrives wrong.
+   */
+  onShowDebug: () => void;
   /** Active target app, or null on a server without /target */
   target: TargetInfo | null;
 }
 
-export function SettingsView({ settings, onUpdate, onShowSetup, target }: SettingsViewProps) {
+export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, target }: SettingsViewProps) {
   const [whisperVersion, setWhisperVersion] = useState<string | null>(null);
   const [hidVersion, setHidVersion] = useState<string | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -345,6 +352,21 @@ export function SettingsView({ settings, onUpdate, onShowSetup, target }: Settin
         <p className="text-xs text-gray-600 mt-1.5">
           Step-by-step checklist for setting up a new phone or fixing a
           broken component.
+        </p>
+      </div>
+
+      {/* Debug log */}
+      <div className="pt-4 border-t border-gray-800">
+        <button
+          onClick={onShowDebug}
+          className="w-full py-2 rounded bg-gray-800 text-sky-400 text-sm font-medium"
+        >
+          Debug log
+        </button>
+        <p className="text-xs text-gray-600 mt-1.5">
+          Recent events from the HID service and Whisper server. After a
+          paste, look for the "Typed N chars as M reports" line — it says
+          how long the send took and whether the Bluetooth link kept up.
         </p>
       </div>
 
