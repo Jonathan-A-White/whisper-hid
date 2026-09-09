@@ -76,22 +76,40 @@ degrades gracefully — a lost release is healed by the next key-down
 re-merge key-ups to shave latency; typing speed comes from lowering
 `keystrokeDelayMs` instead.
 
-**A modifier change never shares a report with a keycode change.** Shift
+**A modifier gets a report of its own before the key it modifies.** Shift
 going down in the same report as the key it shifts is a coin flip: the host
 decides in what order to turn one report into input events, and one that
 presses the key before applying the new modifier byte types the *unshifted*
 character. A field paste came out as `"To Read—Or Not to Read the Code?"` →
 `'to readOr notead THE Code?"` — capitals arriving lowercase, `<` as `,`
-(Shift+comma losing its Shift), `## Role` as `## role`. The mirror image is a
-lost release followed by an unshifted key-down, where the host applies the key
-before clearing Shift and types capitals nobody asked for (`the` → `THE`,
-`github.com` → `GitHub.com`). So a character whose modifier differs from the
-one currently held gets a **modifier-only report first** (modifier byte set,
-no keycode), exactly as a human presses Shift before the letter; the release
-between characters keeps the modifier held, so a run of capitals or of `**`
-pays for Shift once, and the stream always ends fully released. Costs ~5% more
-reports on prose (case changes only) — unshifted runs are byte-identical to
-what shipped before. Don't fold the modifier back into the key-down report.
+(Shift+comma losing its Shift), `## Role` as `## role`. So a shifted character
+is three reports (modifier alone, modifier+keycode, all-up); unshifted
+characters stay at two and are byte-identical to what shipped before. If the
+host ignores the modifier-only report it just sees modifier+keycode together,
+i.e. the old behaviour — so this is never worse, only sometimes better.
+
+**Modifier state NEVER carries across a character.** The release after every
+character goes all the way to zero, even mid-run of capitals. Holding Shift
+across a run — what a human does, and 2.1 reports/char instead of ~2.5 — was
+tried and **REVERTED after field testing**. It makes the Shift a piece of
+state living in the *stream*, and this link loses reports, so one lost
+modifier report poisons everything up to the next case change instead of one
+character. A paste came back as `(SHARED DATA CONTRACT) ## ATTRIBUTION THIS
+SUITE DERIVES FROM **KIERAN KLAASSEN<` — ~100 characters capitalised off one
+lost report, the trailing `,` typed as `<` — and elsewhere `(<https://` as
+`9,https;//` and `2026**` as `202688` (a lost shift-*down*, every shifted
+character in the run wrong). Dumping the stream shows why: the held-Shift
+version emits `mod=02 key=00` immediately followed by `mod=00 key=00`, two
+consecutive keycode-free reports, and that second one is the *only* thing
+clearing Shift for the next hundred characters. This is the same trap the
+merged stream fell into above, reached from the other side: **state has no
+redundancy on a lossy link.** Resetting per character caps the blast radius of
+any single lost report at one character. Don't hold modifiers across
+characters to shave reports.
+
+Note the asymmetry when tuning: a change that adds reports costs throughput,
+but a change that adds *state* costs correctness non-linearly. Prefer more
+reports over fewer, self-contained over stateful.
 
 **Characters a US keyboard has no key for get an ASCII stand-in, not the
 floor.** `HidKeyMapper.asciiFallback()` maps em/en dashes, curly quotes,
@@ -116,6 +134,12 @@ The PWA's Keystroke delay setting is sent as `delay_ms` in each `/type`
 request body and sticks until the next override; `/status` reports it as
 `keystroke_delay_ms`. At 0 delay the stack can refuse to queue a report
 under congestion — `sendReportReliably()` retries with a short backoff.
+**It is also the first thing to raise when text arrives with characters
+missing in bursts.** Sends beyond what the link absorbs are lost silently
+(`sendReport()` returns true), so the visible symptom is dropped characters,
+not an error; the server caps `delay_ms` at 100ms. Every send logs
+"Typed N chars as M reports in Tms (delay=Dms, K slow sends)" to `/logs` —
+compare M against the elapsed time to see whether the link kept up.
 
 **Stuck-key hazard**: if the *final* release of a send is lost (a dropped
 report, an abort mid-stream), there is no later key-down to heal it and the

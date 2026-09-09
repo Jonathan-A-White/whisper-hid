@@ -903,17 +903,32 @@ class BluetoothHidService : Service() {
                     addLog("info", "Send aborted by stop request")
                     return@execute
                 }
-                for (bytes in HidKeyMapper.buildReports(text, newlineMode)) {
+                val reports = HidKeyMapper.buildReports(text, newlineMode)
+                val startedAtMs = System.currentTimeMillis()
+                var retried = 0
+                for (bytes in reports) {
                     if (typeGeneration.get() != gen) {
                         addLog("info", "Send aborted by stop request")
                         return@execute
                     }
+                    val before = System.currentTimeMillis()
                     if (!sendReportReliably(hid, device, bytes)) {
                         addLog("warn", "sendReport failed after $SEND_RETRY_ATTEMPTS attempts — aborting rest of text")
                         return@execute
                     }
+                    // A report the stack made us wait for is a report the host
+                    // may not have got either; the count is the only handle we
+                    // have on link congestion, since sendReport() never tells
+                    // us about a report it accepted and then dropped.
+                    if (System.currentTimeMillis() - before >= SEND_RETRY_BACKOFF_MS) retried++
                     if (keystrokeDelayMs > 0) Thread.sleep(keystrokeDelayMs)
                 }
+                val elapsed = System.currentTimeMillis() - startedAtMs
+                addLog(
+                    "info",
+                    "Typed ${text.length} chars as ${reports.size} reports in ${elapsed}ms " +
+                        "(delay=${keystrokeDelayMs}ms, ${retried} slow sends)"
+                )
             } catch (e: SecurityException) {
                 addLog("error", "Missing permission for sendReport")
             } catch (_: InterruptedException) {
