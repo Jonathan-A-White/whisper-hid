@@ -189,6 +189,23 @@ newline-without-submit key, so the target has to be known before typing:
   so an older PWA against a new APK behaves exactly as before.
 - **The final Enter stays hard**: "Newline after end of recording" is a
   deliberate submit, so `sendNewline()` always sends `newline_mode: "enter"`.
+- **…and it waits 250ms first, or it isn't a submit at all.** A CLI composer
+  groups keystrokes arriving in a burst into a *paste* and reads an Enter
+  close behind them as part of it — a newline, not a submit. Codex CLI is
+  explicit about it (`paste_burst.rs`: 3 chars at ≤8ms intervals starts a
+  burst, `PASTE_ENTER_SUPPRESS_WINDOW` = 120ms after it ends), and dictation
+  types at a few ms per character, so the Enter always landed inside that
+  window: line breaks looked right and the prompt just sat there unsent.
+  Claude Code's TUI submits on an Enter after a paste regardless, which is why
+  only Codex showed it. `sendNewline()` therefore sends `pre_delay_ms`
+  (`SUBMIT_SETTLE_MS`, 250ms) and `BluetoothHidService.sendString()` sleeps it
+  inside the keystroke executor before the first report — *after* the queued
+  text has finished typing, which is the only place the gap can be measured
+  (`/type` returns 200 as soon as the send is queued). It is a quiet pause: no
+  reports at all, because reports are what keep the burst alive. `/stop` still
+  cuts it short, an older APK ignores the field, and the wait is unconditional
+  — 250ms is imperceptible at the end of a dictation, and guessing which
+  composers do burst detection is not worth the correctness risk.
 - **Stored server-side** (`PUT /target`, persisted in
   `scripts/target-settings.json`, gitignored) rather than in PWA settings —
   the server needs the same value, and one copy can't drift. `GET /target`
