@@ -98,58 +98,69 @@ object HidKeyMapper {
      * one lost report costs at most one character. Don't re-merge key-ups to
      * shave latency; typing speed comes from lowering keystrokeDelayMs.
      *
-     * **2. A modifier change never shares a report with a keycode change.**
+     * **2. A modifier gets a report of its own before the key it modifies.**
      * Shift going down in the same report as the key it shifts is a coin
      * flip: the host decides in which order to turn one report into input
      * events, and a host that presses the key before applying the new
      * modifier byte types the *unshifted* character. That is the
      * `"To Read—Or Not to Read the Code?"` → `'to readOr notead THE Code?"`
-     * class of corruption seen in the field — every capital in a burst
-     * arriving lowercase, `<` arriving as `,` (Shift+comma losing its
-     * Shift), `## Role` as `## role`. The mirror image is a lost release
-     * followed by an unshifted key-down, where the host applies the key
-     * before clearing Shift and types capitals that were never asked for
-     * (`the` → `THE`, `github.com` → `GitHub.com`).
+     * class of corruption seen in the field — capitals in a burst arriving
+     * lowercase, `<` arriving as `,` (Shift+comma losing its Shift), `## Role`
+     * as `## role`. The mirror image is a lost release followed by an
+     * unshifted key-down, where the host applies the key before clearing
+     * Shift and types capitals nobody asked for (`the` → `THE`).
      *
-     * So a character whose modifier differs from the one currently held gets
-     * a modifier-only report first (modifier byte set, no keycode), exactly
-     * as a human pressing Shift before the letter. The release between
-     * characters keeps the modifier held, so a run of capitals or of `**`
-     * pays for Shift once; the stream always ends with everything released.
-     * Cost on ordinary prose is under 5% more reports — case changes only —
-     * and unshifted runs are byte-identical to what shipped before. Don't
-     * fold the modifier back into the key-down report to save them.
+     * So a shifted character is three reports — modifier alone, then modifier
+     * plus keycode, then everything released — exactly as a human presses
+     * Shift before the letter and lets go after it. Unshifted characters stay
+     * at two and are byte-identical to what shipped before.
+     *
+     * **3. Every character is self-contained; modifier state NEVER carries
+     * across one.** The release after each character goes all the way to
+     * zero, even mid-run of capitals. Holding Shift across a run (2.10
+     * reports/char instead of ~2.5, and what a human does) was tried and
+     * **REVERTED after field testing**: it makes the Shift a piece of state
+     * living in the *stream*, and this link loses reports. One lost
+     * shift-release then poisons everything up to the next case change
+     * instead of one character — a paste came back as
+     * `(SHARED DATA CONTRACT) ## ATTRIBUTION THIS SUITE DERIVES FROM
+     * **KIERAN KLAASSEN<` (one release lost, ~70 characters wrong, the
+     * trailing `,` typed as `<`), and elsewhere `(<https://` as `9,https;//`
+     * and `2026**` as `202688` (one shift-down lost, every shifted character
+     * in the run wrong). This is the same trap the merged stream fell into in
+     * rule 1, reached from the other side: state has no redundancy.
+     *
+     * Resetting per character caps the blast radius of any single lost report
+     * at one character, in every case — lose the modifier-only report and the
+     * host sees modifier+keycode together (the old behaviour, so never worse
+     * than before); lose the key-down and one character is missing; lose the
+     * release and at most the next character carries a stale modifier before
+     * its own release clears it. Don't hold modifiers across characters to
+     * shave reports.
      *
      * [newlineMode] decides what a `\n` types: a real Enter (submits in a CLI
      * composer) or the target app's newline-without-submit key. A soft
      * newline can expand to more than one keystroke, but every one of them
-     * still follows both rules above.
+     * still follows all three rules above.
      */
     fun buildReports(
         text: String,
         newlineMode: NewlineMode = NewlineMode.ENTER
     ): List<ByteArray> {
-        val reports = ArrayList<ByteArray>(text.length * 2 + 2)
-        // The modifier byte the host currently believes is held. Only ever
-        // changed by a report that carries no keycode (rule 2).
-        var held: Byte = MOD_NONE
+        val reports = ArrayList<ByteArray>(text.length * 2)
         for (char in text) {
             val keys =
                 if (char == '\n') newlineKeys(newlineMode)
                 else keysFor(char)
             for (key in keys) {
-                if (key.modifier != held) {
-                    held = key.modifier
-                    reports.add(modifierOnly(held))
-                }
+                // Settle the modifier before the keycode arrives (rule 2)...
+                if (key.modifier != MOD_NONE) reports.add(modifierOnly(key.modifier))
                 reports.add(toBytes(key))
-                // Release the key but keep the modifier down: the next
-                // character re-uses it if it needs the same one.
-                reports.add(modifierOnly(held))
+                // ...and hand the host back a clean slate (rule 3). Never
+                // "keep the modifier for the next character".
+                reports.add(KEY_UP_REPORT)
             }
         }
-        // Never hand the link back with Shift or Ctrl still held.
-        if (held != MOD_NONE) reports.add(KEY_UP_REPORT)
         return reports
     }
 
@@ -164,14 +175,9 @@ object HidKeyMapper {
         return fallback.mapNotNull { map(it) }
     }
 
-    /**
-     * A report that holds [modifier] with no key pressed. Doubles as the
-     * release report between characters, and is [KEY_UP_REPORT] itself when
-     * nothing is held.
-     */
+    /** A report that holds [modifier] with no key pressed. */
     private fun modifierOnly(modifier: Byte): ByteArray =
-        if (modifier == MOD_NONE) KEY_UP_REPORT
-        else byteArrayOf(modifier, 0, 0, 0, 0, 0, 0, 0)
+        byteArrayOf(modifier, 0, 0, 0, 0, 0, 0, 0)
 
     /** The key-down reports one newline expands to under [mode]. */
     private fun newlineKeys(mode: NewlineMode): List<HidReport> = when (mode) {

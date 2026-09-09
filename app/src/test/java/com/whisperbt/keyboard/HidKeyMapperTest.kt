@@ -136,6 +136,56 @@ class HidKeyMapperTest {
         return ' '
     }
 
+    /**
+     * Replay a report stream on a deliberately pessimistic host: one that,
+     * when a single report changes the modifier byte *and* presses a key,
+     * presses the key first and applies the new modifier afterwards. That is
+     * the host behaviour rule 2 exists to work around, and modelling the
+     * worst case is what makes [losing any single report costs at most one
+     * character] a real guarantee rather than a hope.
+     */
+    private fun replayLossy(reports: List<ByteArray>): String {
+        val sb = StringBuilder()
+        var heldMod: Byte = 0
+        var heldKey: Byte = 0
+        for (r in reports) {
+            val mod = r[0]
+            val key = r[2]
+            if (key != 0.toByte() && key != heldKey) {
+                // Pessimistic ordering: the key lands under the modifier the
+                // host had *before* this report.
+                val effective = if (mod != heldMod) heldMod else mod
+                charForOrNull(effective, key)?.let { sb.append(it) }
+            }
+            heldMod = mod
+            heldKey = key
+        }
+        return sb.toString()
+    }
+
+    private fun charForOrNull(modifier: Byte, keycode: Byte): Char? {
+        for (c in ' '..'~') {
+            val r = HidKeyMapper.map(c) ?: continue
+            if (r.modifier == modifier && r.keycode == keycode) return c
+        }
+        if (modifier == 0.toByte() && keycode == HidKeyMapper.KEY_ENTER) return '\n'
+        if (modifier == 0.toByte() && keycode == HidKeyMapper.KEY_TAB) return '\t'
+        return null
+    }
+
+    /** Length of the longest common subsequence — how much survived, in order. */
+    private fun lcsLength(a: String, b: String): Int {
+        val dp = Array(a.length + 1) { IntArray(b.length + 1) }
+        for (i in 1..a.length) {
+            for (j in 1..b.length) {
+                dp[i][j] =
+                    if (a[i - 1] == b[j - 1]) dp[i - 1][j - 1] + 1
+                    else maxOf(dp[i - 1][j], dp[i][j - 1])
+            }
+        }
+        return dp[a.length][b.length]
+    }
+
     @Test
     fun `buildReports emits a down and up pair per character`() {
         val reports = HidKeyMapper.buildReports("ab")
@@ -165,9 +215,8 @@ class HidKeyMapperTest {
     @Test
     fun `shift goes down in a report of its own before the key it shifts`() {
         val reports = HidKeyMapper.buildReports("aB")
-        // a-down, release, shift-down (no key), shift+b-down,
-        // release (shift still held), all-up
-        assertEquals(6, reports.size)
+        // a-down, release, shift-down (no key), shift+b-down, all-up
+        assertEquals(5, reports.size)
         assertEquals(0x00.toByte(), reports[0][0])
         assertTrue(isKeyUp(reports[1]))
 
@@ -177,32 +226,73 @@ class HidKeyMapperTest {
         assertEquals(0x02.toByte(), reports[3][0])
         assertEquals(0x05.toByte(), reports[3][2])
 
-        assertEquals("release keeps shift held", 0x02.toByte(), reports[4][0])
-        assertEquals(0x00.toByte(), reports[4][2])
-        assertTrue("stream ends fully released", isKeyUp(reports[5]))
+        assertTrue("character ends fully released", isKeyUp(reports[4]))
     }
 
     @Test
-    fun `shift is released in a report of its own before an unshifted key`() {
-        val reports = HidKeyMapper.buildReports("Ab")
-        // shift-down, shift+a, release (shift held), shift-up, b, release
-        assertEquals(6, reports.size)
-        assertEquals(0x00.toByte(), reports[3][0])
-        assertEquals("shift release must arrive alone", 0x00.toByte(), reports[3][2])
-        assertEquals(0x00.toByte(), reports[4][0])
-        assertEquals(0x05.toByte(), reports[4][2])
+    fun `modifier state never carries from one character to the next`() {
+        // Holding Shift across a run was tried and reverted: on a link that
+        // loses reports, one lost shift-release poisons everything up to the
+        // next case change ("(shared data contract)" came back as
+        // "(SHARED DATA CONTRACT)"). Every character must stand alone, so
+        // every one of them ends on an all-keys-up report.
+        for (text in listOf("AB", "ABC", "**", "://", "Ab", "aB", "A1!a")) {
+            val reports = HidKeyMapper.buildReports(text)
+            assertTrue("$text must end released", isKeyUp(reports.last()))
+            // Walk the stream: after every key-down the very next report is
+            // all-zeros, so the host's modifier state is 0 between characters.
+            for ((i, r) in reports.withIndex()) {
+                if (r[2] == 0.toByte()) continue
+                assertTrue(
+                    "$text: key-down at $i is not followed by a full release",
+                    isKeyUp(reports[i + 1])
+                )
+            }
+        }
     }
 
     @Test
-    fun `a run of shifted characters holds shift once`() {
-        // Why the release between characters keeps the modifier: "AB" (and
-        // "**", and "://") costs one shift-down, not two.
+    fun `each shifted character re-asserts its own shift`() {
+        // "AB" is shift-down, shift+A, all-up, shift-down, shift+B, all-up —
+        // deliberately NOT one shift held across both.
         val reports = HidKeyMapper.buildReports("AB")
         assertEquals(6, reports.size)
         assertEquals(0x02.toByte(), reports[0][0])
         assertEquals(0x00.toByte(), reports[0][2])
-        for (i in 1..4) assertEquals(0x02.toByte(), reports[i][0])
+        assertEquals(0x04.toByte(), reports[1][2])
+        assertTrue(isKeyUp(reports[2]))
+        assertEquals(0x02.toByte(), reports[3][0])
+        assertEquals(0x00.toByte(), reports[3][2])
+        assertEquals(0x05.toByte(), reports[4][2])
         assertTrue(isKeyUp(reports[5]))
+    }
+
+    @Test
+    fun `losing any single report costs at most one character`() {
+        // Structural check on the stream, not a model of any real host: drop
+        // each report in turn, replay on the pessimistic host below, and
+        // require the damage to stay local. It is a weaker guard than
+        // `modifier state never carries...` above (which is what actually
+        // fails on the held-Shift version) because a real host can misbehave
+        // in ways this model does not reproduce — the field failure came from
+        // the host apparently not honouring a modifier-only report at all.
+        // Keep both: this one catches blast radius, that one catches state.
+        // The real field text, which has exactly the shape that exposed the
+        // stateful version: long unshifted runs between case changes, so one
+        // lost modifier report had ~70 characters to corrupt.
+        val text = "`knowledge-ledger` (shared data contract) ## Attribution " +
+            "This suite derives from **Kieran Klaassen, \"To Read\"** " +
+            "(<https://every.to/source-code>) 2026 v1 100% SKILL.md"
+        val full = HidKeyMapper.buildReports(text)
+        for (drop in full.indices) {
+            val lossy = full.filterIndexed { i, _ -> i != drop }
+            val got = replayLossy(lossy)
+            val wrong = text.length - lcsLength(text, got)
+            assertTrue(
+                "dropping report $drop cost $wrong characters: \"$got\"",
+                wrong <= 1
+            )
+        }
     }
 
     @Test
@@ -321,17 +411,15 @@ class HidKeyMapperTest {
         val reports = HidKeyMapper.buildReports(
             "a\nb", HidKeyMapper.NewlineMode.CTRL_J
         )
-        // a-down, release, ctrl-down, ctrl+j-down, release (ctrl held),
-        // ctrl-up, b-down, release
-        assertEquals(8, reports.size)
+        // a-down, release, ctrl-down, ctrl+j-down, all-up, b-down, release
+        assertEquals(7, reports.size)
         assertEquals("ctrl must arrive alone", 0x01.toByte(), reports[2][0])
         assertEquals(0x00.toByte(), reports[2][2])
         assertEquals(0x01.toByte(), reports[3][0])
         assertEquals(HidKeyMapper.KEY_J, reports[3][2])
-        assertEquals(0x01.toByte(), reports[4][0])
-        assertEquals(0x00.toByte(), reports[4][2])
-        assertTrue("ctrl released before the next key", isKeyUp(reports[5]))
-        assertEquals(0x05.toByte(), reports[6][2])
+        assertTrue("ctrl released with the key", isKeyUp(reports[4]))
+        assertEquals(0x00.toByte(), reports[5][0])
+        assertEquals(0x05.toByte(), reports[5][2])
     }
 
     @Test
