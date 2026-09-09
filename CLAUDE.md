@@ -73,8 +73,80 @@ class of problem as the post-connect settle window above), and a merged
 stream has zero redundancy: every lost report corrupts text. The pair stream
 degrades gracefully — a lost release is healed by the next key-down
 (implicit release), so one lost report costs at most one character. Don't
-re-merge key-ups to shave latency; typing speed comes from lowering
-`keystrokeDelayMs` instead.
+re-merge key-ups to shave latency.
+
+**What limits typing speed is the RECEIVING APPLICATION, not the link.**
+Above some rate the app stops keeping up and characters go missing. This is
+invisible from the phone — `sendReport()` returns true and the send log
+says "0 slow sends", because nothing is congested on *this* side; the
+reports leave and the app never processes them. Same laptop, same Bluetooth
+link, same 500-character paste, three runs:
+
+| app | delay | rate | result |
+|-----|-------|------|--------|
+| vim (paste mode) | 10ms | 91.8 reports/s | byte-identical to the source (972 chars verified) |
+| vim (paste mode) | 5ms | 174 reports/s | byte-identical (1160 chars verified) |
+| vim (paste mode) | 3ms | 268 reports/s | byte-identical (1293 chars verified) |
+| vim (paste mode) | 2ms | 376 reports/s | **FAILS** — a 54-char block gone at offset 697 |
+| vim (paste mode) | 1ms | ~650 reports/s | catastrophic — see below |
+| Notepad | 40ms | 24.0 reports/s | byte-identical (693 chars verified) |
+| Notepad | 20ms | 47.7 reports/s | perfect for 196 characters, then ~7% of the rest corrupted |
+
+**The two failures have different shapes, and the shape tells you which
+one you are looking at.** Just over an app's limit (Notepad at 47.7/s) you
+lose scattered single characters and the odd short run — 1 to 14 characters
+at a time. Far over it (vim at ~650/s) whole *phrases* vanish in contiguous
+blocks: three sampled gaps were 94, 73 and 85 characters, e.g.
+`**Read this first.** The other three skills (...) all read and write`
+arriving as `**Read thiall read and write`. That is an input queue
+overflowing and discarding a batch, not occasional report loss. So don't
+chase `keystrokeDelayMs` toward 0 for speed: `sendReport()` itself costs
+only ~0.6ms, so delay 0 would push ~1600 reports/s and shred the text.
+
+A terminal absorbs nearly **4x** the rate that corrupts Windows 11 Notepad,
+which spell-checks and re-formats on every keystroke. So don't tune this
+against one app and call it the link's ceiling — an earlier pass through
+this investigation concluded "the host drops above ~25 reports/s" and
+defaulted the delay to 40ms, which was Notepad's limit mistaken for the
+system's. Two other readings were wrong along the way and are recorded here
+so they aren't re-derived: damage that starts part-way into a paste is the
+app's input handling falling behind, **not** the host still waking up (that
+is the separate `linkWarmup()` problem, and it shows up at the *front*), and
+it is not a Bluetooth sniff interval either.
+
+So `keystrokeDelayMs` defaults to 10ms (`DEFAULT_SETTINGS.keystrokeDelay`
+matches), which suits the targets this project is for — Claude Code and
+Codex in a terminal. **Raising the default to be safe for a heavyweight
+editor would cost every terminal user 4x their typing speed for nothing.**
+That is what the slider is for; the Settings hint names the measurements.
+At ~2.1 reports/char, 10ms is ~44 characters/s and 40ms is ~11.
+
+**The terminal's ceiling is bracketed to 268-376 reports/s**, found by
+bisecting: 3ms (268/s) clean over 1293 characters, 2ms (376/s) failed
+within 700. **5ms (174/s) is the recommended fast setting** — it is 2.2x
+below the nearest failing rate and still doubles the default's throughput
+(83 characters/s). 3ms is probably genuinely under the threshold (its clean
+run lasted ~2700 reports, well past the ~1470 at which 2ms broke) but sits
+only 29% below a rate that silently eats 54 characters, which is not much
+margin for a busier machine or a different app.
+
+10ms stays the default because a default protects whoever never touches
+the slider: 4x margin, and this failure is silent and destructive. Nothing
+in the log distinguishes a good send from one that dropped half a sentence.
+
+Three things learned the hard way while measuring this:
+
+- **Block size scales with how far over you are.** 376 reports/s lost one
+  54-character block; ~650/s lost blocks of 73-94. Near the threshold the
+  loss is small and contiguous, so it hides inside a long paste.
+- **Faster settings buy less wall-clock time per character.** The 3ms run
+  is 1293 characters but only 7.7 seconds — *shorter* than the 5ms run's
+  13.3s. Bisecting downward on a fixed-length paste makes each test weaker
+  than the last. Paste more, not the same.
+- **Diff, don't eyeball.** Every "clean" result above was compared
+  character-by-character against the source. The 2ms failure is one missing
+  clause in the middle of a paragraph — it reads as perfectly fluent text
+  and no reader would catch it.
 
 **A modifier gets a report of its own before the key it modifies.** Shift
 going down in the same report as the key it shifts is a coin flip: the host
@@ -129,17 +201,22 @@ has that key held, and a thread descheduled past the host's typematic delay
 "sssssssssssso it is written". The phone is also running Parakeet and a
 llama-server, so default priority is not safe here.
 
-`keystrokeDelayMs` is the pause after each report (skipped entirely at 0).
-The PWA's Keystroke delay setting is sent as `delay_ms` in each `/type`
-request body and sticks until the next override; `/status` reports it as
-`keystroke_delay_ms`. At 0 delay the stack can refuse to queue a report
-under congestion — `sendReportReliably()` retries with a short backoff.
-**It is also the first thing to raise when text arrives with characters
-missing in bursts.** Sends beyond what the link absorbs are lost silently
-(`sendReport()` returns true), so the visible symptom is dropped characters,
-not an error; the server caps `delay_ms` at 100ms. Every send logs
-"Typed N chars as M reports in Tms (delay=Dms, K slow sends)" to `/logs` —
-compare M against the elapsed time to see whether the link kept up.
+`keystrokeDelayMs` is the pause after each report (skipped entirely at 0),
+default 10ms — see the per-application ceiling above. The PWA's Keystroke delay
+setting is sent as `delay_ms` in each `/type` request body and sticks until
+the next override; `/status` reports it as `keystroke_delay_ms`, and the
+server caps it at 100ms. At 0 delay the stack can *also* refuse to queue a
+report under congestion — `sendReportReliably()` retries with a short
+backoff — but that is a different failure from the host-side drops, and the
+log line tells them apart.
+
+Every send logs "Typed N chars as M reports in Tms (delay=Dms, K slow
+sends)" to `/logs`. Reading it: `M/N` should be ~2.1 (more if the text is
+shift-heavy); `T/M` is the achieved per-report interval and should be about
+`delay_ms + 1`, since `sendReport()` itself costs ~1ms. **`K` non-zero means
+the phone's stack is congested; `K` zero with corrupted text means the
+receiving app is dropping and the delay is too low for that app.** So far
+only the latter has been seen in the field.
 
 **Stuck-key hazard**: if the *final* release of a send is lost (a dropped
 report, an abort mid-stream), there is no later key-down to heal it and the

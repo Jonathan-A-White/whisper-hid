@@ -99,6 +99,12 @@ export interface Settings {
   claudeCodeNewlines?: boolean;
   /** Set after the one-time claudeCodeNewlines -> target migration. */
   targetMigrated?: boolean;
+  /**
+   * Pause after each HID report, in ms. What it has to clear is the
+   * receiving *application* — a terminal swallowed 91 reports/s cleanly
+   * while Windows 11 Notepad started losing characters above ~25/s. 10ms
+   * suits a terminal; raise it for a heavyweight editor. See CLAUDE.md.
+   */
   keystrokeDelay: number;
   whisperModel: string;
   language: string;

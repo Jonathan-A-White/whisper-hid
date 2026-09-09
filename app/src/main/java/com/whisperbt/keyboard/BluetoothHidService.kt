@@ -189,8 +189,26 @@ class BluetoothHidService : Service() {
     private var lastKnownDevice: BluetoothDevice? = null
     private var btState = BtState.IDLE
     // Pause after each HID report while typing. Overridable per /type request
-    // via "delay_ms" (the PWA sends its Keystroke delay setting). 0 = send at
-    // whatever rate the BT stack accepts; sendReportReliably absorbs congestion.
+    // via "delay_ms" (the PWA sends its Keystroke delay setting).
+    //
+    // What limits this is the RECEIVING APPLICATION, not the link, the
+    // Windows HID stack, or anything on the phone. Same laptop, same
+    // Bluetooth link, same 500-char paste, three runs:
+    //
+    //   vim (paste mode)  delay=10ms -> 1055 reports in 11497ms (91.8/s):
+    //                     byte-identical to the source, 972 chars verified
+    //   Notepad           delay=40ms -> 1055 reports in 43878ms (24.0/s):
+    //                     byte-identical, 693 chars verified
+    //   Notepad           delay=20ms -> 1055 reports in 22135ms (47.7/s):
+    //                     perfect for 196 chars, then ~7% of the rest lost
+    //
+    // A terminal takes nearly 4x the rate that corrupts Windows 11 Notepad,
+    // which spell-checks and re-formats on every keystroke. So 10ms suits
+    // the targets this project is actually for (Claude Code and Codex in a
+    // terminal), and the slider is there for a heavyweight editor. The loss
+    // is invisible from here either way: sendReport() returns true and the
+    // log line says "0 slow sends", because nothing is congested on the
+    // phone — the reports leave and the app never processes them.
     @Volatile var keystrokeDelayMs: Long = 10L
 
     // Cancellation for in-progress/queued sends: each send task captures the

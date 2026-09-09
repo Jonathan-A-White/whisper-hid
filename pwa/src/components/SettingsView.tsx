@@ -6,6 +6,28 @@ import { SymbolReplacements } from "./SymbolReplacements";
 import { ModelBenchmark } from "./ModelBenchmark";
 import { CleanupSettings } from "./CleanupSettings";
 
+/**
+ * What the delay has to clear is the receiving *application*, and they
+ * differ by a lot. Same laptop, same link, same 500-character paste:
+ * vim in a terminal took 10ms (91 reports/s) with the text byte-identical,
+ * while Windows 11 Notepad — which spell-checks and re-formats on every
+ * keystroke — needed 40ms (24/s) and lost ~7% of the text at 20ms (48/s).
+ * So there is no single safe number to warn against; this is only the
+ * threshold below which the hint about slow editors is worth showing.
+ */
+const HEAVY_EDITOR_HINT_BELOW_MS = 40;
+
+/**
+ * Characters per second at a given delay. The stream costs ~2.1 reports per
+ * character (a key-down and a release, plus a modifier report on shifted
+ * ones) and sendReport itself measures ~1ms, so the delay is nearly the
+ * whole cost.
+ */
+function typingCharsPerSec(delayMs: number): string {
+  const perReportMs = delayMs + 1;
+  return (1000 / perReportMs / 2.11).toFixed(delayMs >= 10 ? 0 : 1);
+}
+
 interface SettingsViewProps {
   settings: Settings;
   onUpdate: (partial: Partial<Settings>) => void;
@@ -139,11 +161,15 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
       <div>
         <label className="text-sm text-gray-300 block mb-1">
           Keystroke delay: {settings.keystrokeDelay}ms
+          <span className="text-gray-500">
+            {" — about "}
+            {typingCharsPerSec(settings.keystrokeDelay)} characters/sec
+          </span>
         </label>
         <input
           type="range"
           min={0}
-          max={50}
+          max={100}
           value={settings.keystrokeDelay}
           onChange={(e) =>
             onUpdate({ keystrokeDelay: parseInt(e.target.value) })
@@ -151,9 +177,19 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
           className="w-full accent-sky-500"
         />
         <p className="text-xs text-gray-500 mt-1">
-          Pause between keystrokes. 0 = fastest; raise it if the receiving
-          computer drops or scrambles characters.
+          Pause between keystrokes. How low you can go depends on the app
+          you're typing into, not the computer — a terminal is good down to
+          5ms, a heavier editor may need 40ms or more. Below that a
+          terminal starts dropping whole clauses silently.
         </p>
+        {settings.keystrokeDelay < HEAVY_EDITOR_HINT_BELOW_MS && (
+          <p className="text-xs text-amber-500 mt-1">
+            If a long paste loses characters part-way through, raise this.
+            Measured: vim in a terminal was perfect at 10ms, while Windows
+            Notepad needed {HEAVY_EDITOR_HINT_BELOW_MS}ms and dropped ~7% of
+            a paste at 20ms.
+          </p>
+        )}
       </div>
 
       {/* Toggle: Noise reduction */}
