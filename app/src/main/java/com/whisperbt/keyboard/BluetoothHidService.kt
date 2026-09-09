@@ -86,6 +86,20 @@ class BluetoothHidService : Service() {
         // to bring the host's input pipe back up before the first real key.
         internal const val IDLE_WAKE_AFTER_MS = 5_000L
         internal const val IDLE_WAKE_MS = 1_000L
+
+        // How deeply the host has powered the input pipe down scales with how
+        // long it was left alone: a 10s gap between dictations is a light doze
+        // (1s of pulses wakes it), but a link untouched for minutes — the user
+        // went off to copy something, or the phone was in a pocket — is in
+        // full selective suspend, and 1s of pulses is not enough. A field send
+        // after exactly that kind of pause arrived with its first ~250
+        // characters mangled: dropped letters in bursts and Shifts that never
+        // landed, then clean text once the host had properly woken. So a long
+        // idle buys a longer wake. It only costs latency on the first send
+        // after a real pause, which is already the send nobody is waiting on
+        // keystroke-by-keystroke.
+        internal const val LONG_IDLE_AFTER_MS = 60_000L
+        internal const val LONG_IDLE_WAKE_MS = 2_500L
         private const val WAKE_PULSE_INTERVAL_MS = 100L
 
         // Retry budget for a sendReport() the stack refuses to queue
@@ -150,9 +164,14 @@ class BluetoothHidService : Service() {
                 return LinkWarmup(CONNECT_SETTLE_MS - sinceConnect, "link connected ${sinceConnect}ms ago")
             }
             if (lastReportAtMs == 0L) {
-                return LinkWarmup(IDLE_WAKE_MS, "no report sent yet on this link")
+                // Coldest case there is: settled, but nothing has ever gone
+                // over this link. Treat it as a long idle.
+                return LinkWarmup(LONG_IDLE_WAKE_MS, "no report sent yet on this link")
             }
             val sinceReport = nowMs - lastReportAtMs
+            if (sinceReport > LONG_IDLE_AFTER_MS) {
+                return LinkWarmup(LONG_IDLE_WAKE_MS, "link idle for ${sinceReport / 1000}s")
+            }
             if (sinceReport > IDLE_WAKE_AFTER_MS) {
                 return LinkWarmup(IDLE_WAKE_MS, "link idle for ${sinceReport / 1000}s")
             }
@@ -192,7 +211,22 @@ class BluetoothHidService : Service() {
     // input pipe and needs waking before real keys (see waitForLinkReady).
     @Volatile private var lastReportAtMs: Long = 0L
 
-    private val executor = Executors.newSingleThreadExecutor()
+    // Keystrokes run on one thread, at raised priority. Between a key-down
+    // report and its release the host has that key *held*, and if this thread
+    // is descheduled for longer than the host's typematic delay (~0.5s) the
+    // held key auto-repeats — a field send came out with "so it is written"
+    // as "sssssssssssso it is written". Half a second is nothing to ask for
+    // on a phone that is also running Parakeet and a llama-server, so don't
+    // leave this thread at default priority. URGENT_DISPLAY is the input
+    // pipeline's band; audio priority would be overreach for typing.
+    private val executor = Executors.newSingleThreadExecutor { r ->
+        Thread({
+            android.os.Process.setThreadPriority(
+                android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
+            )
+            r.run()
+        }, "hid-keystrokes")
+    }
     private val handler = Handler(Looper.getMainLooper())
     private var serverSocket: ServerSocket? = null
     private var httpThread: Thread? = null

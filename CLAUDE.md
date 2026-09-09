@@ -41,7 +41,8 @@ was the residual front-truncation seen after the settle delay alone shipped.
 (pure, unit-tested in `LinkWarmupTest`) decides how long to warm the link —
 the remainder of `CONNECT_SETTLE_MS` (1.5s) after `connectedAtMs`, or
 `IDLE_WAKE_MS` (1s) when `lastReportAtMs` is older than `IDLE_WAKE_AFTER_MS`
-(5s) or unset — and `waitForLinkReady()` spends that window pumping
+(5s), or `LONG_IDLE_WAKE_MS` (2.5s) past `LONG_IDLE_AFTER_MS` (60s) and when
+`lastReportAtMs` is unset — and `waitForLinkReady()` spends that window pumping
 all-keys-up reports every 100ms (a no-op when delivered, so losing them costs
 nothing, but they wake the host and keep it awake). It runs inside the
 single-threaded keystroke executor, so it never blocks the HTTP handler (which
@@ -51,8 +52,16 @@ these waits** to shave latency; without them the first dictation after any
 reconnect or pause loses its opening words. Look for "Warming up HID link for
 Nms before typing (reason)" in HID `/logs` — it names which case fired.
 
+How deep the host's sleep is scales with how long it was left alone, so the
+wake does too. A 10s gap between dictations is a doze; a link untouched for a
+minute or more (the user went off to copy something) is in full selective
+suspend, and 1s of pulses was not enough for it — a large clipboard paste
+after exactly that pause arrived with its first ~250 characters mangled
+(dropped letters in bursts, Shifts that never landed), then clean once the
+host had properly woken.
+
 ## Bluetooth HID typing: throughput and reliability for large text
-`HidKeyMapper.buildReports()` emits an explicit key-down + all-up pair per
+`HidKeyMapper.buildReports()` emits an explicit key-down + release pair per
 character (2 reports/char). A merged stream (key-up folded into the next
 key-down, ~1 report/char, like a fast typist overlapping keys) was tried to
 double throughput and **REVERTED after field testing**: on a real host it
@@ -66,6 +75,41 @@ degrades gracefully — a lost release is healed by the next key-down
 (implicit release), so one lost report costs at most one character. Don't
 re-merge key-ups to shave latency; typing speed comes from lowering
 `keystrokeDelayMs` instead.
+
+**A modifier change never shares a report with a keycode change.** Shift
+going down in the same report as the key it shifts is a coin flip: the host
+decides in what order to turn one report into input events, and one that
+presses the key before applying the new modifier byte types the *unshifted*
+character. A field paste came out as `"To Read—Or Not to Read the Code?"` →
+`'to readOr notead THE Code?"` — capitals arriving lowercase, `<` as `,`
+(Shift+comma losing its Shift), `## Role` as `## role`. The mirror image is a
+lost release followed by an unshifted key-down, where the host applies the key
+before clearing Shift and types capitals nobody asked for (`the` → `THE`,
+`github.com` → `GitHub.com`). So a character whose modifier differs from the
+one currently held gets a **modifier-only report first** (modifier byte set,
+no keycode), exactly as a human presses Shift before the letter; the release
+between characters keeps the modifier held, so a run of capitals or of `**`
+pays for Shift once, and the stream always ends fully released. Costs ~5% more
+reports on prose (case changes only) — unshifted runs are byte-identical to
+what shipped before. Don't fold the modifier back into the key-down report.
+
+**Characters a US keyboard has no key for get an ASCII stand-in, not the
+floor.** `HidKeyMapper.asciiFallback()` maps em/en dashes, curly quotes,
+ellipses, exotic spaces, arrows and accented Latin letters to typeable ASCII
+(`—` → `--`, `…` → `...`, `café` → `cafe`); expansion runs before `map()`, so
+`map()` still answers only for single keystrokes. They used to be dropped
+silently mid-word — "a program — most of it" arrived as "a program  most of
+it" — and they are not rare: the cleanup LLM emits typographic punctuation as
+a matter of course. Every fallback must itself expand to mapped characters
+(there is a test for that). Genuinely un-transliterable input (CJK, emoji)
+still types nothing.
+
+**Keystrokes run at raised thread priority** (`hid-keystrokes`,
+`THREAD_PRIORITY_URGENT_DISPLAY`). Between a key-down and its release the host
+has that key held, and a thread descheduled past the host's typematic delay
+(~0.5s) gets auto-repeat: a field send typed "so it is written" as
+"sssssssssssso it is written". The phone is also running Parakeet and a
+llama-server, so default priority is not safe here.
 
 `keystrokeDelayMs` is the pause after each report (skipped entirely at 0).
 The PWA's Keystroke delay setting is sent as `delay_ms` in each `/type`

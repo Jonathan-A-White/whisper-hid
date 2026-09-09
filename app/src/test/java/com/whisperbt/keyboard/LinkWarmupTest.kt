@@ -3,6 +3,8 @@ package com.whisperbt.keyboard
 import com.whisperbt.keyboard.BluetoothHidService.Companion.CONNECT_SETTLE_MS
 import com.whisperbt.keyboard.BluetoothHidService.Companion.IDLE_WAKE_AFTER_MS
 import com.whisperbt.keyboard.BluetoothHidService.Companion.IDLE_WAKE_MS
+import com.whisperbt.keyboard.BluetoothHidService.Companion.LONG_IDLE_AFTER_MS
+import com.whisperbt.keyboard.BluetoothHidService.Companion.LONG_IDLE_WAKE_MS
 import com.whisperbt.keyboard.BluetoothHidService.Companion.linkWarmup
 import org.junit.Assert.*
 import org.junit.Test
@@ -34,11 +36,12 @@ class LinkWarmupTest {
     }
 
     @Test
-    fun `settled link with no report yet gets an idle wake`() {
+    fun `settled link with no report yet gets the long wake`() {
+        // Nothing has ever gone over this link: the coldest host there is.
         val now = connectedAt + CONNECT_SETTLE_MS + 30_000
         val warmup = linkWarmup(now, connectedAt, lastReportAtMs = 0L)
         assertNotNull(warmup)
-        assertEquals(IDLE_WAKE_MS, warmup!!.waitMs)
+        assertEquals(LONG_IDLE_WAKE_MS, warmup!!.waitMs)
     }
 
     @Test
@@ -73,9 +76,32 @@ class LinkWarmupTest {
     }
 
     @Test
+    fun `a link left alone for minutes gets a longer wake than a short pause`() {
+        // The field case: the user goes off to copy something, comes back and
+        // pastes. 1s of pulses was not enough to bring the host's input pipe
+        // back up — the first ~250 characters arrived mangled.
+        val now = connectedAt + 3_600_000
+        val warmup = linkWarmup(now, connectedAt, now - LONG_IDLE_AFTER_MS - 1)
+        assertNotNull(warmup)
+        assertEquals(LONG_IDLE_WAKE_MS, warmup!!.waitMs)
+        assertTrue(warmup.reason, warmup.reason.contains("idle"))
+    }
+
+    @Test
+    fun `a link idle for exactly the long threshold still gets the short wake`() {
+        val now = connectedAt + 3_600_000
+        val warmup = linkWarmup(now, connectedAt, now - LONG_IDLE_AFTER_MS)
+        assertEquals(IDLE_WAKE_MS, warmup!!.waitMs)
+    }
+
+    @Test
     fun `wake window is short enough to be unnoticed after transcription`() {
-        // Sanity bound so a future tweak doesn't turn every dictation into a wait.
+        // Sanity bounds so a future tweak doesn't turn every dictation into a
+        // wait. The long wake is only paid after a real pause, so it gets more
+        // room — but not unbounded.
         assertTrue(IDLE_WAKE_MS <= 2_000)
         assertTrue(IDLE_WAKE_AFTER_MS >= 2_000)
+        assertTrue(LONG_IDLE_WAKE_MS in IDLE_WAKE_MS..3_000)
+        assertTrue(LONG_IDLE_AFTER_MS > IDLE_WAKE_AFTER_MS)
     }
 }
