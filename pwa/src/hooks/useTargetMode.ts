@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { getTarget, putTarget } from "../lib/api";
-import type { NewlineMode, Settings, TargetInfo, TargetMode } from "../types";
+import type {
+  NewlineMode,
+  Settings,
+  TargetInfo,
+  TargetMode,
+  TargetState,
+} from "../types";
 
 /**
  * The target app mode — which app the keystrokes are going to (Claude Code,
@@ -10,10 +16,12 @@ import type { NewlineMode, Settings, TargetInfo, TargetMode } from "../types";
  * the server needs it too, to name the right assistant in the "prompt"
  * cleanup style and to seed the glossary, and keeping one copy avoids the
  * two drifting apart. `newlineMode` is the server's mapping from target to
- * keystrokes, which every /type call carries to the HID service.
+ * keystrokes, which every /type call carries to the HID service, and
+ * `submitNewlineMode` is the same for the deliberate Enter that submits.
  *
  * A server older than 1.9.0 has no /target: `available` stays false, the
- * pill hides, and sends fall back to a plain Enter.
+ * pill hides, and sends fall back to a plain Enter. One older than 1.9.1
+ * has no submit mode, which is also a plain Enter.
  */
 export function useTargetMode(
   settings: Settings,
@@ -22,15 +30,14 @@ export function useTargetMode(
   const [target, setTargetState] = useState<TargetMode | null>(null);
   const [targets, setTargets] = useState<TargetInfo[]>([]);
   const [newlineMode, setNewlineMode] = useState<NewlineMode>("enter");
+  const [submitNewlineMode, setSubmitNewlineMode] = useState<NewlineMode>("enter");
 
-  const apply = useCallback(
-    (state: { target: TargetMode; newline_mode: NewlineMode; targets: TargetInfo[] }) => {
-      setTargetState(state.target);
-      setNewlineMode(state.newline_mode);
-      setTargets(state.targets);
-    },
-    []
-  );
+  const apply = useCallback((state: TargetState) => {
+    setTargetState(state.target);
+    setNewlineMode(state.newline_mode);
+    setSubmitNewlineMode(state.submit_newline_mode ?? "enter");
+    setTargets(state.targets);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -70,19 +77,21 @@ export function useTargetMode(
     async (next: TargetMode) => {
       const previous = target;
       const previousNewline = newlineMode;
+      const previousSubmit = submitNewlineMode;
       // Optimistic so the pill responds instantly; reverted on failure.
+      const info = targets.find((t) => t.name === next);
       setTargetState(next);
-      setNewlineMode(
-        targets.find((t) => t.name === next)?.newline_mode ?? previousNewline
-      );
+      setNewlineMode(info?.newline_mode ?? previousNewline);
+      setSubmitNewlineMode(info?.submit_newline_mode ?? "enter");
       try {
         apply(await putTarget(next));
       } catch {
         setTargetState(previous);
         setNewlineMode(previousNewline);
+        setSubmitNewlineMode(previousSubmit);
       }
     },
-    [target, newlineMode, targets, apply]
+    [target, newlineMode, submitNewlineMode, targets, apply]
   );
 
   return {
@@ -90,6 +99,8 @@ export function useTargetMode(
     target,
     targets,
     newlineMode,
+    /** how the deliberate "submit" newline is typed for this target */
+    submitNewlineMode,
     available: target !== null,
     setTarget,
   };

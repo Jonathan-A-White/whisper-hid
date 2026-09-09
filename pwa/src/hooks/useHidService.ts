@@ -30,10 +30,14 @@ const SUBMIT_SETTLE_MS = 250;
  *   target app (see useTargetMode). Applies to every send, so multi-line
  *   text (a "prompt"-style cleanup with bullets, a pasted clipboard) doesn't
  *   submit itself line by line in a CLI composer.
+ * @param submitNewlineMode how the deliberate final newline is typed — also
+ *   per target, because "submit this prompt" is its own keystroke problem
+ *   (see sendNewline).
  */
 export function useHidService(
   settings: Settings,
-  newlineMode: NewlineMode = "enter"
+  newlineMode: NewlineMode = "enter",
+  submitNewlineMode: NewlineMode = "enter"
 ) {
   const [status, setStatus] = useState<HidStatus | null>(null);
   const [reachable, setReachable] = useState(false);
@@ -166,22 +170,23 @@ export function useHidService(
   }, []);
 
   // The deliberate Enter at the end of a dictation ("Newline after end of
-  // recording"): always a real Enter, never the target's soft newline —
-  // submitting the prompt is the whole point of it. It also waits
-  // SUBMIT_SETTLE_MS after the text has finished typing, so the composer
-  // reads it as a keypress rather than the tail of a paste (see
-  // SUBMIT_SETTLE_MS and BluetoothHidService.sendString).
+  // recording"): never the target's soft newline — submitting the prompt is
+  // the whole point of it. Two guards make it actually submit: the target's
+  // submit mode (Codex needs End before the Enter to leave paste-burst
+  // state), and SUBMIT_SETTLE_MS of silence after the text finished typing
+  // so the keystroke doesn't look like the tail of a paste. See
+  // SUBMIT_SETTLE_MS and BluetoothHidService.sendString.
   const sendNewline = useCallback(async () => {
     if (status?.bluetooth !== "connected") return;
     try {
-      await hidType("\n", "", undefined, "enter", SUBMIT_SETTLE_MS);
+      await hidType("\n", "", undefined, submitNewlineMode, SUBMIT_SETTLE_MS);
     } catch (e) {
       if (e instanceof Error && e.message === "AUTH_FAILED") {
         setAuthError(true);
         clearToken();
       }
     }
-  }, [status?.bluetooth]);
+  }, [status?.bluetooth, submitNewlineMode]);
 
   const restart = useCallback(async () => {
     try {

@@ -938,6 +938,7 @@ class BluetoothHidService : Service() {
             typing.incrementAndGet()
             try {
                 if (preDelayMs > 0) {
+                    addLog("info", "Settling ${preDelayMs}ms before typing (quiet gap requested)")
                     Thread.sleep(preDelayMs)
                     if (typeGeneration.get() != gen) {
                         addLog("info", "Send aborted by stop request")

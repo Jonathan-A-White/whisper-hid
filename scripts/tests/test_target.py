@@ -62,6 +62,33 @@ class TestNewlineModes:
             assert profile["newline_mode"] in valid, name
 
 
+class TestSubmitNewlineModes:
+    """The deliberate final Enter is its own per-target keystroke problem."""
+
+    def test_plain_and_claude_submit_with_a_bare_enter(self, server):
+        for target in ("plain", "claude"):
+            server.target_settings = {"target": target}
+            assert server.target_profile()["submit_newline_mode"] == "enter"
+
+    def test_codex_presses_end_before_the_enter(self, server):
+        # Codex CLI holds fast keystrokes as a paste and turns an Enter that
+        # arrives in that state into a newline; End clears it.
+        server.target_settings = {"target": "codex"}
+        assert server.target_profile()["submit_newline_mode"] == "end_enter"
+
+    def test_no_target_submits_with_a_soft_newline(self, server):
+        # A submit mode that doesn't submit would silently lose every
+        # dictation, so keep the soft-newline modes out of this field.
+        soft = {"ctrl_j", "backslash_enter"}
+        for name, profile in server.TARGET_PROFILES.items():
+            assert profile["submit_newline_mode"] not in soft, name
+
+    def test_every_profile_declares_a_submit_newline_mode(self, server):
+        valid = {"enter", "end_enter"}
+        for name, profile in server.TARGET_PROFILES.items():
+            assert profile["submit_newline_mode"] in valid, name
+
+
 class TestPersistence:
     def test_unknown_target_falls_back_to_default(self, server):
         server.target_settings = {"target": "emacs"}
@@ -99,7 +126,10 @@ class TestTargetApi:
         body = res.get_json()
         assert body["target"] == "claude"
         assert body["newline_mode"] == "backslash_enter"
+        assert body["submit_newline_mode"] == "enter"
         assert {t["name"] for t in body["targets"]} == set(server.TARGET_PROFILES)
+        codex = next(t for t in body["targets"] if t["name"] == "codex")
+        assert codex["submit_newline_mode"] == "end_enter"
 
     def test_put_sets_and_persists(self, client, server):
         res = client.put("/target", json={"target": "codex"})
@@ -124,6 +154,7 @@ class TestTargetApi:
         body = client.get("/status").get_json()
         assert body["target"] == "codex"
         assert body["target_newline_mode"] == "ctrl_j"
+        assert body["target_submit_newline_mode"] == "end_enter"
 
 
 class TestCleanupStyleWording:
