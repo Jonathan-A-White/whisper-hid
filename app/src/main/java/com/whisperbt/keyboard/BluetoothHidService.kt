@@ -112,6 +112,9 @@ class BluetoothHidService : Service() {
         private const val RELEASE_RETRY_ATTEMPTS = 10
         private const val RELEASE_RETRY_BACKOFF_MS = 50L
 
+        // Ceiling for the /type "pre_delay_ms" pause (see sendString).
+        internal const val MAX_PRE_DELAY_MS = 2_000L
+
         // Standard USB HID keyboard descriptor (boot protocol compatible).
         private val HID_DESCRIPTOR = byteArrayOf(
             0x05.toByte(), 0x01.toByte(), // Usage Page (Generic Desktop)
@@ -887,9 +890,26 @@ class BluetoothHidService : Service() {
         releaseAllKeys(hid, device)
     }
 
+    /**
+     * Type [text], expanding any `\n` per [newlineMode].
+     *
+     * [preDelayMs] pauses before the first report of this send — a *quiet*
+     * pause: no reports at all, so the host sees the keyboard go idle. CLI
+     * composers group fast-arriving keystrokes into a "paste" and then treat
+     * an Enter that lands close behind them as part of that paste (a newline)
+     * rather than as a submit: Codex CLI calls 3 chars at ≤8ms intervals a
+     * burst and suppresses submit for 120ms after it ends. Dictation types at
+     * a few ms per keystroke, so a following Enter always landed inside that
+     * window and the prompt was never sent. The pause runs inside the
+     * keystroke executor, after everything queued ahead of it has finished
+     * typing, so the gap is measured from the last real keystroke — which is
+     * the only place it can be measured; the HTTP handler returned 200 long
+     * before the text was typed. `POST /stop` still cuts it short.
+     */
     fun sendString(
         text: String,
-        newlineMode: HidKeyMapper.NewlineMode = HidKeyMapper.NewlineMode.ENTER
+        newlineMode: HidKeyMapper.NewlineMode = HidKeyMapper.NewlineMode.ENTER,
+        preDelayMs: Long = 0L
     ) {
         val device = connectedDevice ?: return
         val hid = hidDevice ?: return
@@ -899,6 +919,13 @@ class BluetoothHidService : Service() {
             if (typeGeneration.get() != gen) return@execute // cancelled while queued
             typing.incrementAndGet()
             try {
+                if (preDelayMs > 0) {
+                    Thread.sleep(preDelayMs)
+                    if (typeGeneration.get() != gen) {
+                        addLog("info", "Send aborted by stop request")
+                        return@execute
+                    }
+                }
                 if (!waitForLinkReady(hid, device, gen)) {
                     addLog("info", "Send aborted by stop request")
                     return@execute
@@ -1153,6 +1180,12 @@ class BluetoothHidService : Service() {
             val newlineMode = HidKeyMapper.NewlineMode.fromWire(
                 if (json.has("newline_mode")) json.optString("newline_mode") else null
             )
+            // Quiet pause before this send's first keystroke, so a CLI
+            // composer doesn't mistake it for the tail of the paste it just
+            // received. The PWA sets it on the final submit Enter; see
+            // sendString. Not sticky — it belongs to one request.
+            val preDelayMs = json.optLong("pre_delay_ms", 0L)
+                .coerceIn(0L, MAX_PRE_DELAY_MS)
 
             if (text.isEmpty()) {
                 sendResponse(output, 400, JSONObject().put("ok", false).put("error", "empty_text"))
@@ -1167,7 +1200,7 @@ class BluetoothHidService : Service() {
                 return
             }
 
-            sendString(text + append, newlineMode)
+            sendString(text + append, newlineMode, preDelayMs)
             sendResponse(output, 200, JSONObject().put("ok", true))
         } catch (e: Exception) {
             sendResponse(output, 500, JSONObject().put("ok", false).put("error", e.message ?: "unknown"))

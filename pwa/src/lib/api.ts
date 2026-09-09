@@ -382,7 +382,8 @@ export async function hidType(
   text: string,
   append: string = " ",
   delayMs?: number,
-  newlineMode?: NewlineMode
+  newlineMode?: NewlineMode,
+  preDelayMs?: number
 ) {
   const epoch = typeEpoch;
   // delay_ms carries the PWA's "Keystroke delay" setting to the HID service
@@ -393,6 +394,13 @@ export async function hidType(
   // key. Omitted = Enter, which is also what an older APK does with it.
   const newlineField =
     newlineMode && newlineMode !== "enter" ? { newline_mode: newlineMode } : {};
+  // pre_delay_ms makes the HID service go quiet for a moment before typing
+  // this text, once everything queued ahead of it has been typed. Used by the
+  // submit Enter (see sendNewline). An older APK ignores it.
+  const preDelayField =
+    preDelayMs !== undefined && preDelayMs > 0
+      ? { pre_delay_ms: preDelayMs }
+      : {};
 
   // Break large text into chunks to avoid overwhelming the HID service's
   // simple HTTP server. Send chunks sequentially; only the last chunk
@@ -400,7 +408,13 @@ export async function hidType(
   if (text.length <= HID_TYPE_CHUNK_SIZE) {
     const res = await hidFetch("/type", {
       method: "POST",
-      body: JSON.stringify({ text, append, ...delayField, ...newlineField }),
+      body: JSON.stringify({
+        text,
+        append,
+        ...delayField,
+        ...newlineField,
+        ...preDelayField,
+      }),
     });
     if (res.status === 403) {
       throw new Error("AUTH_FAILED");
@@ -424,6 +438,9 @@ export async function hidType(
         append: isLast ? append : "",
         ...delayField,
         ...newlineField,
+        // The pause belongs before the first keystroke of the text, not
+        // between its chunks — later chunks continue the same typing.
+        ...(i === 0 ? preDelayField : {}),
       }),
     });
     if (res.status === 403) {

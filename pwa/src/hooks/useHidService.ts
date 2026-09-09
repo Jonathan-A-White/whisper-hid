@@ -10,6 +10,22 @@ import {
 import type { HidStatus, NewlineMode, QueuedText, Settings } from "../types";
 
 /**
+ * Quiet gap between the dictated text and the Enter that submits it.
+ *
+ * CLI composers group keystrokes that arrive in a burst into a "paste" and
+ * treat an Enter close behind them as part of it — a newline, not a submit.
+ * Codex CLI's window is 120ms after the last burst keystroke; dictation types
+ * at a few ms per character, so without a gap the Enter always landed inside
+ * it and the prompt sat there unsent. 250ms clears that window with room for
+ * link jitter and is unnoticeable at the end of a dictation.
+ *
+ * The HID service does the waiting (`pre_delay_ms`), because only it knows
+ * when the text actually finished typing — /type returns as soon as the send
+ * is queued.
+ */
+const SUBMIT_SETTLE_MS = 250;
+
+/**
  * @param newlineMode how a "\n" is typed on the host — comes from the active
  *   target app (see useTargetMode). Applies to every send, so multi-line
  *   text (a "prompt"-style cleanup with bullets, a pasted clipboard) doesn't
@@ -151,11 +167,14 @@ export function useHidService(
 
   // The deliberate Enter at the end of a dictation ("Newline after end of
   // recording"): always a real Enter, never the target's soft newline —
-  // submitting the prompt is the whole point of it.
+  // submitting the prompt is the whole point of it. It also waits
+  // SUBMIT_SETTLE_MS after the text has finished typing, so the composer
+  // reads it as a keypress rather than the tail of a paste (see
+  // SUBMIT_SETTLE_MS and BluetoothHidService.sendString).
   const sendNewline = useCallback(async () => {
     if (status?.bluetooth !== "connected") return;
     try {
-      await hidType("\n", "", undefined, "enter");
+      await hidType("\n", "", undefined, "enter", SUBMIT_SETTLE_MS);
     } catch (e) {
       if (e instanceof Error && e.message === "AUTH_FAILED") {
         setAuthError(true);
