@@ -2,6 +2,7 @@ import { useState } from "react";
 import { hasToken } from "./lib/api";
 import { useWhisper } from "./hooks/useWhisper";
 import { useHidService } from "./hooks/useHidService";
+import { useTargetMode } from "./hooks/useTargetMode";
 import { useTranscriptStore } from "./hooks/useTranscriptStore";
 import { StatusBar } from "./components/StatusBar";
 import { TalkView } from "./components/TalkView";
@@ -28,10 +29,6 @@ export default function App() {
   const [showDebug, setShowDebug] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
 
-  const whisper = useWhisper();
-  const hid = useHidService(settings);
-  const store = useTranscriptStore();
-
   const updateSettings = (partial: Partial<Settings>) => {
     setSettings((prev) => {
       const next = { ...prev, ...partial };
@@ -39,6 +36,13 @@ export default function App() {
       return next;
     });
   };
+
+  const whisper = useWhisper();
+  // Which app the keystrokes are going to; its newline mode rides along with
+  // every /type so line breaks don't submit a CLI prompt halfway through.
+  const target = useTargetMode(settings, updateSettings);
+  const hid = useHidService(settings, target.newlineMode);
+  const store = useTranscriptStore();
 
   // No auth token = first launch on a new phone. Show the guided setup
   // checklist instead of a dead-end error; it detects each component as it
@@ -91,6 +95,7 @@ export default function App() {
             whisper={whisper}
             hid={hid}
             store={store}
+            target={target}
             settings={settings}
           />
         ) : tab === "history" ? (
@@ -100,6 +105,9 @@ export default function App() {
             settings={settings}
             onUpdate={updateSettings}
             onShowSetup={() => setShowSetup(true)}
+            target={
+              target.targets.find((t) => t.name === target.target) ?? null
+            }
           />
         )}
       </main>

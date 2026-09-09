@@ -137,6 +137,74 @@ class HidKeyMapperTest {
         assertTrue(HidKeyMapper.buildReports("").isEmpty())
     }
 
+    // --- Newline modes (target app: Claude Code / Codex / plain text) ---
+
+    @Test
+    fun `default newline mode types a real Enter`() {
+        val reports = HidKeyMapper.buildReports("a\nb")
+        assertEquals(6, reports.size)
+        assertEquals(HidKeyMapper.KEY_ENTER, reports[2][2])
+        assertEquals(0x00.toByte(), reports[2][0])
+    }
+
+    @Test
+    fun `ctrl-j newline mode types Ctrl+J instead of Enter`() {
+        val reports = HidKeyMapper.buildReports(
+            "a\nb", HidKeyMapper.NewlineMode.CTRL_J
+        )
+        // a-down, up, ctrl+j-down, up, b-down, up
+        assertEquals(6, reports.size)
+        assertEquals(0x01.toByte(), reports[2][0]) // left ctrl
+        assertEquals(HidKeyMapper.KEY_J, reports[2][2])
+        assertTrue(isKeyUp(reports[3]))
+    }
+
+    @Test
+    fun `backslash-enter newline mode types a backslash then Enter`() {
+        val reports = HidKeyMapper.buildReports(
+            "a\nb", HidKeyMapper.NewlineMode.BACKSLASH_ENTER
+        )
+        // a, backslash, enter, b — each a down/up pair
+        assertEquals(8, reports.size)
+        assertEquals(HidKeyMapper.KEY_BACKSLASH, reports[2][2])
+        assertEquals(0x00.toByte(), reports[2][0])
+        assertTrue(isKeyUp(reports[3]))
+        assertEquals(HidKeyMapper.KEY_ENTER, reports[4][2])
+        assertTrue(isKeyUp(reports[5]))
+    }
+
+    @Test
+    fun `soft newlines keep the down-up pair stream`() {
+        for (mode in HidKeyMapper.NewlineMode.values()) {
+            val reports = HidKeyMapper.buildReports("hi\nthere\n", mode)
+            assertTrue("mode $mode should end released", isKeyUp(reports.last()))
+            for ((i, r) in reports.withIndex()) {
+                if (i % 2 == 0) assertTrue("mode $mode index $i", r[2] != 0.toByte())
+                else assertTrue("mode $mode index $i", isKeyUp(r))
+            }
+        }
+    }
+
+    @Test
+    fun `newline mode wire values parse, unknown falls back to Enter`() {
+        assertEquals(
+            HidKeyMapper.NewlineMode.CTRL_J,
+            HidKeyMapper.NewlineMode.fromWire("ctrl_j")
+        )
+        assertEquals(
+            HidKeyMapper.NewlineMode.BACKSLASH_ENTER,
+            HidKeyMapper.NewlineMode.fromWire("BACKSLASH_ENTER")
+        )
+        assertEquals(
+            HidKeyMapper.NewlineMode.ENTER,
+            HidKeyMapper.NewlineMode.fromWire("enter")
+        )
+        // Older/unknown clients must still get a plain Enter, never nothing.
+        assertEquals(HidKeyMapper.NewlineMode.ENTER, HidKeyMapper.NewlineMode.fromWire(null))
+        assertEquals(HidKeyMapper.NewlineMode.ENTER, HidKeyMapper.NewlineMode.fromWire(""))
+        assertEquals(HidKeyMapper.NewlineMode.ENTER, HidKeyMapper.NewlineMode.fromWire("shift_enter"))
+    }
+
     @Test
     fun `buildReports alternates down and up and ends with a release`() {
         val reports = HidKeyMapper.buildReports("Hello, world!")

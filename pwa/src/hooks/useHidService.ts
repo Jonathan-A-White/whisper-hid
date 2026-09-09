@@ -7,9 +7,18 @@ import {
   hidHeadsetMic,
   clearToken,
 } from "../lib/api";
-import type { HidStatus, QueuedText, Settings } from "../types";
+import type { HidStatus, NewlineMode, QueuedText, Settings } from "../types";
 
-export function useHidService(settings: Settings) {
+/**
+ * @param newlineMode how a "\n" is typed on the host — comes from the active
+ *   target app (see useTargetMode). Applies to every send, so multi-line
+ *   text (a "prompt"-style cleanup with bullets, a pasted clipboard) doesn't
+ *   submit itself line by line in a CLI composer.
+ */
+export function useHidService(
+  settings: Settings,
+  newlineMode: NewlineMode = "enter"
+) {
   const [status, setStatus] = useState<HidStatus | null>(null);
   const [reachable, setReachable] = useState(false);
   const [authError, setAuthError] = useState(false);
@@ -66,7 +75,12 @@ export function useHidService(settings: Settings) {
       }
 
       try {
-        await hidType(text, getAppendString(), settings.keystrokeDelay);
+        await hidType(
+          text,
+          getAppendString(),
+          settings.keystrokeDelay,
+          newlineMode
+        );
         return true;
       } catch (e) {
         if (e instanceof Error && e.message === "AUTH_FAILED") {
@@ -78,7 +92,7 @@ export function useHidService(settings: Settings) {
         return false;
       }
     },
-    [status?.bluetooth, getAppendString, settings.keystrokeDelay]
+    [status?.bluetooth, getAppendString, settings.keystrokeDelay, newlineMode]
   );
 
   const flushQueue = useCallback(async () => {
@@ -88,7 +102,12 @@ export function useHidService(settings: Settings) {
     const pending = queue.filter((q) => q.status === "pending");
     for (const item of pending) {
       try {
-        await hidType(item.text, getAppendString(), settings.keystrokeDelay);
+        await hidType(
+          item.text,
+          getAppendString(),
+          settings.keystrokeDelay,
+          newlineMode
+        );
         setQueue((prev) =>
           prev.map((q) => (q.id === item.id ? { ...q, status: "sent" } : q))
         );
@@ -112,7 +131,7 @@ export function useHidService(settings: Settings) {
     }, 2000);
 
     flushingRef.current = false;
-  }, [queue, getAppendString, settings.keystrokeDelay]);
+  }, [queue, getAppendString, settings.keystrokeDelay, newlineMode]);
 
   // Kill switch: stop in-progress typing on the phone (releases any stuck
   // key) and drop anything still queued client-side. Optimistically clears
@@ -130,10 +149,13 @@ export function useHidService(settings: Settings) {
     }
   }, []);
 
+  // The deliberate Enter at the end of a dictation ("Newline after end of
+  // recording"): always a real Enter, never the target's soft newline —
+  // submitting the prompt is the whole point of it.
   const sendNewline = useCallback(async () => {
     if (status?.bluetooth !== "connected") return;
     try {
-      await hidType("\n", "");
+      await hidType("\n", "", undefined, "enter");
     } catch (e) {
       if (e instanceof Error && e.message === "AUTH_FAILED") {
         setAuthError(true);

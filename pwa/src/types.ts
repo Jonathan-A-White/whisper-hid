@@ -46,6 +46,9 @@ export interface WhisperStatus {
   cleanup_available?: boolean;
   cleanup_mode?: boolean;
   cleanup_style?: string;
+  /** Active target app; absent on servers older than 1.9.0 */
+  target?: TargetMode;
+  target_newline_mode?: NewlineMode;
   /** Android audio source used for mic capture (see WhisperSettings) */
   mic_audio_source?: string;
   /** false when the termux-api binary is missing, so only "mic" is possible */
@@ -67,14 +70,35 @@ export interface LogEntry {
   msg: string;
 }
 
+/** How a line break is typed on the host — see TargetMode. */
+export type NewlineMode = "enter" | "ctrl_j" | "backslash_enter";
+
+/** Which app the keystrokes are going to (whisper server: GET/PUT /target). */
+export type TargetMode = "plain" | "claude" | "codex";
+
+export interface TargetInfo {
+  name: TargetMode;
+  label: string;
+  description: string;
+  newline_mode: NewlineMode;
+}
+
+export interface TargetState {
+  target: TargetMode;
+  newline_mode: NewlineMode;
+  targets: TargetInfo[];
+}
+
 export interface Settings {
   editBeforeSend: boolean;
   appendNewline: boolean;
   appendSpace: boolean;
   newlineAfterEnd: boolean;
-  /** Type clipboard line breaks as "\" + Enter (Claude Code's
-   *  newline-without-submit escape) instead of flattening them. */
-  claudeCodeNewlines: boolean;
+  /** @deprecated Superseded by the server-side target mode (TargetMode).
+   *  Only read once, to migrate an existing phone to target "claude". */
+  claudeCodeNewlines?: boolean;
+  /** Set after the one-time claudeCodeNewlines -> target migration. */
+  targetMigrated?: boolean;
   keystrokeDelay: number;
   whisperModel: string;
   language: string;
@@ -85,7 +109,6 @@ export const DEFAULT_SETTINGS: Settings = {
   appendNewline: false,
   appendSpace: true,
   newlineAfterEnd: false,
-  claudeCodeNewlines: false,
   keystrokeDelay: 10,
   whisperModel: "base.en",
   language: "en",

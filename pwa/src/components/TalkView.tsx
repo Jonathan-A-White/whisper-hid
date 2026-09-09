@@ -1,10 +1,18 @@
 import { useCallback, useState } from "react";
-import type { HidStatus, Settings, WhisperStatus } from "../types";
+import type {
+  HidStatus,
+  NewlineMode,
+  Settings,
+  TargetInfo,
+  TargetMode,
+  WhisperStatus,
+} from "../types";
 import type { TranscriptionResult } from "../hooks/useWhisper";
 import { applyVoiceEdit } from "../lib/api";
 import { CleanupToggle } from "./CleanupToggle";
 import { EditBuffer, type VoiceEditState } from "./EditBuffer";
 import { SymbolModeToggle } from "./SymbolModeToggle";
+import { TargetModeToggle } from "./TargetModeToggle";
 import { ZoomModeToggle } from "./ZoomModeToggle";
 
 interface TalkViewProps {
@@ -27,6 +35,13 @@ interface TalkViewProps {
     pinnedEntries: { id: string; text: string }[];
     addEntry: (text: string, stats?: { model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number }) => Promise<unknown>;
   };
+  /** Target app mode — see useTargetMode */
+  target: {
+    target: TargetMode | null;
+    targets: TargetInfo[];
+    newlineMode: NewlineMode;
+    setTarget: (target: TargetMode) => void;
+  };
   settings: Settings;
 }
 
@@ -36,7 +51,14 @@ interface TranscriptionStats {
   speedRatio: number;
 }
 
-export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
+export function TalkView({
+  whisper,
+  hid,
+  store,
+  target,
+  settings,
+}: TalkViewProps) {
+  const { newlineMode } = target;
   const [lastText, setLastText] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastStats, setLastStats] = useState<TranscriptionStats | null>(null);
@@ -139,17 +161,15 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
       setClipboardError("Clipboard is empty");
       return;
     }
-    // Embedded newlines are typed as real Enter keypresses on the host — in
-    // a chat box or CLI that submits the text mid-paste. Claude Code mode
-    // keeps the line structure by typing "\" + Enter (Claude Code's
-    // newline-without-submit escape) for each line break; otherwise the
-    // clipboard is flattened to one line unless the user has opted into
-    // newline separators. Either way "Newline after end of recording" alone
-    // decides the final Enter.
+    // In a CLI target the line breaks survive: the HID service types each
+    // one as that app's newline-without-submit key (target mode pill), so
+    // the structure arrives intact as ONE prompt. With a plain-text target
+    // there is no such key — a "\n" would be a real Enter that submits
+    // mid-paste — so the clipboard is flattened to a single line unless the
+    // user has opted into newline separators. Either way "Newline after end
+    // of recording" alone decides the final, deliberate Enter.
     text = text.replace(/\r\n?/g, "\n").trim();
-    if (settings.claudeCodeNewlines) {
-      text = text.replace(/\n/g, "\\\n");
-    } else if (!settings.appendNewline) {
+    if (newlineMode === "enter" && !settings.appendNewline) {
       text = text
         .split("\n")
         .map((line) => line.trim())
@@ -162,7 +182,7 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
     await store.addEntry(text);
     await hid.sendText(text);
     if (settings.newlineAfterEnd) await hid.sendNewline();
-  }, [hid, store, settings.claudeCodeNewlines, settings.appendNewline, settings.newlineAfterEnd]);
+  }, [hid, store, newlineMode, settings.appendNewline, settings.newlineAfterEnd]);
 
   const handlePinnedTap = useCallback(
     async (text: string) => {
@@ -263,11 +283,18 @@ export function TalkView({ whisper, hid, store, settings }: TalkViewProps) {
                 : "Not connected"}
             </p>
 
+            {/* Target app — decides how line breaks are typed */}
+            <TargetModeToggle
+              target={target.target}
+              targets={target.targets}
+              onSelect={target.setTarget}
+            />
+
             {/* Symbol mode quick toggle */}
             <SymbolModeToggle />
 
             {/* Speech cleanup quick toggle — local LLM polishes the transcript */}
-            <CleanupToggle />
+            <CleanupToggle target={target.target} />
 
             {/* Zoom mode quick toggle — release headset mic to the laptop */}
             <ZoomModeToggle status={hid.status} onToggle={hid.setHeadsetMic} />

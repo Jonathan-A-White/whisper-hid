@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ModelInfo, Settings } from "../types";
+import type { ModelInfo, Settings, TargetInfo } from "../types";
 import { whisperStatus, hidStatus, getModels, switchModel, getWhisperSettings, putWhisperSettings } from "../lib/api";
 import { WordCorrections } from "./WordCorrections";
 import { SymbolReplacements } from "./SymbolReplacements";
@@ -10,9 +10,11 @@ interface SettingsViewProps {
   settings: Settings;
   onUpdate: (partial: Partial<Settings>) => void;
   onShowSetup: () => void;
+  /** Active target app, or null on a server without /target */
+  target: TargetInfo | null;
 }
 
-export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewProps) {
+export function SettingsView({ settings, onUpdate, onShowSetup, target }: SettingsViewProps) {
   const [whisperVersion, setWhisperVersion] = useState<string | null>(null);
   const [hidVersion, setHidVersion] = useState<string | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
@@ -113,26 +115,18 @@ export function SettingsView({ settings, onUpdate, onShowSetup }: SettingsViewPr
         />
       </label>
 
-      {/* Toggle: Claude Code newlines (clipboard) */}
-      <div>
-        <label className="flex items-center justify-between">
-          <span className="text-sm text-gray-300">
-            Claude Code newlines (clipboard)
-          </span>
-          <input
-            type="checkbox"
-            checked={settings.claudeCodeNewlines}
-            onChange={(e) => onUpdate({ claudeCodeNewlines: e.target.checked })}
-            className="w-5 h-5 accent-sky-500"
-          />
-        </label>
-        <p className="text-xs text-gray-500 mt-1">
-          Keep line breaks when typing the clipboard by sending them as
-          &quot;\&quot; + Enter, which Claude Code treats as a newline without
-          submitting the prompt. Leave off for other apps — they would show
-          stray backslashes.
-        </p>
-      </div>
+      {/* Target app — set from the Talk screen, shown here for reference
+          since it used to be the "Claude Code newlines" checkbox. */}
+      {target && (
+        <div>
+          <span className="text-sm text-gray-300">Typing to: {target.label}</span>
+          <p className="text-xs text-gray-500 mt-1">
+            {target.description}. Change it with the &quot;Typing to&quot; pill
+            on the Talk screen — it also picks which assistant the
+            &quot;prompt&quot; cleanup style writes for.
+          </p>
+        </div>
+      )}
 
       {/* Keystroke delay */}
       <div>
