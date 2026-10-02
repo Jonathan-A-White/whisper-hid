@@ -13,6 +13,11 @@ VAD_MODEL_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-sil
 VAD_MODEL_FILE="silero-v5.1.2.ggml.bin"
 PARAKEET_DIR="sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
 PARAKEET_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${PARAKEET_DIR}.tar.bz2"
+# Nemotron Speech Streaming (trial engine): the 160ms int8 export, same
+# layout as Parakeet's (encoder/decoder/joiner .int8.onnx + tokens.txt).
+# Keep the directory name in sync with NEMOTRON_DIR_NAME in whisper-server.py.
+NEMOTRON_DIR="sherpa-onnx-nemotron-speech-streaming-en-0.6b-160ms-int8-2026-04-25"
+NEMOTRON_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-160ms-int8-2026-04-25.tar.bz2"
 # Speech cleanup LLMs — keep file names in sync with the
 # CLEANUP_MODEL_CATALOG in whisper-server.py and with setup-termux.sh.
 # unsloth repos: the official Qwen/Qwen3-*-GGUF repos don't carry the
@@ -48,6 +53,9 @@ usage() {
     echo ""
     echo "Parakeet engine (sherpa-onnx — faster + more accurate than whisper):"
     echo "  parakeet              ~640 MB   ~10x real-time   Best accuracy + speed"
+    echo ""
+    echo "Nemotron engine (trial — NVIDIA Nemotron Speech Streaming, pick it in Settings > Speech model):"
+    echo "  nemotron              ~442 MB   streaming RNNT    Download; ~635 MB on disk"
     echo ""
     echo "Special:"
     echo "  vad                    ~2 MB                     Silero VAD model"
@@ -178,6 +186,42 @@ if [ "$MODEL_NAME" = "parakeet" ] || [ "$MODEL_NAME" = "parakeet-tdt-0.6b-v2" ];
     fi
     echo ""
     echo "Restart the Whisper server to use Parakeet (preferred automatically):"
+    echo "  ./stop-whisper-server.sh && ./start-whisper-server.sh"
+    exit 0
+fi
+
+# Special case: Nemotron model download (sherpa-onnx tarball, like Parakeet's).
+# Idempotent: an install that is already complete is left alone.
+if [ "$MODEL_NAME" = "nemotron" ]; then
+    mkdir -p "$MODEL_DIR"
+    DEST_DIR="$MODEL_DIR/$NEMOTRON_DIR"
+    if [ -f "$DEST_DIR/encoder.int8.onnx" ] && [ -f "$DEST_DIR/decoder.int8.onnx" ] \
+        && [ -f "$DEST_DIR/joiner.int8.onnx" ] && [ -f "$DEST_DIR/tokens.txt" ]; then
+        echo "Nemotron model already installed: $DEST_DIR ($(du -sh "$DEST_DIR" | cut -f1))"
+        exit 0
+    fi
+    rm -rf "$DEST_DIR"   # an interrupted earlier run
+    TARBALL="$MODEL_DIR/${NEMOTRON_DIR}.tar.bz2"
+    echo "Downloading Nemotron Speech Streaming 0.6B 160ms int8 (~442 MB download, ~635 MB on disk)..."
+    echo "URL: $NEMOTRON_URL"
+    curl -fL --progress-bar -o "$TARBALL" "$NEMOTRON_URL"
+    echo "Extracting..."
+    tar xjf "$TARBALL" -C "$MODEL_DIR"
+    rm -f "$TARBALL"
+    if [ ! -f "$DEST_DIR/tokens.txt" ] || [ ! -f "$DEST_DIR/encoder.int8.onnx" ]; then
+        echo "Error: extraction failed — model files not found in $DEST_DIR."
+        exit 1
+    fi
+    echo ""
+    echo "Downloaded: $DEST_DIR ($(du -sh "$DEST_DIR" | cut -f1))"
+    if ! python3 -c "import onnxruntime, numpy" 2>/dev/null; then
+        echo ""
+        echo "NOTE: no backend installed yet. In Termux run:"
+        echo "  pkg install python-numpy python-onnxruntime"
+    fi
+    echo ""
+    echo "Nemotron is a trial and is never picked automatically. Restart the Whisper"
+    echo "server, then choose it in the PWA under Settings > Speech model:"
     echo "  ./stop-whisper-server.sh && ./start-whisper-server.sh"
     exit 0
 fi

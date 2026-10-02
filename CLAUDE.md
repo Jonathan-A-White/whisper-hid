@@ -510,6 +510,20 @@ Two interchangeable backends (tried in this order by `load_parakeet()`):
   parakeet_onnx modules injected into sys.modules — no model download
   needed; fbank golden values verified against kaldi-native-fbank)
 
+### Nemotron engine (trial)
+A third engine, NVIDIA Nemotron Speech Streaming 0.6B (sherpa-onnx 160ms int8
+export), picked in Settings > Speech model (`PUT /model` with
+`NEMOTRON_MODEL_NAME`) or with `STT_ENGINE=nemotron`; `auto` never selects it.
+`scripts/nemotron_onnx.py` (`NemotronRecognizer.transcribe()`) runs the
+cache-aware streaming encoder chunk by chunk over the whole utterance (window
+25 / shift 16 frames, read from the model metadata; caches zeroed at the start
+and carried between chunks; last chunk zero-padded) and a greedy RNNT loop
+(blank = last token id, LSTM state carried, `MAX_SYMBOLS_PER_FRAME` cap). Pure
+numpy + onnxruntime, features from `parakeet_onnx.compute_fbank`. Only one
+recognizer is resident at a time: switching engines unloads the others.
+Install: `update-model.sh nemotron`. Tests: `pytest scripts/tests/test_nemotron.py`
+(fake ORT sessions; set `NEMOTRON_MODEL_DIR` to also decode the export's test wavs).
+
 ### Chunked (streaming) transcription
 Long dictations normally pay the whole transcription cost as one wait after
 tapping Stop. When the recording file is decodable *while still being written*,

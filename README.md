@@ -187,6 +187,28 @@ cd ~/whisper-stt && ./stop-whisper-server.sh && ~/whisper-hid/scripts/start-whis
 Verify with `curl http://localhost:9876/status` — it should report
 `"engine": "parakeet"`, and the PWA's top bar will show the active model.
 
+### Trying Nemotron Speech Streaming (trial)
+
+A third engine, NVIDIA Nemotron Speech Streaming 0.6B, is available to try. It
+is never picked automatically — Parakeet stays the default — and for now it
+transcribes the whole utterance when you let go of the button (no live text).
+
+```bash
+pkg install python-numpy python-onnxruntime        # already there if Parakeet works
+~/whisper-hid/scripts/update-model.sh nemotron     # ~440 MB download
+cd ~/whisper-stt && ./stop-whisper-server.sh && ~/whisper-hid/scripts/start-whisper-server.sh
+```
+
+Then pick **Nemotron** in the PWA under **Settings > Speech model**;
+`curl http://localhost:9876/status` should report `"engine": "nemotron"`.
+(`STT_ENGINE=nemotron` starts the server on it.) Only one engine's model is
+held in memory at a time, so switching frees the other.
+
+To go back, pick **parakeet-tdt-0.6b-v2** in the same list (or set nothing:
+without a choice the server starts on Parakeet again). Delete
+`~/whisper-stt/models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-160ms-int8-2026-04-25`
+to reclaim the space.
+
 ## Dictation features
 
 All of these run on the phone and are toggled from the PWA:
@@ -230,6 +252,7 @@ whisper-hid/
 │   ├── setup-termux.sh
 │   ├── whisper-server.py
 │   ├── parakeet_onnx.py          # Parakeet inference on onnxruntime + numpy
+│   ├── nemotron_onnx.py          # Nemotron streaming RNNT on onnxruntime + numpy
 │   ├── requirements.txt          # pip packages the server needs (flask)
 │   ├── start-whisper-server.sh
 │   ├── stop-whisper-server.sh
