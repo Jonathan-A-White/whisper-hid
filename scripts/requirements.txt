@@ -1,0 +1,9 @@
+# Python packages the Whisper server needs, installed with:
+#   pip install -r ~/whisper-hid/scripts/requirements.txt
+# (setup-termux.sh and update-all.sh do this for you; start-whisper-server.sh
+# refuses to start when one of these is missing.)
+#
+# numpy and onnxruntime are deliberately NOT listed: pip cannot build them
+# against Android's libc. On Termux they come from pkg, never pip:
+#   pkg install python-numpy python-onnxruntime
+flask

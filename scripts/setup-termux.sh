@@ -22,7 +22,7 @@ echo "[2/9] Installing build tools and Python..."
 # provides both. llama-server's tool-exec code (vendor/sheredom/subprocess.h)
 # needs it — see the llama.cpp build in step 7.
 pkg install -y clang cmake make git tmux termux-api socat ffmpeg python bzip2 libandroid-spawn
-pip install flask
+pip install -r "$SCRIPT_DIR/requirements.txt"
 
 # 3. Clone whisper.cpp
 echo "[3/9] Cloning whisper.cpp..."
@@ -204,7 +204,7 @@ fi
 # 8. Copy scripts
 echo "[8/9] Setting up scripts..."
 MISSING_SCRIPTS=()
-for script in whisper-server.py parakeet_onnx.py start-whisper-server.sh stop-whisper-server.sh update-model.sh diagnose-sigill.sh; do
+for script in whisper-server.py parakeet_onnx.py requirements.txt start-whisper-server.sh stop-whisper-server.sh update-model.sh diagnose-sigill.sh; do
     if [ -f "$SCRIPT_DIR/$script" ]; then
         cp "$SCRIPT_DIR/$script" "$INSTALL_DIR/$script"
         chmod +x "$INSTALL_DIR/$script"
