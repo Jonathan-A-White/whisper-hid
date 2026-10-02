@@ -204,7 +204,7 @@ fi
 # 8. Copy scripts
 echo "[8/9] Setting up scripts..."
 MISSING_SCRIPTS=()
-for script in whisper-server.py parakeet_onnx.py requirements.txt start-whisper-server.sh stop-whisper-server.sh update-model.sh diagnose-sigill.sh; do
+for script in whisper-server.py parakeet_onnx.py nemotron_onnx.py requirements.txt start-whisper-server.sh stop-whisper-server.sh update-model.sh diagnose-sigill.sh; do
     if [ -f "$SCRIPT_DIR/$script" ]; then
         cp "$SCRIPT_DIR/$script" "$INSTALL_DIR/$script"
         chmod +x "$INSTALL_DIR/$script"

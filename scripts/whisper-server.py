@@ -45,7 +45,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.9.1"
+SERVER_VERSION = "1.10.0"
 
 # --- Configuration ---
 
@@ -76,12 +76,20 @@ if MIC_AUDIO_SOURCE not in MIC_AUDIO_SOURCES:
     MIC_AUDIO_SOURCE = "mic"
 
 # Parakeet engine (sherpa-onnx). STT_ENGINE: "auto" prefers parakeet when
-# available, "whisper" forces whisper.cpp, "parakeet" requires parakeet.
+# available, "whisper" forces whisper.cpp, "parakeet" requires parakeet,
+# "nemotron" starts on Nemotron (whisper if its model is missing).
 STT_ENGINE = os.environ.get("STT_ENGINE", "auto").lower()
 PARAKEET_MODEL_NAME = "parakeet-tdt-0.6b-v2"
 PARAKEET_DIR_NAME = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
 PARAKEET_CATALOG_SIZE_MB = 640
 PARAKEET_THREADS = int(os.environ.get("PARAKEET_THREADS", "4"))
+
+# Nemotron Speech Streaming (a trial third engine, picked in Settings > Speech
+# model — never chosen by "auto"). STT_ENGINE=nemotron starts on it.
+NEMOTRON_MODEL_NAME = "nemotron-streaming-en-0.6b"
+NEMOTRON_DIR_NAME = "sherpa-onnx-nemotron-speech-streaming-en-0.6b-160ms-int8-2026-04-25"
+NEMOTRON_CATALOG_SIZE_MB = 635
+NEMOTRON_THREADS = int(os.environ.get("NEMOTRON_THREADS", "4"))
 
 # Speech cleanup (local LLM post-processing). STT_CLEANUP: "auto" (default)
 # starts a llama.cpp server at startup when its binary and model are present;
@@ -145,7 +153,7 @@ def get_mic_audio_source() -> str:
 
 # --- State ---
 
-active_engine = "whisper"  # "whisper" or "parakeet"
+active_engine = "whisper"  # "whisper", "parakeet" or "nemotron"
 model_path = ""
 model_name = ""
 model_size_mb = 0
@@ -1453,6 +1461,76 @@ def unload_parakeet():
         add_log("info", "Parakeet model unloaded")
 
 
+# --- Nemotron engine (nemotron_onnx on onnxruntime, in-process) ---
+
+_nemotron_recognizer = None
+
+
+def find_nemotron_model_files() -> dict | None:
+    """Locate the Nemotron model directory under MODEL_DIR (int8 export).
+
+    Returns {"dir": path} or None if the model is not downloaded.
+    """
+    base = os.path.join(MODEL_DIR, NEMOTRON_DIR_NAME)
+    needed = ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]
+    if all(os.path.isfile(os.path.join(base, n)) for n in needed):
+        return {"dir": base}
+    return None
+
+
+def nemotron_model_size_mb() -> int:
+    """Total on-disk size of the Nemotron model directory in MB."""
+    base = os.path.join(MODEL_DIR, NEMOTRON_DIR_NAME)
+    total = 0
+    for root, _, files in os.walk(base):
+        for fname in files:
+            try:
+                total += os.path.getsize(os.path.join(root, fname))
+            except OSError:
+                pass
+    return round(total / (1024 * 1024))
+
+
+def load_nemotron() -> bool:
+    """Load the Nemotron model (in-process, loaded once).
+
+    Returns True if the recognizer is ready. Safe to call repeatedly.
+    """
+    global _nemotron_recognizer
+
+    if _nemotron_recognizer is not None:
+        return True
+
+    files = find_nemotron_model_files()
+    if files is None:
+        add_log("info", f"Nemotron model not found in {MODEL_DIR} — run: ./update-model.sh nemotron")
+        return False
+
+    t0 = time.time()
+    try:
+        from nemotron_onnx import NemotronRecognizer
+        _nemotron_recognizer = NemotronRecognizer(files["dir"], num_threads=NEMOTRON_THREADS)
+    except ImportError:
+        add_log("warn", "No Nemotron backend installed — in Termux run: pkg install python-numpy python-onnxruntime")
+        return False
+    except Exception as e:
+        add_log("error", f"Failed to load Nemotron model: {e}")
+        _nemotron_recognizer = None
+        return False
+
+    load_ms = int((time.time() - t0) * 1000)
+    add_log("info", f"Nemotron model loaded in {load_ms}ms (onnxruntime, {NEMOTRON_THREADS} threads)")
+    return True
+
+
+def unload_nemotron():
+    """Release the Nemotron recognizer (frees ~700MB RAM)."""
+    global _nemotron_recognizer
+    if _nemotron_recognizer is not None:
+        _nemotron_recognizer = None
+        add_log("info", "Nemotron model unloaded")
+
+
 def _read_wav_float32(wav_path: str):
     """Read a 16-bit PCM WAV as (float32 samples in [-1, 1], sample_rate)."""
     import array
@@ -1494,6 +1572,20 @@ def run_parakeet_raw(wav_path: str) -> tuple[str, int]:
     duration_ms = int((time.time() - t0) * 1000)
 
     return stream.result.text.strip(), duration_ms
+
+
+def run_nemotron_raw(wav_path: str) -> tuple[str, int]:
+    """Run Nemotron on a WAV file. Returns (raw text, duration_ms)."""
+    if _nemotron_recognizer is None:
+        raise RuntimeError("Nemotron model not loaded")
+
+    audio, sample_rate = _read_wav_float32(wav_path)
+
+    t0 = time.time()
+    text = _nemotron_recognizer.transcribe(audio, sample_rate)
+    duration_ms = int((time.time() - t0) * 1000)
+
+    return text.strip(), duration_ms
 
 
 def _encoder_flags(fmt: str) -> list[str]:
@@ -1945,8 +2037,8 @@ def _postprocess_text(text: str, source: str) -> str:
 def run_transcription(wav_path: str, postprocess: bool = True) -> tuple[str, int]:
     """Transcribe a WAV file with the active engine. Returns (text, duration_ms).
 
-    Uses Parakeet (in-process sherpa-onnx) when active, falling back to
-    whisper.cpp if Parakeet is unavailable or fails.
+    Uses Parakeet or Nemotron (in-process) when active, falling back to
+    whisper.cpp if that engine is unavailable or fails.
 
     postprocess=False returns marker-stripped raw text without corrections or
     symbol replacements (chunked mode post-processes the joined text once).
@@ -1960,6 +2052,15 @@ def run_transcription(wav_path: str, postprocess: bool = True) -> tuple[str, int
             return _postprocess_text(text, "Parakeet"), duration_ms
         except Exception as e:
             add_log("warn", f"Parakeet failed ({e}), falling back to whisper")
+    if active_engine == "nemotron" and _nemotron_recognizer is not None:
+        try:
+            text, duration_ms = run_nemotron_raw(wav_path)
+            add_log("info", f"Nemotron: took={duration_ms}ms")
+            if not postprocess:
+                return _clean_raw_text(text), duration_ms
+            return _postprocess_text(text, "Nemotron"), duration_ms
+        except Exception as e:
+            add_log("warn", f"Nemotron failed ({e}), falling back to whisper")
     return run_whisper(wav_path, postprocess=postprocess)
 
 
@@ -2559,7 +2660,11 @@ def status():
             "status": "ready",
             "version": SERVER_VERSION,
             "engine": active_engine,
-            "engine_backend": _parakeet_backend if active_engine == "parakeet" else "whisper.cpp",
+            "engine_backend": (
+                _parakeet_backend if active_engine == "parakeet"
+                else "onnxruntime" if active_engine == "nemotron"
+                else "whisper.cpp"
+            ),
             "model": model_name,
             "model_size_mb": model_size_mb,
             "recording": is_recording,
@@ -2681,6 +2786,17 @@ def debug_test_pipeline():
                 })
             except Exception as e:
                 diag["steps"].append({"step": "parakeet", "error": str(e)})
+                return jsonify(diag), 500
+        elif active_engine == "nemotron" and _nemotron_recognizer is not None:
+            try:
+                raw_text, engine_ms = run_nemotron_raw(wav_file)
+                diag["steps"].append({
+                    "step": "nemotron",
+                    "duration_ms": engine_ms,
+                    "raw_text": raw_text[:500],
+                })
+            except Exception as e:
+                diag["steps"].append({"step": "nemotron", "error": str(e)})
                 return jsonify(diag), 500
         else:
             global _whisper_extra_flags
@@ -3162,8 +3278,9 @@ def _do_benchmark():
         use_vad = data.get("use_vad", False)
         duration = max(2, min(10, int(duration)))
 
-    # Determine which models to benchmark. Parakeet runs through its own
-    # in-process engine, not whisper-cli, so it's handled separately.
+    # Determine which models to benchmark. Parakeet and Nemotron run through
+    # their own in-process engines, not whisper-cli, so they're handled
+    # separately.
     all_models = list_models()
     downloaded = [m for m in all_models if m["downloaded"]]
     if not downloaded:
@@ -3176,8 +3293,9 @@ def _do_benchmark():
     else:
         selected = downloaded
 
-    targets = [m for m in selected if m["name"] != PARAKEET_MODEL_NAME]
+    targets = [m for m in selected if m["name"] not in (PARAKEET_MODEL_NAME, NEMOTRON_MODEL_NAME)]
     parakeet_target = next((m for m in selected if m["name"] == PARAKEET_MODEL_NAME), None)
+    nemotron_target = next((m for m in selected if m["name"] == NEMOTRON_MODEL_NAME), None)
 
     add_log("info", f"Benchmark starting: {len(targets)} models, duration={duration}s, vad={use_vad}")
 
@@ -3242,37 +3360,44 @@ def _do_benchmark():
                 })
                 add_log("error", f"Benchmark {m['name']} failed: {e}")
 
-        # Benchmark Parakeet via its in-process engine
-        if parakeet_target is not None:
-            add_log("info", f"Benchmarking {PARAKEET_MODEL_NAME}...")
+        # Benchmark the in-process engines (Parakeet, Nemotron). A recognizer
+        # loaded only for the benchmark is unloaded again afterwards, so the
+        # phone keeps no more than the active engine's model in RAM.
+        for engine, target, load, run, unload in [
+            ("parakeet", parakeet_target, load_parakeet, run_parakeet_raw, unload_parakeet),
+            ("nemotron", nemotron_target, load_nemotron, run_nemotron_raw, unload_nemotron),
+        ]:
+            if target is None:
+                continue
+            name = target["name"]
+            add_log("info", f"Benchmarking {name}...")
             try:
-                if not load_parakeet():
-                    raise RuntimeError("Parakeet engine unavailable (sherpa-onnx not installed?)")
-                text, inference_ms = run_parakeet_raw(wav_path)
+                if not load():
+                    raise RuntimeError(f"{engine.capitalize()} engine unavailable (onnxruntime/numpy not installed?)")
+                text, inference_ms = run(wav_path)
                 speed_ratio = round(audio_duration_sec / (inference_ms / 1000), 1) if inference_ms > 0 else 0
                 results.append({
-                    "model": PARAKEET_MODEL_NAME,
-                    "size_mb": parakeet_target["size_mb"],
+                    "model": name,
+                    "size_mb": target["size_mb"],
                     "text": text,
                     "inference_ms": inference_ms,
                     "speed_ratio": speed_ratio,
                     "error": None,
                 })
-                add_log("info", f"Benchmark {PARAKEET_MODEL_NAME}: {inference_ms}ms, {speed_ratio}x, \"{text[:60]}\"")
+                add_log("info", f"Benchmark {name}: {inference_ms}ms, {speed_ratio}x, \"{text[:60]}\"")
             except Exception as e:
                 results.append({
-                    "model": PARAKEET_MODEL_NAME,
-                    "size_mb": parakeet_target["size_mb"],
+                    "model": name,
+                    "size_mb": target["size_mb"],
                     "text": "",
                     "inference_ms": 0,
                     "speed_ratio": 0,
                     "error": str(e),
                 })
-                add_log("error", f"Benchmark {PARAKEET_MODEL_NAME} failed: {e}")
+                add_log("error", f"Benchmark {name} failed: {e}")
             finally:
-                # Don't keep ~700MB of Parakeet in RAM if whisper is the active engine
-                if active_engine != "parakeet":
-                    unload_parakeet()
+                if active_engine != engine:
+                    unload()
 
         add_log("info", f"Benchmark complete: {len(results)} models tested")
 
@@ -3355,6 +3480,17 @@ def list_models() -> list[dict]:
         "active": active_engine == "parakeet",
     })
 
+    # Nemotron Speech Streaming engine (trial; model directory like Parakeet's)
+    nemotron_downloaded = find_nemotron_model_files() is not None
+    models.append({
+        "name": NEMOTRON_MODEL_NAME,
+        "file": NEMOTRON_DIR_NAME,
+        "size_mb": nemotron_model_size_mb() if nemotron_downloaded else NEMOTRON_CATALOG_SIZE_MB,
+        "description": "NVIDIA Nemotron Speech Streaming (trial) — streaming RNNT, decoded when you stop",
+        "downloaded": nemotron_downloaded,
+        "active": active_engine == "nemotron",
+    })
+
     return models
 
 
@@ -3366,7 +3502,7 @@ def get_models():
 
 @app.route("/model", methods=["PUT"])
 def put_model():
-    """Switch the active model — a Whisper model or the Parakeet engine.
+    """Switch the active model — a Whisper model, Parakeet or Nemotron.
 
     Body: {"model": "small.en"}  (the model name, not the filename)
     """
@@ -3401,7 +3537,13 @@ def put_model():
                 "error": "model_not_found",
                 "message": f"Parakeet model not found. Run: ./update-model.sh parakeet",
             }), 404
+        # One recognizer in memory at a time: free Nemotron before loading
+        # Parakeet, and put it back if Parakeet cannot load.
+        nemotron_was_loaded = _nemotron_recognizer is not None
+        unload_nemotron()
         if not load_parakeet():
+            if nemotron_was_loaded:
+                load_nemotron()
             return jsonify({
                 "error": "engine_unavailable",
                 "message": "No Parakeet backend. In Termux run: pkg install python-numpy python-onnxruntime",
@@ -3414,6 +3556,37 @@ def put_model():
         # Free whisper-server RAM — whisper falls back to subprocess mode if needed
         stop_whisper_server()
         add_log("info", f"Engine switched to: parakeet ({model_size_mb} MB)")
+        return jsonify({
+            "ok": True,
+            "model": model_name,
+            "model_size_mb": model_size_mb,
+        })
+
+    # Switch to the Nemotron engine (trial)
+    if requested == NEMOTRON_MODEL_NAME:
+        if find_nemotron_model_files() is None:
+            return jsonify({
+                "error": "model_not_found",
+                "message": "Nemotron model not found. Run: ~/whisper-hid/scripts/update-model.sh nemotron",
+            }), 404
+        # Free Parakeet first so two recognizers are never resident at once,
+        # and put it back if Nemotron cannot load.
+        parakeet_was_loaded = _parakeet_recognizer is not None
+        unload_parakeet()
+        if not load_nemotron():
+            if parakeet_was_loaded:
+                load_parakeet()
+            return jsonify({
+                "error": "engine_unavailable",
+                "message": "No Nemotron backend. In Termux run: pkg install python-numpy python-onnxruntime",
+            }), 500
+
+        active_engine = "nemotron"
+        model_name = NEMOTRON_MODEL_NAME
+        model_size_mb = nemotron_model_size_mb()
+        model_loaded = True
+        stop_whisper_server()
+        add_log("info", f"Engine switched to: nemotron ({model_size_mb} MB)")
         return jsonify({
             "ok": True,
             "model": model_name,
@@ -3438,9 +3611,10 @@ def put_model():
     model_loaded = True
     add_log("info", f"Model switched to: {model_name} ({model_size_mb} MB)")
 
-    # Free Parakeet RAM when leaving the parakeet engine
+    # Free the recognizer RAM when leaving an in-process engine
     if was_parakeet:
         unload_parakeet()
+    unload_nemotron()
 
     # (Re)start the persistent whisper-server with the new model
     restart_whisper_server(new_path)
@@ -3469,6 +3643,16 @@ def select_engine():
         model_loaded = True
         add_log("info", f"Engine: parakeet ({model_name}, {model_size_mb} MB)")
         return
+
+    if STT_ENGINE == "nemotron":
+        if load_nemotron():
+            active_engine = "nemotron"
+            model_name = NEMOTRON_MODEL_NAME
+            model_size_mb = nemotron_model_size_mb()
+            model_loaded = True
+            add_log("info", f"Engine: nemotron ({model_name}, {model_size_mb} MB)")
+            return
+        add_log("error", "STT_ENGINE=nemotron but Nemotron is unavailable — falling back to whisper")
 
     if STT_ENGINE == "parakeet":
         add_log("error", "STT_ENGINE=parakeet but Parakeet is unavailable — falling back to whisper")
