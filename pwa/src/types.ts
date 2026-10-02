@@ -15,7 +15,8 @@ export interface HidStatus {
   device?: string;
   uptime_seconds?: number;
   reconnect_attempt?: number;
-  reconnect_max?: number;
+  /** always null now: reconnect has no attempt limit; absent/number on older APKs */
+  reconnect_max?: number | null;
   next_retry_seconds?: number;
   failure_reason?: string;
   /** true while the service is typing (or has sends queued); absent on older APKs */

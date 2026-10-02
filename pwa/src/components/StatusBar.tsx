@@ -109,12 +109,12 @@ export function StatusBar({
             </div>
           ) : btState === "reconnecting" ? (
             <div className="text-yellow-400">
-              Laptop disconnected — Reconnecting... (attempt{" "}
-              {hidStatus?.reconnect_attempt} of {hidStatus?.reconnect_max})
+              Reconnecting… (attempt {hidStatus?.reconnect_attempt}, next try in{" "}
+              {hidStatus?.next_retry_seconds} s)
             </div>
           ) : btState === "failed" ? (
             <div className="text-red-400">
-              Connection failed — Auto-reconnect timed out
+              Not connected — {hidStatus?.failure_reason || "reconnect stopped"}
               <div className="mt-1 flex gap-2">
                 <button
                   onClick={onRestart}

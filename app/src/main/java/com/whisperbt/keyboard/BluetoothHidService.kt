@@ -50,10 +50,9 @@ class BluetoothHidService : Service() {
         private const val MAX_LOG_ENTRIES = 200
         private const val ALLOWED_ORIGIN = "https://jonathan-a-white.github.io"
 
-        // Reconnect schedule: 2s, 4s, 8s, 16s, 30s, then 30s intervals up to 5 min
-        private val RECONNECT_DELAYS_MS = longArrayOf(2000, 4000, 8000, 16000, 30000)
-        private const val RECONNECT_SLOW_MS = 30000L
-        private const val RECONNECT_MAX_DURATION_MS = 5 * 60 * 1000L
+        // The only two conditions that stop auto-reconnect (see ReconnectPolicy)
+        private const val REASON_BLUETOOTH_OFF = "Bluetooth is off"
+        private const val REASON_NO_HOST = "No paired host known"
 
         // SCO startup often fails right after the headset profile connects — retry
         private const val SCO_RETRY_DELAY_MS = 3000L
@@ -257,10 +256,18 @@ class BluetoothHidService : Service() {
     var authToken: String = ""
         private set
 
-    // Reconnect state
+    // Reconnect state. The schedule itself lives in ReconnectPolicy.
     private var reconnectAttempt = 0
     private var reconnectStartTime = 0L
     private var reconnectRunnable: Runnable? = null
+    // Why we are in FAILED (Bluetooth off / no host known); only those two
+    // conditions ever put us there, never elapsed time.
+    @Volatile private var failureReason = ""
+    // Adapter on/off and host-link broadcasts that restart the reconnect.
+    private var btStateReceiver: BroadcastReceiver? = null
+    // Bumped on every getProfileProxy so a stale proxy listener (from before
+    // Bluetooth was switched off) cannot register the app a second time.
+    private var proxyToken = 0
 
     // Headset mic (SCO) state
     private var audioManager: AudioManager? = null
@@ -321,6 +328,7 @@ class BluetoothHidService : Service() {
 
         startHttpServer()
         setupHeadsetMicRouting()
+        registerBluetoothReceiver()
         registerHidDevice()
     }
 
@@ -330,6 +338,7 @@ class BluetoothHidService : Service() {
 
     override fun onDestroy() {
         cancelReconnect()
+        unregisterBluetoothReceiver()
         stopHttpServer()
         teardownHeadsetMicRouting()
         unregisterHidDevice()
@@ -646,21 +655,26 @@ class BluetoothHidService : Service() {
 
     private fun registerHidDevice() {
         val adapter = btAdapter ?: return
+        if (!bluetoothOn()) {
+            enterFailed(REASON_BLUETOOTH_OFF)
+            return
+        }
         btState = BtState.IDLE
+        val token = ++proxyToken
         try {
             adapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
                 override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
-                    if (profile == BluetoothProfile.HID_DEVICE) {
+                    if (profile == BluetoothProfile.HID_DEVICE && token == proxyToken) {
                         hidDevice = proxy as BluetoothHidDevice
                         registerApp()
                     }
                 }
 
                 override fun onServiceDisconnected(profile: Int) {
-                    if (profile == BluetoothProfile.HID_DEVICE) {
+                    if (profile == BluetoothProfile.HID_DEVICE && token == proxyToken) {
                         hidDevice = null
-                        btState = BtState.IDLE
                         addLog("error", "HID profile service disconnected")
+                        if (bluetoothOn()) btState = BtState.IDLE else enterFailed(REASON_BLUETOOTH_OFF)
                     }
                 }
             }, BluetoothProfile.HID_DEVICE)
@@ -704,14 +718,20 @@ class BluetoothHidService : Service() {
                     connectedDevice = pluggedDevice
                     lastKnownDevice = pluggedDevice
                     btState = BtState.CONNECTED
+                    cancelReconnect()
+                    failureReason = ""
                     connectedAtMs = System.currentTimeMillis()
                     lastReportAtMs = 0L
                     val name = try { pluggedDevice.name } catch (_: SecurityException) { "Unknown" }
                     addLog("info", "Already connected to $name")
                     updateNotification("Connected to $name")
+                } else if (reconnectBlocker() == null) {
+                    // A host is known: connect now and keep trying (backing
+                    // off, never giving up) until it answers.
+                    updateNotification("Ready — connecting...")
+                    startReconnect(immediate = true)
                 } else {
                     updateNotification("Ready — waiting for connection...")
-                    connectToHost()
                 }
             } else {
                 btState = BtState.IDLE
@@ -730,6 +750,7 @@ class BluetoothHidService : Service() {
                     lastReportAtMs = 0L
                     cancelReconnect()
                     reconnectAttempt = 0
+                    failureReason = ""
                     val name = try { device?.name } catch (_: SecurityException) { "Unknown" }
                     addLog("info", "BT connected to $name")
                     updateNotification("Connected to $name")
@@ -764,38 +785,85 @@ class BluetoothHidService : Service() {
     }
 
     // --- Reconnect logic ---
+    //
+    // While Bluetooth is on and a host is known we keep trying, however long
+    // that takes (ReconnectPolicy: 2-30 s early on, then once a minute after
+    // 5 minutes). FAILED is only for the two conditions retrying cannot fix,
+    // and leaving either one (adapter turned on, host paired or its link
+    // appearing) restarts the reconnect from the top.
 
-    private fun startReconnect() {
-        if (btState == BtState.RECONNECTING || btState == BtState.FAILED) return
+    private fun bluetoothOn(): Boolean = try {
+        btAdapter?.isEnabled == true
+    } catch (_: SecurityException) { false }
+
+    /** A host we could connect to: the last one we talked to, or any bonded device. */
+    private fun hostKnown(): Boolean {
+        if (lastKnownDevice != null) return true
+        return try {
+            !btAdapter?.bondedDevices.isNullOrEmpty()
+        } catch (_: SecurityException) { false }
+    }
+
+    /** Why reconnecting is pointless right now, or null if it is worth trying. */
+    private fun reconnectBlocker(): String? = when {
+        !bluetoothOn() -> REASON_BLUETOOTH_OFF
+        !hostKnown() -> REASON_NO_HOST
+        else -> null
+    }
+
+    private fun enterFailed(reason: String) {
+        cancelReconnect()
+        if (reason == REASON_BLUETOOTH_OFF) {
+            // The stack is going away: nothing can be released or sent.
+            hidDevice = null
+            connectedDevice = null
+            typeGeneration.incrementAndGet()
+            proxyToken++
+        }
+        if (btState == BtState.FAILED && failureReason == reason) return
+        btState = BtState.FAILED
+        failureReason = reason
+        addLog("error", "Auto-reconnect stopped: $reason")
+        updateNotification("Not connected — $reason")
+    }
+
+    /** Begin (or restart) reconnecting. [immediate] tries once straight away. */
+    private fun startReconnect(immediate: Boolean = false) {
+        if (!immediate && btState == BtState.RECONNECTING) return
+        cancelReconnect()
+        val blocker = reconnectBlocker()
+        if (blocker != null) {
+            enterFailed(blocker)
+            return
+        }
         btState = BtState.RECONNECTING
+        failureReason = ""
         reconnectAttempt = 0
         reconnectStartTime = System.currentTimeMillis()
-        scheduleReconnect()
+        if (immediate) attemptReconnect() else scheduleReconnect()
     }
+
+    private fun nextRetryDelayMs(): Long = ReconnectPolicy.delayMs(
+        reconnectAttempt + 1, System.currentTimeMillis() - reconnectStartTime
+    )
 
     private fun scheduleReconnect() {
         if (btState != BtState.RECONNECTING) return
-
-        val elapsed = System.currentTimeMillis() - reconnectStartTime
-        if (elapsed > RECONNECT_MAX_DURATION_MS) {
-            btState = BtState.FAILED
-            addLog("error", "Auto-reconnect timed out after $reconnectAttempt attempts")
-            updateNotification("Connection failed — reconnect timed out")
-            return
-        }
-
-        val delay = if (reconnectAttempt < RECONNECT_DELAYS_MS.size) {
-            RECONNECT_DELAYS_MS[reconnectAttempt]
-        } else {
-            RECONNECT_SLOW_MS
-        }
-
+        val delay = nextRetryDelayMs()
+        updateNotification(
+            "Reconnecting… (attempt ${reconnectAttempt + 1}, next try in ${delay / 1000} s)"
+        )
         reconnectRunnable = Runnable { attemptReconnect() }
         handler.postDelayed(reconnectRunnable!!, delay)
     }
 
     private fun attemptReconnect() {
         if (btState != BtState.RECONNECTING) return
+        val blocker = reconnectBlocker()
+        if (blocker != null) {
+            enterFailed(blocker)
+            return
+        }
         reconnectAttempt++
         addLog("info", "Reconnect attempt $reconnectAttempt")
         connectToHost()
@@ -812,12 +880,93 @@ class BluetoothHidService : Service() {
 
     private fun getNextRetrySeconds(): Int {
         if (btState != BtState.RECONNECTING) return 0
-        val delay = if (reconnectAttempt < RECONNECT_DELAYS_MS.size) {
-            RECONNECT_DELAYS_MS[reconnectAttempt]
-        } else {
-            RECONNECT_SLOW_MS
+        return (nextRetryDelayMs() / 1000).toInt()
+    }
+
+    // Broadcasts that end the wait early. Adapter turning on: bring the HID
+    // app back if the stack dropped it, then connect at once. The ACL link of
+    // the last known host appearing (the computer woke up and dialled in):
+    // connect at once instead of waiting out the back-off. A new bond: the
+    // "no host known" condition is over.
+    private fun registerBluetoothReceiver() {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    BluetoothAdapter.ACTION_STATE_CHANGED -> {
+                        when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                            BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF ->
+                                enterFailed(REASON_BLUETOOTH_OFF)
+                            BluetoothAdapter.STATE_ON -> onAdapterOn()
+                        }
+                    }
+                    BluetoothDevice.ACTION_ACL_CONNECTED -> {
+                        val device = bluetoothDeviceExtra(intent)
+                        val known = lastKnownDevice
+                        if (device != null && known != null && device.address == known.address &&
+                            btState != BtState.CONNECTED
+                        ) {
+                            addLog("info", "Host link appeared — reconnecting now")
+                            restartReconnectNow()
+                        }
+                    }
+                    BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+                        val bonded = intent.getIntExtra(
+                            BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR
+                        ) == BluetoothDevice.BOND_BONDED
+                        if (bonded && (btState == BtState.FAILED || btState == BtState.REGISTERED)) {
+                            addLog("info", "New bonded device — reconnecting now")
+                            restartReconnectNow()
+                        }
+                    }
+                }
+            }
         }
-        return (delay / 1000).toInt()
+        val filter = IntentFilter().apply {
+            addAction(BluetoothAdapter.ACTION_STATE_CHANGED)
+            addAction(BluetoothDevice.ACTION_ACL_CONNECTED)
+            addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        }
+        try {
+            // BLUETOOTH_CONNECT (API 31+) is what lets the device broadcasts
+            // through; onCreate has already bailed out without it.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(receiver, filter)
+            }
+            btStateReceiver = receiver
+        } catch (e: SecurityException) {
+            addLog("error", "Missing Bluetooth permission for connection broadcasts: ${e.message}")
+        }
+    }
+
+    private fun unregisterBluetoothReceiver() {
+        btStateReceiver?.let { try { unregisterReceiver(it) } catch (_: Exception) {} }
+        btStateReceiver = null
+    }
+
+    @Suppress("DEPRECATION")
+    private fun bluetoothDeviceExtra(intent: Intent): BluetoothDevice? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        } else {
+            intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        }
+
+    private fun restartReconnectNow() {
+        if (hidDevice == null) {
+            // The HID app is not registered; registering it connects as soon
+            // as the registration lands (onAppStatusChanged).
+            registerHidDevice()
+        } else {
+            startReconnect(immediate = true)
+        }
+    }
+
+    private fun onAdapterOn() {
+        addLog("info", "Bluetooth turned on")
+        if (btState == BtState.CONNECTED) return
+        restartReconnectNow()
     }
 
     // --- Send keystrokes ---
@@ -1306,13 +1455,14 @@ class BluetoothHidService : Service() {
                 json.put("bluetooth", "reconnecting")
                 json.put("device", deviceName ?: "Unknown")
                 json.put("reconnect_attempt", reconnectAttempt)
-                json.put("reconnect_max", 10)
+                // Retries never run out; kept (null) for older PWA builds
+                json.put("reconnect_max", JSONObject.NULL)
                 json.put("next_retry_seconds", getNextRetrySeconds())
             }
             BtState.FAILED -> {
                 json.put("bluetooth", "failed")
                 json.put("device", deviceName ?: "Unknown")
-                json.put("failure_reason", "Auto-reconnect timed out after $reconnectAttempt attempts")
+                json.put("failure_reason", failureReason)
             }
             BtState.IDLE -> {
                 json.put("bluetooth", "idle")
