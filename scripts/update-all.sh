@@ -4,7 +4,8 @@
 # Run inside Termux:
 #   ~/whisper-hid/scripts/update-all.sh
 #
-# Pulls the repo, restarts the Whisper server on the new code, then
+# Pulls the repo, reinstalls the Python packages (scripts/requirements.txt),
+# restarts the Whisper server on the new code, then
 # downloads and installs the latest APK (staging it in Downloads and
 # clearing out old copies). The PWA needs nothing — it's served from
 # GitHub Pages and updates itself.
@@ -32,7 +33,7 @@ for arg in "$@"; do
         --no-server) DO_SERVER=false ;;
         --no-clean)  APK_ARGS+=("--no-clean") ;;
         --no-open)   APK_ARGS+=("--no-open") ;;
-        -h|--help)   sed -n '2,19p' "$0"; exit 0 ;;
+        -h|--help)   sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "Unknown option: $arg (try --help)" >&2; exit 2 ;;
     esac
 done
@@ -68,6 +69,20 @@ if [ "$DO_PULL" = true ]; then
     git -C "$REPO_DIR" pull --ff-only
 fi
 
+FAILED=false
+if [ "$DO_SERVER" = true ]; then
+    # Python packages first (after the pull, which may have changed
+    # requirements.txt): a server restarted onto a missing module only dies
+    # inside tmux. If the install fails, leave the running server alone.
+    step "Installing Python packages..."
+    if ! pip install -q -r "$REPO_DIR/scripts/requirements.txt"; then
+        warn "pip install -r scripts/requirements.txt failed; not restarting the Whisper server."
+        warn "Fix it and run: pip install -r $REPO_DIR/scripts/requirements.txt"
+        DO_SERVER=false
+        FAILED=true
+    fi
+fi
+
 if [ "$DO_SERVER" = true ]; then
     step "Restarting the Whisper server..."
     # start-whisper-server.sh copies the server scripts from this checkout
@@ -89,6 +104,10 @@ report_version "HID service   " "$HID_PORT"
 echo "  PWA: check Settings in the app — it updates itself from GitHub Pages."
 
 echo ""
+if [ "$FAILED" = true ]; then
+    echo "=== Update finished with errors (see WARNING above) ==="
+    exit 1
+fi
 echo "=== Update complete ==="
 if [ "$DO_APK" = true ]; then
     echo "Finish the APK install in the Android installer if it's still open."
