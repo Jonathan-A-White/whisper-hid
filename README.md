@@ -100,8 +100,9 @@ push to main).
 
 ## Updating
 
-One command does the whole phone — pull, restart the server on the new
-code, install the newest APK, and clear out old downloads:
+One command does the whole phone — pull, reinstall the Python packages
+(`scripts/requirements.txt`), restart the server on the new code, install the
+newest APK, and clear out old downloads:
 
 ```bash
 ~/whisper-hid/scripts/update-all.sh
@@ -135,6 +136,15 @@ of those to a current build fails with "App not installed" until you
 uninstall the old app first.
 
 The PWA updates itself — CI deploys it to GitHub Pages on every push to main.
+
+### Troubleshooting
+
+- **"Whisper server offline" after a `pkg upgrade`**: the upgrade can replace
+  Python and drop its pip packages. `start-whisper-server.sh` now says which
+  module is missing; fix it with
+  `pip install -r ~/whisper-hid/scripts/requirements.txt` (numpy and
+  onnxruntime come from `pkg install python-numpy python-onnxruntime`, never
+  pip), then run `update-all.sh` or `start-whisper-server.sh` again.
 
 ## Speech Models
 
@@ -220,10 +230,11 @@ whisper-hid/
 │   ├── setup-termux.sh
 │   ├── whisper-server.py
 │   ├── parakeet_onnx.py          # Parakeet inference on onnxruntime + numpy
+│   ├── requirements.txt          # pip packages the server needs (flask)
 │   ├── start-whisper-server.sh
 │   ├── stop-whisper-server.sh
 │   ├── update-model.sh
-│   ├── update-all.sh             # Update the whole phone: pull, server, APK
+│   ├── update-all.sh             # Update the whole phone: pull, pip, server, APK
 │   ├── update-apk.sh             # Install the newest APK from GitHub Releases
 │   ├── diagnose-sigill.sh
 │   └── tests/                    # pytest suite for the server
