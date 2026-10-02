@@ -16,7 +16,7 @@ fi
 # "git pull && start-whisper-server.sh" picks up code changes
 # without requiring a full setup-termux.sh re-run.
 REPO_SCRIPTS_DIR="$(cd "$(dirname "$0")" && pwd)"
-for _script in whisper-server.py parakeet_onnx.py start-whisper-server.sh stop-whisper-server.sh; do
+for _script in whisper-server.py parakeet_onnx.py requirements.txt start-whisper-server.sh stop-whisper-server.sh; do
     _src="$REPO_SCRIPTS_DIR/$_script"
     _dst="$INSTALL_DIR/$_script"
     if [ -f "$_src" ] && [ "$_src" != "$_dst" ]; then
@@ -25,6 +25,29 @@ for _script in whisper-server.py parakeet_onnx.py start-whisper-server.sh stop-w
     fi
 done
 unset _script _src _dst
+
+# Refuse to start when a required Python module is missing (a `pkg upgrade`
+# can replace Python and take its pip packages with it), naming the module
+# instead of letting the server die inside tmux where nobody is looking.
+# requirements.txt lists pip package names; the import name can differ.
+_req="$REPO_SCRIPTS_DIR/requirements.txt"
+[ -f "$_req" ] || _req="$INSTALL_DIR/requirements.txt"
+_modules="flask"
+if [ -f "$_req" ]; then
+    _modules="$(sed -e 's/#.*//' -e 's/[<>=!~;[ ].*//' -e '/^[[:space:]]*$/d' "$_req" \
+        | tr 'A-Z' 'a-z' | tr -- '-' '_')"
+fi
+for _mod in $_modules; do
+    case "$_mod" in
+        pyyaml) _mod="yaml" ;;
+        pillow) _mod="PIL" ;;
+    esac
+    if ! python3 -c "import $_mod" 2>/dev/null; then
+        echo "Missing Python module: $_mod. Run: pip install -r ~/whisper-hid/scripts/requirements.txt"
+        exit 1
+    fi
+done
+unset _req _modules _mod
 
 # Check if already running
 if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
