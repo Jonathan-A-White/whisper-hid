@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.Settings
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
@@ -45,6 +46,9 @@ class MainActivity : AppCompatActivity() {
 
         btnOpenPwa.setOnClickListener { openPwa() }
         btnStopService.setOnClickListener { stopHidService() }
+        findViewById<Button>(R.id.btnSetupVoiceKeyboard).setOnClickListener {
+            startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
+        }
 
         // Starting the connectedDevice foreground service before BLUETOOTH_CONNECT
         // is granted crashes on Android 14+ — wait for the grant on first launch.

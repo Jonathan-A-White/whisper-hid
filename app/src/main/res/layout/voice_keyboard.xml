@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="8dp"
+    android:background="@color/surface_dark">
+
+    <TextView
+        android:id="@+id/voiceStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center"
+        android:minHeight="28dp"
+        android:text="@string/voice_status_idle"
+        android:textSize="14sp"
+        android:textColor="@color/on_surface_secondary" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <Button
+            android:id="@+id/voiceSwitch"
+            android:layout_width="0dp"
+            android:layout_height="64dp"
+            android:layout_weight="1"
+            android:text="@string/voice_switch_key"
+            android:contentDescription="@string/voice_switch_description"
+            android:textSize="22sp" />
+
+        <Button
+            android:id="@+id/voiceMic"
+            android:layout_width="0dp"
+            android:layout_height="80dp"
+            android:layout_weight="3"
+            android:layout_marginStart="8dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/voice_mic_idle"
+            android:text="@string/voice_mic_key"
+            android:contentDescription="@string/voice_mic_description"
+            android:textSize="32sp" />
+
+        <Button
+            android:id="@+id/voiceBackspace"
+            android:layout_width="0dp"
+            android:layout_height="64dp"
+            android:layout_weight="1"
+            android:text="@string/voice_backspace_key"
+            android:contentDescription="@string/voice_backspace_description"
+            android:textSize="22sp" />
+    </LinearLayout>
+</LinearLayout>

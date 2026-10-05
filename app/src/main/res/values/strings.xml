@@ -3,4 +3,13 @@
     <string name="app_name">Whisper HID Service</string>
     <string name="open_pwa">Open Whisper Keyboard</string>
     <string name="stop_service">Stop Service</string>
+    <string name="setup_voice_keyboard">Set up voice keyboard</string>
+    <string name="voice_ime_label">Whisper voice</string>
+    <string name="voice_status_idle">Tap the mic to dictate</string>
+    <string name="voice_mic_key">&#x1F3A4;</string>
+    <string name="voice_switch_key">&#x2328;</string>
+    <string name="voice_backspace_key">&#x232B;</string>
+    <string name="voice_mic_description">Dictate</string>
+    <string name="voice_switch_description">Switch keyboard</string>
+    <string name="voice_backspace_description">Backspace</string>
 </resources>

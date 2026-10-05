@@ -42,6 +42,14 @@
         android:layout_marginBottom="16dp" />
 
     <Button
+        android:id="@+id/btnSetupVoiceKeyboard"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/setup_voice_keyboard"
+        android:textSize="16sp"
+        android:layout_marginBottom="16dp" />
+
+    <Button
         android:id="@+id/btnStopService"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
