@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   HidStatus,
   NewlineMode,
@@ -9,8 +9,16 @@ import type {
 } from "../types";
 import type { TranscriptionResult } from "../hooks/useWhisper";
 import { applyVoiceEdit } from "../lib/api";
+import {
+  copyToClipboard,
+  deliver,
+  deliveryFor,
+  shareText,
+} from "../lib/delivery";
 import { CleanupToggle } from "./CleanupToggle";
 import { EditBuffer, type VoiceEditState } from "./EditBuffer";
+import { PhoneModeToggle } from "./PhoneModeToggle";
+import { PhoneResult } from "./PhoneResult";
 import { SymbolModeToggle } from "./SymbolModeToggle";
 import { TargetModeToggle } from "./TargetModeToggle";
 import { ZoomModeToggle } from "./ZoomModeToggle";
@@ -43,6 +51,7 @@ interface TalkViewProps {
     setTarget: (target: TargetMode) => void;
   };
   settings: Settings;
+  onUpdateSettings: (partial: Partial<Settings>) => void;
 }
 
 interface TranscriptionStats {
@@ -57,6 +66,7 @@ export function TalkView({
   store,
   target,
   settings,
+  onUpdateSettings,
 }: TalkViewProps) {
   const { newlineMode } = target;
   const [lastText, setLastText] = useState<string | null>(null);
@@ -67,6 +77,47 @@ export function TalkView({
   const [voiceEditState, setVoiceEditState] = useState<VoiceEditState>("idle");
   const [voiceEditError, setVoiceEditError] = useState<string | null>(null);
   const [clipboardError, setClipboardError] = useState<string | null>(null);
+  // "This phone" mode: the dictation kept here, and the brief copy notice
+  const [phoneText, setPhoneText] = useState<string | null>(null);
+  const [copyNotice, setCopyNotice] = useState<"copied" | "tap" | null>(null);
+  const phoneMode = deliveryFor(settings.sendTo) === "phone";
+
+  useEffect(() => {
+    if (copyNotice !== "copied") return;
+    const t = setTimeout(() => setCopyNotice(null), 2000);
+    return () => clearTimeout(t);
+  }, [copyNotice]);
+
+  // Send a finished dictation where the "This phone" switch says: typed on
+  // the host over Bluetooth, or copied here (and kept for Copy / Share).
+  const deliverText = useCallback(
+    async (text: string) => {
+      const result = await deliver(text, {
+        sendTo: settings.sendTo,
+        newlineAfterEnd: settings.newlineAfterEnd,
+        hid,
+        clipboard:
+          typeof navigator === "undefined" ? undefined : navigator.clipboard,
+      });
+      if (result.via === "phone") {
+        setPhoneText(text);
+        setClipboardError(null);
+        setCopyNotice(result.copied ? "copied" : "tap");
+      }
+    },
+    [hid, settings.sendTo, settings.newlineAfterEnd]
+  );
+
+  const handleCopyAgain = useCallback(async () => {
+    if (phoneText === null) return;
+    const ok = await copyToClipboard(phoneText, navigator.clipboard);
+    setClipboardError(ok ? null : "Couldn't copy to the clipboard");
+    setCopyNotice(ok ? "copied" : "tap");
+  }, [phoneText]);
+
+  const handleShare = useCallback(async () => {
+    if (phoneText !== null) await shareText(phoneText, navigator);
+  }, [phoneText]);
 
   const handlePtt = useCallback(async () => {
     if (whisper.recording) {
@@ -88,8 +139,7 @@ export function TalkView({
         } else {
           setLastText(text);
           await store.addEntry(text, entryStats);
-          await hid.sendText(text);
-          if (settings.newlineAfterEnd) await hid.sendNewline();
+          await deliverText(text);
         }
       } else {
         setLastError(error);
@@ -97,9 +147,11 @@ export function TalkView({
       }
     } else {
       setLastError(null);
+      setPhoneText(null);
+      setCopyNotice(null);
       await whisper.startRecording();
     }
-  }, [whisper, hid, store, settings.editBeforeSend, settings.newlineAfterEnd]);
+  }, [whisper, store, deliverText, settings.editBeforeSend]);
 
   const handleSendEdit = useCallback(
     async (text: string) => {
@@ -109,10 +161,9 @@ export function TalkView({
       setLastText(text);
       await store.addEntry(text, lastEntryStats ?? undefined);
       setLastEntryStats(null);
-      await hid.sendText(text);
-      if (settings.newlineAfterEnd) await hid.sendNewline();
+      await deliverText(text);
     },
-    [hid, store, lastEntryStats, settings.newlineAfterEnd]
+    [store, deliverText, lastEntryStats]
   );
 
   // Voice editing of the pending buffer: first tap records the spoken
@@ -290,6 +341,12 @@ export function TalkView({
               onSelect={target.setTarget}
             />
 
+            {/* This phone: keep the dictation here (copy/share), not Bluetooth */}
+            <PhoneModeToggle
+              sendTo={settings.sendTo}
+              onChange={(sendTo) => onUpdateSettings({ sendTo })}
+            />
+
             {/* Symbol mode quick toggle */}
             <SymbolModeToggle />
 
@@ -314,8 +371,18 @@ export function TalkView({
               )}
             </div>
 
+            {/* Phone mode result: the text with Copy again / Share */}
+            {phoneMode && phoneText !== null && !lastError && (
+              <PhoneResult
+                text={phoneText}
+                notice={copyNotice}
+                onCopy={handleCopyAgain}
+                onShare={handleShare}
+              />
+            )}
+
             {/* Last transcription */}
-            {lastText && !lastError && (
+            {lastText && !lastError && !(phoneMode && phoneText !== null) && (
               <p className="mt-4 text-gray-400 text-sm max-w-xs text-center">
                 Last: &quot;
                 {lastText.length > 140

@@ -101,6 +101,7 @@ export default function App() {
             store={store}
             target={target}
             settings={settings}
+            onUpdateSettings={updateSettings}
           />
         ) : tab === "history" ? (
           <HistoryView store={store} hid={hid} />
