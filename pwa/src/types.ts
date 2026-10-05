@@ -99,7 +99,12 @@ export interface TargetState {
   targets: TargetInfo[];
 }
 
+/** Where a dictation goes: the Bluetooth host, or this phone (copy/share). */
+export type SendTo = "computer" | "phone";
+
 export interface Settings {
+  /** "phone" = copy/share on this phone, nothing sent over Bluetooth */
+  sendTo: SendTo;
   editBeforeSend: boolean;
   appendNewline: boolean;
   appendSpace: boolean;
@@ -121,6 +126,7 @@ export interface Settings {
 }
 
 export const DEFAULT_SETTINGS: Settings = {
+  sendTo: "computer",
   editBeforeSend: false,
   appendNewline: false,
   appendSpace: true,
