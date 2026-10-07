@@ -62,9 +62,9 @@ fi
 # this, "export CLEANUP_THREADS=6 && ./start-whisper-server.sh" silently
 # does nothing whenever a tmux server is already running.
 ENV_VARS=""
-for _var in WHISPER_MODEL WHISPER_PORT STT_ENGINE STT_CLEANUP STT_CHUNKED \
+for _var in WHISPER_PORT STT_ENGINE STT_CLEANUP STT_CHUNKED \
             CLEANUP_MODEL CLEANUP_THREADS CLEANUP_SERVER_PORT CLEANUP_TIMEOUT_SEC \
-            PARAKEET_THREADS WHISPER_SERVER_PORT WHISPER_NOISE_REDUCTION CORS_ORIGIN; do
+            PARAKEET_THREADS WHISPER_NOISE_REDUCTION CORS_ORIGIN; do
     if [ -n "${!_var:-}" ]; then
         ENV_VARS="$ENV_VARS $(printf '%s=%q' "$_var" "${!_var}")"
     fi

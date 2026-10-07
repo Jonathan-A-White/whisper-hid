@@ -2,9 +2,6 @@
 # setup-termux.sh — One-time Termux environment setup for Whisper STT
 set -euo pipefail
 
-WHISPER_REPO="https://github.com/ggml-org/whisper.cpp.git"
-MODEL_REPO="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
-DEFAULT_MODEL="ggml-base.en.bin"
 INSTALL_DIR="$HOME/whisper-stt"
 # Capture script directory before any cd commands change the working directory
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,36 +10,19 @@ echo "=== Whisper Bluetooth Keyboard — Termux Setup ==="
 echo ""
 
 # 1. Update packages
-echo "[1/9] Updating Termux packages..."
+echo "[1/6] Updating Termux packages..."
 pkg update -y && pkg upgrade -y
 
 # 2. Install build tools and Python
-echo "[2/9] Installing build tools and Python..."
+echo "[2/6] Installing build tools and Python..."
 # libandroid-spawn: bionic has no spawn.h/posix_spawn; this Termux package
 # provides both. llama-server's tool-exec code (vendor/sheredom/subprocess.h)
-# needs it — see the llama.cpp build in step 7.
+# needs it — see the llama.cpp build in step 4.
 pkg install -y clang cmake make git tmux termux-api socat ffmpeg python bzip2 libandroid-spawn
 pip install -r "$SCRIPT_DIR/requirements.txt"
 
-# 3. Clone whisper.cpp
-echo "[3/9] Cloning whisper.cpp..."
-mkdir -p "$INSTALL_DIR"
-if [ -d "$INSTALL_DIR/whisper.cpp" ]; then
-    echo "  whisper.cpp already cloned, pulling latest..."
-    cd "$INSTALL_DIR/whisper.cpp" && git pull
-else
-    git clone "$WHISPER_REPO" "$INSTALL_DIR/whisper.cpp"
-fi
-
-# 4. Build whisper.cpp with ARM64 NEON flags
-echo "[4/9] Building whisper.cpp (this may take a few minutes)..."
-cd "$INSTALL_DIR/whisper.cpp"
-WHISPER_BIN_CLI="$INSTALL_DIR/whisper.cpp/build/bin/whisper-cli"
-WHISPER_BIN_MAIN="$INSTALL_DIR/whisper.cpp/build/bin/main"
-WHISPER_BIN_SERVER="$INSTALL_DIR/whisper.cpp/build/bin/whisper-server"
-
-# Detect CPU features and pick optimal -march flags (shared with the
-# llama.cpp build in step 7)
+# Detect CPU features and pick optimal -march flags (used by the llama.cpp
+# build in step 4)
 ARM_MARCH="armv8-a"
 CPU_FEATURES=$(cat /proc/cpuinfo 2>/dev/null | grep -i "Features" | head -1 || true)
 if echo "$CPU_FEATURES" | grep -q "asimddp"; then
@@ -53,40 +33,13 @@ if echo "$CPU_FEATURES" | grep -q "asimddp"; then
         ARM_MARCH="armv8.2-a+dotprod"
     fi
 fi
-
-if [ -x "$WHISPER_BIN_CLI" ] || [ -x "$WHISPER_BIN_MAIN" ]; then
-    echo "  whisper.cpp already built, skipping compile step."
-    echo "  (Delete $INSTALL_DIR/whisper.cpp/build to force rebuild)"
-else
-    echo "  CPU features detected, using: -march=$ARM_MARCH"
-
-    # GGML_NATIVE=OFF prevents ggml from auto-detecting -mcpu=native,
-    # which can emit instructions the CPU doesn't actually support (SIGILL).
-    # We pass our own -march via CMAKE_{C,CXX}_FLAGS instead.
-    cmake -B build \
-        -DCMAKE_C_FLAGS="-march=$ARM_MARCH" \
-        -DCMAKE_CXX_FLAGS="-march=$ARM_MARCH" \
-        -DGGML_NATIVE=OFF \
-        -DGGML_FLASH_ATTN=OFF \
-        -DWHISPER_NO_ACCELERATE=ON \
-        -DWHISPER_BUILD_SERVER=ON \
-        -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-    cmake --build build --config Release -j"$(nproc)"
-fi
-
-# 5. Download default model
-echo "[5/9] Downloading default model ($DEFAULT_MODEL)..."
 mkdir -p "$INSTALL_DIR/models"
-if [ -f "$INSTALL_DIR/models/$DEFAULT_MODEL" ]; then
-    echo "  Model already exists, skipping download."
-else
-    curl -L -o "$INSTALL_DIR/models/$DEFAULT_MODEL" \
-        "$MODEL_REPO/$DEFAULT_MODEL"
-fi
 
-# 6. Parakeet engine (optional but recommended — faster + more accurate).
-# Failure here is non-fatal: the server falls back to whisper.cpp.
-echo "[6/9] Installing Parakeet engine (sherpa-onnx, optional)..."
+# 3. Parakeet, the speech-to-text engine. The server cannot transcribe without
+# it, so a failure here is reported at the end and fails the setup — but the
+# remaining steps still run, so a retry only has to redo this one
+# (./update-model.sh parakeet).
+echo "[3/6] Installing Parakeet speech-to-text engine..."
 PARAKEET_DIR="sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
 PARAKEET_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/${PARAKEET_DIR}.tar.bz2"
 PARAKEET_OK=0
@@ -103,7 +56,7 @@ else
         PARAKEET_OK=1
     else
         echo "  WARNING: onnxruntime/numpy install failed — Parakeet engine unavailable."
-        echo "  The server will use whisper.cpp instead. To retry later:"
+        echo "  Dictation will not work until this is fixed. To retry:"
         echo "    pkg install python-numpy python-onnxruntime && ./update-model.sh parakeet"
     fi
 fi
@@ -125,11 +78,11 @@ if [ "$PARAKEET_OK" = "1" ]; then
     fi
 fi
 
-# 7. Speech cleanup LLM (optional — a small local model strips filler words
+# 4. Speech cleanup LLM (optional — a small local model strips filler words
 # and false starts, applies spoken self-corrections, and fixes punctuation on
 # the final transcript). Failure here is non-fatal: the whisper server just
 # reports cleanup as unavailable.
-echo "[7/9] Installing speech cleanup LLM (llama.cpp + Qwen3, optional)..."
+echo "[4/6] Installing speech cleanup LLM (llama.cpp + Qwen3, optional)..."
 LLAMA_REPO="https://github.com/ggml-org/llama.cpp.git"
 LLAMA_BIN_SERVER="$INSTALL_DIR/llama.cpp/build/bin/llama-server"
 # Keep the model file name in sync with whisper-server.py and update-model.sh
@@ -152,7 +105,7 @@ else
         # pull latest so upstream fixes (and the MTMD_VIDEO guard) are present.
         (cd "$INSTALL_DIR/llama.cpp" && git pull) || true
     fi
-    # Same -march story as whisper.cpp: GGML_NATIVE=OFF avoids SIGILL from
+    # GGML_NATIVE=OFF avoids SIGILL from
     # -mcpu=native; LLAMA_CURL=OFF drops the libcurl dependency (models are
     # downloaded with curl below, not by llama-server).
     # MTMD_VIDEO=OFF: video decode shells out to ffmpeg at runtime and is
@@ -201,10 +154,10 @@ if [ "$CLEANUP_OK" = "1" ]; then
     fi
 fi
 
-# 8. Copy scripts
-echo "[8/9] Setting up scripts..."
+# 5. Copy scripts
+echo "[5/6] Setting up scripts..."
 MISSING_SCRIPTS=()
-for script in whisper-server.py parakeet_onnx.py requirements.txt start-whisper-server.sh stop-whisper-server.sh update-model.sh diagnose-sigill.sh; do
+for script in whisper-server.py parakeet_onnx.py requirements.txt start-whisper-server.sh stop-whisper-server.sh update-model.sh; do
     if [ -f "$SCRIPT_DIR/$script" ]; then
         cp "$SCRIPT_DIR/$script" "$INSTALL_DIR/$script"
         chmod +x "$INSTALL_DIR/$script"
@@ -227,8 +180,8 @@ if [ ${#MISSING_SCRIPTS[@]} -gt 0 ]; then
     exit 1
 fi
 
-# 9. Set up Termux:Boot auto-start (optional)
-echo "[9/9] Setting up Termux:Boot auto-start..."
+# 6. Set up Termux:Boot auto-start (optional)
+echo "[6/6] Setting up Termux:Boot auto-start..."
 BOOT_DIR="$HOME/.termux/boot"
 mkdir -p "$BOOT_DIR"
 cat > "$BOOT_DIR/start-whisper-server" << 'BOOTEOF'
@@ -247,21 +200,11 @@ echo ""
 echo "=== Setup Complete ==="
 echo ""
 echo "Installation directory: $INSTALL_DIR"
-echo "Model: $INSTALL_DIR/models/$DEFAULT_MODEL"
-if [ -x "$INSTALL_DIR/whisper.cpp/build/bin/whisper-cli" ]; then
-    echo "Whisper binary: $INSTALL_DIR/whisper.cpp/build/bin/whisper-cli"
-else
-    echo "Whisper binary: $INSTALL_DIR/whisper.cpp/build/bin/main"
-fi
-if [ -x "$WHISPER_BIN_SERVER" ]; then
-    echo "Whisper server: $WHISPER_BIN_SERVER (persistent mode — model loaded once)"
-else
-    echo "Whisper server: not built (will use subprocess mode)"
-fi
 if [ "$PARAKEET_OK" = "1" ] && [ -f "$INSTALL_DIR/models/$PARAKEET_DIR/tokens.txt" ]; then
-    echo "Parakeet engine: installed (used automatically — faster + more accurate)"
+    echo "Parakeet engine: installed"
 else
-    echo "Parakeet engine: not installed (whisper.cpp will be used)"
+    echo "Parakeet engine: NOT installed — dictation will not work. Fix with:"
+    echo "  pkg install python-numpy python-onnxruntime && $INSTALL_DIR/update-model.sh parakeet"
 fi
 if [ "$CLEANUP_OK" = "1" ] && [ -f "$INSTALL_DIR/models/$CLEANUP_MODEL_FILE" ]; then
     echo "Speech cleanup LLM: installed (toggle it from the PWA Talk screen)"
@@ -279,6 +222,10 @@ echo "To update after code changes:"
 echo "  cd $(dirname $INSTALL_DIR)/whisper-hid"
 echo "  scripts/stop-whisper-server.sh && git pull && scripts/start-whisper-server.sh"
 echo ""
-echo "To swap models: ./update-model.sh <model-name>"
-echo "  Available: parakeet, tiny.en, base.en, small.en, distil-small.en"
-echo "  Note: Restart the Whisper server after swapping models."
+echo "To download a model: ./update-model.sh <parakeet|cleanup|cleanup-4b>"
+echo "  Note: Restart the Whisper server afterwards."
+
+# Parakeet is required: a setup that left it out has not succeeded.
+if [ "$PARAKEET_OK" != "1" ]; then
+    exit 1
+fi

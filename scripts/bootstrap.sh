@@ -4,8 +4,8 @@
 # Run inside Termux:
 #   curl -fsSL https://raw.githubusercontent.com/Jonathan-A-White/whisper-hid/main/scripts/bootstrap.sh | bash
 #
-# Clones the repo, runs the full Termux setup (whisper.cpp build + model
-# download), fetches the latest Android app APK and opens the installer,
+# Clones the repo, runs the full Termux setup (Parakeet speech model +
+# cleanup LLM), fetches the latest Android app APK and opens the installer,
 # then starts the Whisper server. Safe to re-run — every step is idempotent.
 #
 # Note: commands that might read from stdin get `< /dev/null` so they can't
@@ -49,7 +49,7 @@ else
     git clone "$REPO_URL" "$REPO_DIR" < /dev/null
 fi
 
-step "[3/5] Running Termux setup (builds whisper.cpp — takes a few minutes on first run)..."
+step "[3/5] Running Termux setup (installs Parakeet and builds the cleanup LLM — takes a few minutes on first run)..."
 bash "$REPO_DIR/scripts/setup-termux.sh" < /dev/null
 
 step "[4/5] Downloading latest Android app APK..."
