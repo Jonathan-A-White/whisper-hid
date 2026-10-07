@@ -63,6 +63,18 @@ class BluetoothHidService : Service() {
         private const val PREFS_NAME = "whisper_hid_prefs"
         private const val KEY_HEADSET_MIC_ENABLED = "headset_mic_enabled"
 
+        // "Keep the headset link warm": hold the SCO link for as long as a
+        // headset with a mic is connected (the old behaviour). Off by default:
+        // a held link silences every other app's audio on that headset. See
+        // HeadsetLinkController.
+        private const val KEY_KEEP_LINK_WARM = "keep_headset_link_warm"
+
+        // How long a dictation waits for the link before recording starts
+        // anyway (on the phone mic), and the longest the link is held for a
+        // dictation whose end never arrived (a client that died).
+        internal const val DICTATION_LINK_TIMEOUT_MS = 4_000L
+        internal const val DICTATION_MAX_HOLD_MS = 15 * 60_000L
+
         // A BT HID host silently drops input reports for a short window right
         // after STATE_CONNECTED (it's still re-enumerating / setting up the
         // input pipe). sendReport() succeeds at the link layer, so the leading
@@ -280,6 +292,14 @@ class BluetoothHidService : Service() {
     // User-facing "Zoom mode" switch: false = release the headset's SCO link
     // so another device (laptop running Zoom) can use the headset mic.
     @Volatile private var headsetMicEnabled = true
+    // Decides when the link is open: during a dictation, or always when the
+    // user chose "Keep the headset link warm". Null only if onCreate bailed out.
+    @Volatile private var linkController: HeadsetLinkController? = null
+    private val dictationExpiry = Runnable {
+        if (linkController?.expireIfStale(DICTATION_MAX_HOLD_MS) == true) {
+            addLog("warn", "Dictation never ended — headset link released")
+        }
+    }
     private var audioFocusRequest: AudioFocusRequest? = null
     private var keepAliveTrack: AudioTrack? = null
     private var keepAliveThread: Thread? = null
@@ -325,6 +345,12 @@ class BluetoothHidService : Service() {
 
         headsetMicEnabled = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(KEY_HEADSET_MIC_ENABLED, true)
+        linkController = HeadsetLinkController(
+            scoDriver,
+            System::currentTimeMillis,
+            getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(KEY_KEEP_LINK_WARM, false)
+        )
 
         startHttpServer()
         setupHeadsetMicRouting()
@@ -384,6 +410,7 @@ class BluetoothHidService : Service() {
                 when (state) {
                     AudioManager.SCO_AUDIO_STATE_CONNECTED -> onScoConnected(am)
                     AudioManager.SCO_AUDIO_STATE_DISCONNECTED -> {
+                        linkController?.onScoDisconnected()
                         if (scoConnected) {
                             scoConnected = false
                             addLog("info", "Headset mic SCO disconnected")
@@ -404,7 +431,7 @@ class BluetoothHidService : Service() {
             override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
                 if (addedDevices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO && it.isSource }) {
                     addLog("info", "Bluetooth headset mic detected: ${bluetoothMicName() ?: "unknown"}")
-                    enableSco()
+                    linkController?.onHeadsetPresent()
                 }
             }
 
@@ -421,7 +448,7 @@ class BluetoothHidService : Service() {
 
         if (hasBluetoothMic()) {
             addLog("info", "Bluetooth headset mic present: ${bluetoothMicName() ?: "unknown"}")
-            enableSco()
+            linkController?.onHeadsetPresent()
         }
     }
 
@@ -436,6 +463,7 @@ class BluetoothHidService : Service() {
     @Suppress("DEPRECATION")
     private fun onScoConnected(am: AudioManager) {
         scoConnected = true
+        linkController?.onScoConnected()
         scoRetryCount = 0
         cancelScoRetry()
         try {
@@ -461,8 +489,8 @@ class BluetoothHidService : Service() {
     fun isHeadsetMicEnabled(): Boolean = headsetMicEnabled
 
     // "Zoom mode": the user shares one multipoint headset between this phone
-    // and a laptop. A headset has a single call-audio (SCO) channel, and this
-    // service holds it continuously (keep-alive stream + auto-retry), so the
+    // and a laptop. A headset has a single call-audio (SCO) channel, and while
+    // this service holds it (a dictation, or "Keep the headset link warm") the
     // laptop can never open its own — Zoom gets no headset mic. Disabling the
     // headset mic releases SCO without stopping the service: HID typing keeps
     // working and dictation falls back to the phone's built-in mic.
@@ -474,13 +502,58 @@ class BluetoothHidService : Service() {
             .apply()
         handler.post {
             if (enabled) {
-                addLog("info", "Headset mic re-enabled — reclaiming SCO link")
-                enableSco()
+                addLog("info", "Headset mic re-enabled")
+                linkController?.onHeadsetPresent()
             } else {
                 addLog("info", "Headset mic released for other devices (Zoom mode)")
                 disableSco()
             }
         }
+    }
+
+    fun isKeepLinkWarm(): Boolean = linkController?.keepWarm == true
+
+    // "Keep the headset link warm": hold the link whenever a headset with a
+    // mic is connected instead of only while a dictation runs.
+    fun setKeepLinkWarm(on: Boolean) {
+        getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_KEEP_LINK_WARM, on)
+            .apply()
+        addLog("info", if (on) "Headset link kept warm" else "Headset link held only during dictation")
+        linkController?.setKeepWarm(on)
+    }
+
+    // A dictation is starting (POST /dictation, or the voice keyboard): open
+    // the link and wait for it so the recording starts on the headset mic.
+    // Blocks, so never call from the main thread.
+    fun beginDictationLink(): HeadsetLinkController.Begin? {
+        val c = linkController ?: return null
+        handler.removeCallbacks(dictationExpiry)
+        handler.postDelayed(dictationExpiry, DICTATION_MAX_HOLD_MS + 1_000L)
+        val r = c.beginDictation(DICTATION_LINK_TIMEOUT_MS)
+        if (r.connected) {
+            addLog("info", "Dictation headset link up in ${r.waitedMs}ms")
+        } else if (hasBluetoothMic() && headsetMicEnabled) {
+            addLog("warn", "Dictation headset link not up after ${r.waitedMs}ms — recording starts anyway")
+        }
+        return r
+    }
+
+    fun endDictationLink() {
+        handler.removeCallbacks(dictationExpiry)
+        linkController?.endDictation()
+    }
+
+    // SCO calls belong on the main thread, where they always ran; the
+    // controller calls these from HTTP threads too.
+    private val scoDriver = object : ScoDriver {
+        override fun canOpen() = headsetMicEnabled && hasBluetoothMic()
+        override fun open() = onMain { enableSco() }
+        override fun close() = onMain { disableSco() }
+    }
+
+    private fun onMain(work: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) work() else handler.post(work)
     }
 
     private fun enableSco() {
@@ -638,6 +711,7 @@ class BluetoothHidService : Service() {
     private fun disableSco() {
         scoRequested = false
         scoConnected = false
+        linkController?.onScoDisconnected()
         cancelScoRetry()
         stopScoKeepAlive()
         val am = audioManager ?: return
@@ -1272,6 +1346,7 @@ class BluetoothHidService : Service() {
                 "/devices" -> handleDevices(request, output)
                 "/connect" -> handleConnect(request, output)
                 "/headset-mic" -> handleHeadsetMic(request, output)
+                "/dictation" -> handleDictation(request, output)
                 else -> sendResponse(output, 404, JSONObject().put("error", "not_found"))
             }
         } catch (e: Exception) {
@@ -1477,6 +1552,8 @@ class BluetoothHidService : Service() {
             .put("available", hasBluetoothMic())
             .put("active", isHeadsetMicActive())
             .put("enabled", headsetMicEnabled)
+            .put("keep_warm", isKeepLinkWarm())
+            .put("dictating", linkController?.dictating == true)
         bluetoothMicName()?.let { json.put("device", it) }
         return json
     }
@@ -1498,16 +1575,53 @@ class BluetoothHidService : Service() {
 
         try {
             val json = parseJsonBody(request.body)
-            if (!json.has("enabled")) {
+            if (!json.has("enabled") && !json.has("keep_warm")) {
                 sendResponse(output, 400, JSONObject()
                     .put("error", "missing_enabled")
-                    .put("message", "Body must include {\"enabled\": true|false}"))
+                    .put("message", "Body must include {\"enabled\": true|false} and/or {\"keep_warm\": true|false}"))
                 return
             }
-            setHeadsetMicEnabled(json.getBoolean("enabled"))
+            if (json.has("keep_warm")) setKeepLinkWarm(json.getBoolean("keep_warm"))
+            if (json.has("enabled")) setHeadsetMicEnabled(json.getBoolean("enabled"))
             // "active" may lag: the SCO transition runs async on the main
             // handler. "enabled" reflects the new setting immediately.
             sendResponse(output, 200, headsetMicJson().put("ok", true))
+        } catch (e: Exception) {
+            sendResponse(output, 500, JSONObject().put("error", e.message ?: "unknown"))
+        }
+    }
+
+    // POST /dictation {"active": true|false} (auth): a dictation is starting or
+    // has ended. Starting opens the headset's call link and answers once it is
+    // up (or after DICTATION_LINK_TIMEOUT_MS), so the recording that follows
+    // is routed to the headset mic; ending closes it so other apps can play
+    // audio over the headset again.
+    private fun handleDictation(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (request.method != "POST") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
+            return
+        }
+        if (!validateToken(request)) {
+            sendResponse(output, 403, JSONObject().put("error", "forbidden"))
+            return
+        }
+        try {
+            val json = parseJsonBody(request.body)
+            if (!json.has("active")) {
+                sendResponse(output, 400, JSONObject()
+                    .put("error", "missing_active")
+                    .put("message", "Body must include {\"active\": true|false}"))
+                return
+            }
+            val reply = JSONObject().put("ok", true)
+            if (json.getBoolean("active")) {
+                val r = beginDictationLink()
+                reply.put("connected", r?.connected == true).put("waited_ms", r?.waitedMs ?: 0L)
+            } else {
+                endDictationLink()
+            }
+            sendResponse(output, 200, reply)
         } catch (e: Exception) {
             sendResponse(output, 500, JSONObject().put("error", e.message ?: "unknown"))
         }
