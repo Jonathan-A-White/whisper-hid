@@ -125,7 +125,6 @@ export interface Settings {
    * suits a terminal; raise it for a heavyweight editor. See CLAUDE.md.
    */
   keystrokeDelay: number;
-  whisperModel: string;
   language: string;
 }
 
@@ -136,25 +135,8 @@ export const DEFAULT_SETTINGS: Settings = {
   appendSpace: true,
   newlineAfterEnd: false,
   keystrokeDelay: 10,
-  whisperModel: "base.en",
   language: "en",
 };
-
-export interface BenchmarkResult {
-  model: string;
-  size_mb: number;
-  text: string;
-  inference_ms: number;
-  speed_ratio: number;
-  error: string | null;
-}
-
-export interface BenchmarkResponse {
-  audio_duration_sec: number;
-  use_vad: boolean;
-  vad_available: boolean;
-  results: BenchmarkResult[];
-}
 
 export type Tab = "talk" | "history" | "settings";
 

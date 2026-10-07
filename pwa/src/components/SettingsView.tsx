@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import type { ModelInfo, Settings, TargetInfo } from "../types";
-import { whisperStatus, hidStatus, hidKeepLinkWarm, getModels, switchModel, getWhisperSettings, putWhisperSettings } from "../lib/api";
+import { whisperStatus, hidStatus, hidKeepLinkWarm, getModels, getWhisperSettings, putWhisperSettings } from "../lib/api";
 import { WordCorrections } from "./WordCorrections";
 import { SymbolReplacements } from "./SymbolReplacements";
-import { ModelBenchmark } from "./ModelBenchmark";
 import { CleanupSettings } from "./CleanupSettings";
 
 /**
@@ -46,10 +45,7 @@ interface SettingsViewProps {
 export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, target }: SettingsViewProps) {
   const [whisperVersion, setWhisperVersion] = useState<string | null>(null);
   const [hidVersion, setHidVersion] = useState<string | null>(null);
-  const [models, setModels] = useState<ModelInfo[]>([]);
-  const [activeModel, setActiveModel] = useState<string>(settings.whisperModel);
-  const [modelSwitching, setModelSwitching] = useState(false);
-  const [modelError, setModelError] = useState<string | null>(null);
+  const [speechModel, setSpeechModel] = useState<ModelInfo | null>(null);
   const [noiseReduction, setNoiseReduction] = useState(false);
   // null = the APK predates the setting, so the switch is hidden
   const [keepLinkWarm, setKeepLinkWarm] = useState<boolean | null>(null);
@@ -62,10 +58,6 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
       .then((d) => {
         setWhisperVersion(d.version ?? null);
         setMicSourceSelectable(d.mic_audio_source_selectable ?? false);
-        if (d.model) {
-          setActiveModel(d.model);
-          onUpdate({ whisperModel: d.model });
-        }
       })
       .catch(() => setWhisperVersion(null));
     hidStatus()
@@ -75,8 +67,8 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
       })
       .catch(() => setHidVersion(null));
     getModels()
-      .then((d) => setModels(d.models))
-      .catch(() => setModels([]));
+      .then((d) => setSpeechModel(d.models[0] ?? null))
+      .catch(() => setSpeechModel(null));
     getWhisperSettings()
       .then((s) => {
         setNoiseReduction(s.noise_reduction);
@@ -295,102 +287,28 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
         </div>
       )}
 
-      {/* Whisper model selector */}
+      {/* Speech model: Parakeet is the only engine, so there is nothing to pick */}
       <div>
         <label className="text-sm text-gray-300 block mb-1">
           Speech model
         </label>
-        {models.length > 0 ? (
-          <>
-            <select
-              value={activeModel}
-              disabled={modelSwitching}
-              onChange={async (e) => {
-                const name = e.target.value;
-                setModelError(null);
-                setModelSwitching(true);
-                try {
-                  await switchModel(name);
-                  setActiveModel(name);
-                  onUpdate({ whisperModel: name });
-                  getModels()
-                    .then((d) => setModels(d.models))
-                    .catch(() => {});
-                } catch (err) {
-                  setModelError(
-                    err instanceof Error ? err.message : "Failed to switch model"
-                  );
-                } finally {
-                  setModelSwitching(false);
-                }
-              }}
-              className="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm disabled:opacity-50"
-            >
-              {models
-                .filter((m) => m.downloaded)
-                .map((m) => (
-                  <option key={m.name} value={m.name}>
-                    {m.name} ({m.size_mb} MB)
-                  </option>
-                ))}
-            </select>
-            {models.some((m) => !m.downloaded) && (
-              <div className="mt-3">
-                <p className="text-xs text-gray-500 mb-1">
-                  Available to download via Termux:
-                </p>
-                <div className="space-y-1">
-                  {models
-                    .filter((m) => !m.downloaded)
-                    .map((m) => (
-                      <div
-                        key={m.name}
-                        className="flex items-center justify-between bg-gray-900 rounded px-3 py-1.5"
-                      >
-                        <div>
-                          <span className="text-sm text-gray-400">
-                            {m.name}
-                          </span>
-                          {m.description && (
-                            <span className="text-xs text-gray-600 ml-2">
-                              {m.description}
-                            </span>
-                          )}
-                        </div>
-                        <span className="text-xs text-gray-600 whitespace-nowrap ml-2">
-                          ~{m.size_mb} MB
-                        </span>
-                      </div>
-                    ))}
-                </div>
-                <p className="text-xs text-gray-600 mt-1.5">
-                  Run: ./update-model.sh &lt;name&gt;
-                </p>
-              </div>
-            )}
-          </>
-        ) : (
-          <p className="text-sm text-gray-500 bg-gray-900 rounded px-3 py-2">
-            {activeModel}
+        <p className="text-sm text-gray-300 bg-gray-900 rounded px-3 py-2">
+          Parakeet TDT 0.6B v2
+          {speechModel?.downloaded && (
+            <span className="text-xs text-gray-500 ml-2">
+              ({speechModel.size_mb} MB)
+            </span>
+          )}
+        </p>
+        {speechModel && !speechModel.downloaded && (
+          <p className="text-xs text-red-400 mt-1">
+            Not installed. In Termux run: ./update-model.sh parakeet
           </p>
-        )}
-        {modelSwitching && (
-          <p className="text-xs text-sky-400 mt-1">Switching model...</p>
-        )}
-        {modelError && (
-          <p className="text-xs text-red-400 mt-1">{modelError}</p>
         )}
       </div>
 
       {/* Speech cleanup model selector */}
       <CleanupSettings />
-
-      {/* Model benchmark */}
-      {models.length > 0 && (
-        <div className="pt-4 border-t border-gray-800">
-          <ModelBenchmark models={models} />
-        </div>
-      )}
 
       {/* Language */}
       <div>
