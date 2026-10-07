@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { transcribeStart, transcribeStop, whisperStatus } from "../lib/api";
+import {
+  hidDictation,
+  transcribeStart,
+  transcribeStop,
+  whisperStatus,
+} from "../lib/api";
 import type { WhisperStatus } from "../types";
 
 export interface TranscriptionStats {
@@ -47,10 +52,14 @@ export function useWhisper() {
     try {
       setRecording(true);
       setError(null);
+      // Open the headset's call link first and wait for it, so the recording
+      // starts on the headset mic; it is closed again when the text is back.
+      await hidDictation(true);
       await transcribeStart();
     } catch {
       setRecording(false);
       setError("Failed to start recording");
+      void hidDictation(false);
     }
   }, []);
 
@@ -61,6 +70,7 @@ export function useWhisper() {
         setTranscribing(true);
         setError(null);
         const result = await transcribeStop();
+        void hidDictation(false);
         setRecording(false);
         setTranscribing(false);
         busyRef.current = false;
@@ -87,6 +97,7 @@ export function useWhisper() {
         setError(msg);
         return { text: null, error: msg };
       } catch (e) {
+        void hidDictation(false);
         setRecording(false);
         setTranscribing(false);
         busyRef.current = false;

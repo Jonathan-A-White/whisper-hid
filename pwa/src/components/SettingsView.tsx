@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ModelInfo, Settings, TargetInfo } from "../types";
-import { whisperStatus, hidStatus, getModels, switchModel, getWhisperSettings, putWhisperSettings } from "../lib/api";
+import { whisperStatus, hidStatus, hidKeepLinkWarm, getModels, switchModel, getWhisperSettings, putWhisperSettings } from "../lib/api";
 import { WordCorrections } from "./WordCorrections";
 import { SymbolReplacements } from "./SymbolReplacements";
 import { ModelBenchmark } from "./ModelBenchmark";
@@ -51,6 +51,8 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
   const [modelSwitching, setModelSwitching] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
   const [noiseReduction, setNoiseReduction] = useState(false);
+  // null = the APK predates the setting, so the switch is hidden
+  const [keepLinkWarm, setKeepLinkWarm] = useState<boolean | null>(null);
   const [micSource, setMicSource] = useState("mic");
   const [micSourceSelectable, setMicSourceSelectable] = useState(false);
   const [micSourceError, setMicSourceError] = useState<string | null>(null);
@@ -67,7 +69,10 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
       })
       .catch(() => setWhisperVersion(null));
     hidStatus()
-      .then((d) => setHidVersion(d.version ?? null))
+      .then((d) => {
+        setHidVersion(d.version ?? null);
+        setKeepLinkWarm(d.headset_mic?.keep_warm ?? null);
+      })
       .catch(() => setHidVersion(null));
     getModels()
       .then((d) => setModels(d.models))
@@ -191,6 +196,39 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
           </p>
         )}
       </div>
+
+      {/* Toggle: Keep the headset link warm */}
+      {keepLinkWarm !== null && (
+        <div>
+          <label className="flex items-center justify-between">
+            <span className="text-sm text-gray-300">
+              Keep the headset link warm
+            </span>
+            <input
+              type="checkbox"
+              checked={keepLinkWarm}
+              onChange={async (e) => {
+                const on = e.target.checked;
+                setKeepLinkWarm(on);
+                try {
+                  const updated = await hidKeepLinkWarm(on);
+                  setKeepLinkWarm(updated.keep_warm);
+                } catch {
+                  setKeepLinkWarm(!on);
+                }
+              }}
+              className="w-5 h-5 accent-sky-500"
+            />
+          </label>
+          <p className="text-xs text-gray-500 mt-1">
+            Off: the headset's call link opens only while you dictate, so music,
+            video and voice from other apps play normally on the headset the
+            rest of the time. On: the link is held whenever the headset is
+            connected, which starts the first word a moment sooner but silences
+            other audio on a headset with a mic.
+          </p>
+        </div>
+      )}
 
       {/* Toggle: Noise reduction */}
       <label className="flex items-center justify-between">

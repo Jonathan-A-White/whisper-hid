@@ -24,13 +24,19 @@ export function StatusBar({
   const showBanner =
     btState === "reconnecting" || btState === "failed" || !hidReachable;
 
+  // Link deliberately closed between dictations (the default), not connecting
+  const headsetIdle =
+    hidStatus?.headset_mic?.keep_warm === false &&
+    hidStatus.headset_mic.dictating !== true;
+
   return (
     <div className="bg-gray-950 border-b border-gray-800 px-4 py-2">
       <div className="flex items-center justify-between text-sm">
         <span className="font-semibold text-white">Whisper Keyboard</span>
         <div className="flex items-center gap-3">
           {/* Headset mic indicator — green when SCO is up (recording uses
-              headset mic), gray when released to the laptop (Zoom mode) */}
+              headset mic), gray when released to the laptop (Zoom mode),
+              sky blue when idle: the link opens when a dictation starts */}
           {hidStatus?.headset_mic &&
             (hidStatus.headset_mic.available ||
               hidStatus.headset_mic.enabled === false) && (
@@ -41,7 +47,9 @@ export function StatusBar({
                   ? "Zoom mode — headset mic released, dictation uses phone mic"
                   : hidStatus.headset_mic.active
                     ? `Headset mic active: ${hidStatus.headset_mic.device ?? "Bluetooth headset"}`
-                    : "Headset detected — mic routing connecting..."
+                    : headsetIdle
+                      ? "Headset detected — its mic link opens when you dictate"
+                      : "Headset detected — mic routing connecting..."
               }
             >
               <span
@@ -50,7 +58,9 @@ export function StatusBar({
                     ? "bg-gray-500"
                     : hidStatus.headset_mic.active
                       ? "bg-green-400"
-                      : "bg-yellow-400"
+                      : headsetIdle
+                        ? "bg-sky-400"
+                        : "bg-yellow-400"
                 }`}
               />
               <span className="text-gray-400 text-xs">🎧</span>
