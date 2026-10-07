@@ -139,6 +139,21 @@ class TestTargetApi:
         with open(server.TARGET_FILE) as f:
             assert json.load(f)["target"] == "codex"
 
+    def test_get_lists_terminal_with_real_enters(self, client):
+        body = client.get("/target").get_json()
+        terminal = next(t for t in body["targets"] if t["name"] == "terminal")
+        assert terminal["label"] == "Terminal"
+        assert terminal["newline_mode"] == "enter"
+        assert terminal["submit_newline_mode"] == "enter"
+
+    def test_put_accepts_terminal(self, client, server):
+        res = client.put("/target", json={"target": "terminal"})
+        assert res.status_code == 200
+        body = res.get_json()
+        assert body["target"] == "terminal"
+        assert body["newline_mode"] == "enter"
+        assert server.active_target() == "terminal"
+
     def test_put_rejects_unknown_target(self, client, server):
         res = client.put("/target", json={"target": "nano"})
         assert res.status_code == 400

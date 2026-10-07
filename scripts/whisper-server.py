@@ -45,7 +45,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.10.0"
+SERVER_VERSION = "1.10.1"
 
 # --- Configuration ---
 
@@ -183,6 +183,8 @@ chunk_session = None       # active ChunkedSession while recording (guarded by r
 #   claude — Claude Code: a literal "\" then Enter (its documented escape)
 #   codex  — Codex CLI: Ctrl+J. Codex also binds Shift+Enter, but most
 #            terminals can't distinguish it from Enter and submit instead.
+#   terminal — a shell (PowerShell, bash): every line break is a real Enter,
+#            and the PWA never flattens a pasted script, so each line runs.
 #   plain  — any normal text field: a real Enter, and the PWA flattens
 #            pasted line breaks rather than typing stray escapes.
 # The same mode also names the assistant in the "prompt" cleanup style and
@@ -247,6 +249,16 @@ TARGET_PROFILES: dict[str, dict] = {
             "code x cli": "Codex CLI",
             "code x": "Codex",
         },
+    },
+    "terminal": {
+        "label": "Terminal",
+        "description": "A shell (PowerShell, bash) — every line break is a real Enter, pasted scripts keep their lines",
+        "newline_mode": "enter",
+        "submit_newline_mode": "enter",
+        "assistant": "a shell",
+        "short": "Shell",
+        "terms": [],
+        "corrections": {},
     },
 }
 
