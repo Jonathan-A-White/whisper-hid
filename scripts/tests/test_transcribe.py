@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 def test_placeholder():
     """Placeholder test — verifies the test infrastructure works.
 
-    Full API tests require whisper.cpp to be built and a model to be loaded,
+    Full API tests require the Parakeet model to be downloaded,
     which is not available in CI. These tests verify the Flask app structure
     and response formats without running actual transcription.
     """

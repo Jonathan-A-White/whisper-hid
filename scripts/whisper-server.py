@@ -1,12 +1,9 @@
 #!/data/data/com.termux/files/usr/bin/python3
-"""Speech-to-text HTTP API server — Parakeet (sherpa-onnx) or whisper.cpp with Flask.
+"""Speech-to-text HTTP API server — NVIDIA Parakeet TDT 0.6B v2 with Flask.
 
-Two transcription engines:
-  - parakeet: NVIDIA Parakeet TDT 0.6B via sherpa-onnx, in-process (preferred —
-    faster and more accurate than whisper base.en). Used when the model files
-    and the sherpa-onnx package are available.
-  - whisper: whisper.cpp via persistent whisper-server or one-shot subprocess.
-    Automatic fallback when Parakeet is unavailable or fails.
+Parakeet is the one transcription engine (int8, in-process, via sherpa-onnx or
+the bundled parakeet_onnx.py). Without its model the server stays up unloaded
+and says to run ./update-model.sh parakeet.
 
 Endpoints:
   POST /transcribe        — One-shot: accept audio bytes, return transcription
@@ -14,9 +11,8 @@ Endpoints:
   POST /transcribe/stop   — PTT: stop recording, transcribe, return text
   GET  /status            — Server health, active engine and loaded model
   GET  /logs              — Recent log entries (circular buffer, 200 max)
-  GET  /models            — List available models on disk
-  PUT  /model             — Switch the active model (whisper models or parakeet)
-  POST /models/benchmark  — Benchmark models against a test audio clip
+  GET  /models            — The speech model (Parakeet) and whether it is downloaded
+  PUT  /model             — (Re)load the Parakeet model
   GET  /symbols           — Symbol replacement config (spoken word -> symbol)
   PUT  /symbols           — Update symbol replacement config (partial merge)
   POST /symbols/reset     — Restore default symbol entries
@@ -31,7 +27,6 @@ import math
 import os
 import re
 import shutil
-import socket
 import subprocess
 import tempfile
 import threading
@@ -45,19 +40,16 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.10.2"
+SERVER_VERSION = "1.11.0"
 
 # --- Configuration ---
 
 INSTALL_DIR = os.environ.get("WHISPER_INSTALL_DIR", os.path.expanduser("~/whisper-stt"))
 MODEL_DIR = os.path.join(INSTALL_DIR, "models")
-DEFAULT_MODEL = os.environ.get("WHISPER_MODEL", "ggml-base.en.bin")
-WHISPER_BIN = os.environ.get("WHISPER_BIN", "")
 ALLOWED_ORIGIN = os.environ.get(
     "CORS_ORIGIN", "https://jonathan-a-white.github.io"
 )
 PORT = int(os.environ.get("WHISPER_PORT", "9876"))
-WHISPER_SERVER_PORT = int(os.environ.get("WHISPER_SERVER_PORT", "9878"))
 NOISE_REDUCTION = os.environ.get("WHISPER_NOISE_REDUCTION", "0").lower() in ("1", "true", "yes")
 
 # Android MediaRecorder.AudioSource values that Termux:API's MicRecorder
@@ -75,10 +67,10 @@ MIC_AUDIO_SOURCE = os.environ.get("MIC_AUDIO_SOURCE", "mic").lower()
 if MIC_AUDIO_SOURCE not in MIC_AUDIO_SOURCES:
     MIC_AUDIO_SOURCE = "mic"
 
-# Parakeet engine (sherpa-onnx). STT_ENGINE: "auto" prefers parakeet when
-# available, "whisper" forces whisper.cpp, "parakeet" requires parakeet.
-# Anything else is refused at startup (select_engine) and treated as "auto".
-STT_ENGINES = ("auto", "whisper", "parakeet")
+# Parakeet engine. STT_ENGINE accepts "auto" or "parakeet" (the same thing now
+# that Parakeet is the only engine). Anything else, including the names of the
+# removed engines, is refused at startup (select_engine) and treated as "auto".
+STT_ENGINES = ("auto", "parakeet")
 STT_ENGINE = os.environ.get("STT_ENGINE", "auto").lower()
 PARAKEET_MODEL_NAME = "parakeet-tdt-0.6b-v2"
 PARAKEET_DIR_NAME = "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
@@ -91,8 +83,7 @@ PARAKEET_THREADS = int(os.environ.get("PARAKEET_THREADS", "4"))
 # separate runtime toggle (PUT /cleanup, persisted to CLEANUP_SETTINGS_FILE).
 STT_CLEANUP = os.environ.get("STT_CLEANUP", "auto").lower()
 CLEANUP_SERVER_PORT = int(os.environ.get("CLEANUP_SERVER_PORT", "9879"))
-# Known cleanup models. "name" is the API/UI identifier (like whisper model
-# names); keep the file names in sync with setup-termux.sh and update-model.sh.
+# Known cleanup models. "name" is the API/UI identifier; keep the file names in sync with setup-termux.sh and update-model.sh.
 # The first entry is the default. CLEANUP_MODEL (env) overrides the default
 # file; a runtime selection (PUT /cleanup {"model": ...}) is persisted in
 # CLEANUP_SETTINGS_FILE and wins when its file is on disk.
@@ -147,8 +138,7 @@ def get_mic_audio_source() -> str:
 
 # --- State ---
 
-active_engine = "whisper"  # "whisper" or "parakeet"
-model_path = ""
+active_engine = "none"  # "parakeet" once loaded, else "none"
 model_name = ""
 model_size_mb = 0
 model_loaded = False
@@ -506,177 +496,6 @@ def apply_symbols(text: str) -> str:
 
 def add_log(level: str, msg: str):
     log_buffer.append({"ts": int(time.time()), "level": level, "msg": msg})
-
-
-def find_whisper_bin() -> str:
-    """Locate the whisper.cpp binary."""
-    candidates = [
-        os.path.join(INSTALL_DIR, "whisper.cpp", "build", "bin", "whisper-cli"),
-        os.path.join(INSTALL_DIR, "whisper.cpp", "build", "bin", "main"),
-    ]
-    for c in candidates:
-        if os.path.isfile(c) and os.access(c, os.X_OK):
-            return c
-    return ""
-
-
-# --- Persistent whisper-server (model loaded once) ---
-
-_whisper_server_proc: subprocess.Popen | None = None
-_whisper_server_mode = False
-
-
-def find_whisper_server_bin() -> str:
-    """Locate the whisper.cpp HTTP server binary."""
-    candidates = [
-        os.path.join(INSTALL_DIR, "whisper.cpp", "build", "bin", "whisper-server"),
-        os.path.join(INSTALL_DIR, "whisper.cpp", "build", "bin", "server"),
-    ]
-    for c in candidates:
-        if os.path.isfile(c) and os.access(c, os.X_OK):
-            return c
-    return ""
-
-
-def _wait_for_whisper_server(timeout: int = 60) -> bool:
-    """Wait for the whisper-server to accept connections.
-
-    whisper-server binds to its port after loading the model, so a
-    successful connection means the model is ready for inference.
-    """
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if _whisper_server_proc and _whisper_server_proc.poll() is not None:
-            return False  # process exited
-        try:
-            s = socket.create_connection(("127.0.0.1", WHISPER_SERVER_PORT), timeout=1)
-            s.close()
-            return True
-        except (ConnectionRefusedError, OSError):
-            time.sleep(0.5)
-    return False
-
-
-def start_whisper_server(model_file: str) -> bool:
-    """Start a persistent whisper-server process with the given model.
-
-    Returns True if the server started successfully, False otherwise.
-    On failure, transcription falls back to one-shot subprocess mode.
-    """
-    global _whisper_server_proc, _whisper_server_mode, _whisper_extra_flags
-
-    server_bin = find_whisper_server_bin()
-    if not server_bin:
-        add_log("info", "whisper-server binary not found — using subprocess mode")
-        return False
-
-    if _whisper_extra_flags is None:
-        _whisper_extra_flags = _detect_whisper_flags()
-
-    cmd = [
-        server_bin,
-        "--model", model_file,
-        "--host", "127.0.0.1",
-        "--port", str(WHISPER_SERVER_PORT),
-        "--language", "en",
-    ]
-    # Add compatible flags (detected from whisper-cli --help)
-    for flag in (_whisper_extra_flags or []):
-        cmd.append(flag)
-
-    add_log("info", f"Starting whisper-server: {' '.join(cmd)}")
-
-    try:
-        _whisper_server_proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except (FileNotFoundError, OSError) as e:
-        add_log("error", f"Failed to start whisper-server: {e}")
-        return False
-
-    if _wait_for_whisper_server(timeout=60):
-        _whisper_server_mode = True
-        add_log("info", f"whisper-server ready on port {WHISPER_SERVER_PORT} (pid={_whisper_server_proc.pid})")
-        return True
-
-    add_log("error", "whisper-server failed to become ready within 60s — falling back to subprocess mode")
-    stop_whisper_server()
-    return False
-
-
-def stop_whisper_server():
-    """Stop the persistent whisper-server process."""
-    global _whisper_server_proc, _whisper_server_mode
-
-    if _whisper_server_proc is not None:
-        add_log("info", f"Stopping whisper-server (pid={_whisper_server_proc.pid})")
-        try:
-            _whisper_server_proc.terminate()
-            _whisper_server_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _whisper_server_proc.kill()
-            _whisper_server_proc.wait(timeout=3)
-        except Exception:
-            pass
-        _whisper_server_proc = None
-
-    _whisper_server_mode = False
-
-
-def restart_whisper_server(model_file: str) -> bool:
-    """Restart the whisper-server with a new model."""
-    stop_whisper_server()
-    return start_whisper_server(model_file)
-
-
-def _is_whisper_server_alive() -> bool:
-    """Check if the persistent whisper-server process is still running."""
-    return (
-        _whisper_server_mode
-        and _whisper_server_proc is not None
-        and _whisper_server_proc.poll() is None
-    )
-
-
-def _transcribe_via_server(wav_path: str) -> tuple[str, int]:
-    """Send a WAV file to the persistent whisper-server for transcription.
-
-    Returns (text, duration_ms).
-    """
-    boundary = f"whisper{int(time.time() * 1000)}"
-    filename = os.path.basename(wav_path)
-
-    with open(wav_path, "rb") as f:
-        file_data = f.read()
-
-    # Build multipart/form-data body
-    body = b""
-    body += f"--{boundary}\r\n".encode()
-    body += f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode()
-    body += b"Content-Type: audio/wav\r\n\r\n"
-    body += file_data
-    body += b"\r\n"
-    body += f"--{boundary}\r\n".encode()
-    body += b'Content-Disposition: form-data; name="response_format"\r\n\r\n'
-    body += b"json\r\n"
-    body += f"--{boundary}--\r\n".encode()
-
-    url = f"http://127.0.0.1:{WHISPER_SERVER_PORT}/inference"
-    req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
-
-    t0 = time.time()
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        result = json.loads(resp.read())
-    duration_ms = int((time.time() - t0) * 1000)
-
-    text = result.get("text", "").strip()
-    return text, duration_ms
-
-
-atexit.register(stop_whisper_server)
 
 
 # --- Speech cleanup (local LLM removes disfluencies, fixes punctuation) ---
@@ -1670,23 +1489,6 @@ def detect_audio_format():
     add_log("warn", "Could not detect audio format, defaulting to AAC")
 
 
-def load_model():
-    """Load (validate) the whisper model at startup."""
-    global model_path, model_name, model_size_mb, model_loaded
-
-    model_file = os.path.join(MODEL_DIR, DEFAULT_MODEL)
-    if not os.path.isfile(model_file):
-        add_log("error", f"Model not found: {model_file}")
-        model_loaded = False
-        return
-
-    model_path = model_file
-    model_name = DEFAULT_MODEL.replace("ggml-", "").replace(".bin", "")
-    model_size_mb = round(os.path.getsize(model_file) / (1024 * 1024))
-    model_loaded = True
-    add_log("info", f"Model loaded: {model_name} ({model_size_mb} MB)")
-
-
 def transcode_to_wav(input_path: str, output_path: str, quiet: bool = False) -> bool:
     """Transcode any audio format to 16kHz mono WAV using ffmpeg.
 
@@ -1842,75 +1644,6 @@ def estimate_bandwidth(samples, sample_rate: int = 16000) -> dict:
     }
 
 
-def _detect_whisper_flags() -> list[str]:
-    """Probe whisper-cli --help to find supported flags (run once)."""
-    whisper_bin = WHISPER_BIN or find_whisper_bin()
-    if not whisper_bin:
-        return []
-    try:
-        r = subprocess.run([whisper_bin, "--help"], capture_output=True, text=True, timeout=10)
-        help_text = r.stdout + r.stderr
-    except Exception:
-        return []
-
-    flags: list[str] = []
-    if "--no-gpu" in help_text:
-        flags.append("-ng")
-    if "--no-timestamps" in help_text:
-        flags.append("--no-timestamps")
-    if "--no-flash-attn" in help_text:
-        flags.append("-nfa")
-    if "--no-context" in help_text:
-        flags.append("--no-context")
-
-    add_log("info", f"Whisper detected flags: {' '.join(flags)}")
-    return flags
-
-
-# VAD model path — Silero VAD is optional, improves accuracy by skipping silence.
-VAD_MODEL_DIR = os.path.join(INSTALL_DIR, "models")
-VAD_MODEL_FILE = "silero-v5.1.2.ggml.bin"
-_vad_available: bool | None = None
-
-
-def _detect_vad_support() -> bool:
-    """Check if whisper-cli supports --vad and the VAD model is present."""
-    global _vad_available
-    if _vad_available is not None:
-        return _vad_available
-
-    whisper_bin = WHISPER_BIN or find_whisper_bin()
-    if not whisper_bin:
-        _vad_available = False
-        return False
-
-    try:
-        r = subprocess.run([whisper_bin, "--help"], capture_output=True, text=True, timeout=10)
-        help_text = r.stdout + r.stderr
-    except Exception:
-        _vad_available = False
-        return False
-
-    has_flag = "--vad-model" in help_text
-    vad_path = os.path.join(VAD_MODEL_DIR, VAD_MODEL_FILE)
-    has_model = os.path.isfile(vad_path)
-
-    _vad_available = has_flag and has_model
-    add_log("info", f"VAD support: flag={'yes' if has_flag else 'no'} model={'yes' if has_model else 'no'} -> {'enabled' if _vad_available else 'disabled'}")
-    return _vad_available
-
-
-def _get_vad_flags() -> list[str]:
-    """Return VAD-related CLI flags if available."""
-    if not _detect_vad_support():
-        return []
-    vad_path = os.path.join(VAD_MODEL_DIR, VAD_MODEL_FILE)
-    return ["--vad", "--vad-model", vad_path]
-
-
-# Cache detected flags (populated on first call)
-_whisper_extra_flags: list[str] | None = None
-
 SILENCE_MARKERS = ["[BLANK_AUDIO]", "(silence)", "[silence]"]
 
 
@@ -1957,84 +1690,24 @@ def _postprocess_text(text: str, source: str) -> str:
 
 
 def run_transcription(wav_path: str, postprocess: bool = True) -> tuple[str, int]:
-    """Transcribe a WAV file with the active engine. Returns (text, duration_ms).
+    """Transcribe a WAV file with Parakeet. Returns (text, duration_ms).
 
-    Uses Parakeet (in-process) when active, falling back to whisper.cpp if
-    it is unavailable or fails.
+    Raises RuntimeError (naming the fix) when Parakeet is not loaded or fails;
+    there is no other engine to fall back to.
 
     postprocess=False returns marker-stripped raw text without corrections or
     symbol replacements (chunked mode post-processes the joined text once).
     """
-    if active_engine == "parakeet" and _parakeet_recognizer is not None:
-        try:
-            text, duration_ms = run_parakeet_raw(wav_path)
-            add_log("info", f"Parakeet: took={duration_ms}ms")
-            if not postprocess:
-                return _clean_raw_text(text), duration_ms
-            return _postprocess_text(text, "Parakeet"), duration_ms
-        except Exception as e:
-            add_log("warn", f"Parakeet failed ({e}), falling back to whisper")
-    return run_whisper(wav_path, postprocess=postprocess)
-
-
-def run_whisper(wav_path: str, postprocess: bool = True) -> tuple[str, int]:
-    """Run whisper.cpp on a WAV file. Returns (text, duration_ms).
-
-    Prefers the persistent whisper-server (model already loaded, fast).
-    Falls back to one-shot subprocess if the server isn't available.
-    """
-    global _whisper_extra_flags
-
-    wav_size = os.path.getsize(wav_path) if os.path.isfile(wav_path) else 0
-    add_log("info", f"Whisper: input={wav_path} size={wav_size}B")
-
-    # --- Try persistent server mode first ---
-    if _is_whisper_server_alive():
-        try:
-            text, duration_ms = _transcribe_via_server(wav_path)
-            add_log("info", f"Whisper (server): took={duration_ms}ms")
-            if not postprocess:
-                return _clean_raw_text(text), duration_ms
-            return _postprocess_text(text, "Whisper (server)"), duration_ms
-        except Exception as e:
-            add_log("warn", f"Whisper server request failed ({e}), falling back to subprocess")
-
-    # --- Fallback: one-shot subprocess ---
-    whisper_bin = WHISPER_BIN or find_whisper_bin()
-    if not whisper_bin:
-        raise RuntimeError("whisper.cpp binary not found")
-
-    if _whisper_extra_flags is None:
-        _whisper_extra_flags = _detect_whisper_flags()
-
-    vad_flags = _get_vad_flags()
-
-    cmd = [
-        whisper_bin,
-        "--model", model_path,
-        "--language", "en",
-        *_whisper_extra_flags,
-        *vad_flags,
-        "--file", wav_path,
-    ]
-    add_log("info", f"Whisper cmd: {' '.join(cmd)}")
-
-    t0 = time.time()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    duration_ms = int((time.time() - t0) * 1000)
-
-    add_log("info", f"Whisper: exit={result.returncode} took={duration_ms}ms")
-    add_log("info", f"Whisper stdout: {repr(result.stdout[:500])}")
-    if result.stderr:
-        # Log last few lines of stderr (contains processing info)
-        stderr_lines = result.stderr.strip().splitlines()
-        for line in stderr_lines[-5:]:
-            add_log("info", f"Whisper stderr: {line.strip()}")
-
-    # Parse output — whisper.cpp prints transcription to stdout
+    if active_engine != "parakeet" or _parakeet_recognizer is None:
+        raise RuntimeError(parakeet_setup_hint())
+    try:
+        text, duration_ms = run_parakeet_raw(wav_path)
+    except Exception as e:
+        raise RuntimeError(f"Parakeet failed: {e}") from e
+    add_log("info", f"Parakeet: took={duration_ms}ms")
     if not postprocess:
-        return _clean_raw_text(result.stdout.strip()), duration_ms
-    return _postprocess_text(result.stdout.strip(), "Whisper"), duration_ms
+        return _clean_raw_text(text), duration_ms
+    return _postprocess_text(text, "Parakeet"), duration_ms
 
 
 # --- Chunked (streaming) transcription ---
@@ -2398,7 +2071,7 @@ def handle_preflight():
 def transcribe():
     """One-shot transcription: accept raw audio bytes, return text."""
     if not model_loaded:
-        return jsonify({"error": "model_not_loaded", "message": "Whisper model is not loaded. Run setup first."}), 503
+        return jsonify({"error": "model_not_loaded", "message": f"Speech model is not loaded. {parakeet_setup_hint()}"}), 503
 
     with transcribe_lock:
         try:
@@ -2448,7 +2121,7 @@ def transcribe():
 def transcribe_start():
     """PTT: start mic recording via termux-microphone-record."""
     if not model_loaded:
-        return jsonify({"error": "model_not_loaded", "message": "Whisper model is not loaded."}), 503
+        return jsonify({"error": "model_not_loaded", "message": f"Speech model is not loaded. {parakeet_setup_hint()}"}), 503
 
     with recording_lock:
         global recording_process, recording_file, chunk_session
@@ -2573,14 +2246,10 @@ def status():
             "status": "ready",
             "version": SERVER_VERSION,
             "engine": active_engine,
-            "engine_backend": (
-                _parakeet_backend if active_engine == "parakeet"
-                else "whisper.cpp"
-            ),
+            "engine_backend": _parakeet_backend,
             "model": model_name,
             "model_size_mb": model_size_mb,
             "recording": is_recording,
-            "whisper_server_mode": _is_whisper_server_alive(),
             "symbol_mode": bool(symbol_settings.get("enabled")),
             "cleanup_mode": bool(cleanup_settings.get("enabled")),
             "cleanup_available": _is_cleanup_server_alive(),
@@ -2598,7 +2267,7 @@ def status():
             "version": SERVER_VERSION,
             "engine": active_engine,
             "model": None,
-            "message": "Model not loaded",
+            "message": f"Model not loaded. {parakeet_setup_hint()}",
         })
 
 
@@ -2612,7 +2281,7 @@ def debug_test_pipeline():
     """Record 3 seconds of audio and return full diagnostic info.
 
     Speak during the 3-second recording window.  The response includes
-    file sizes, ffmpeg output, whisper raw output, and the final text.
+    file sizes, ffmpeg output, Parakeet raw output, and the final text.
     """
     if not model_loaded:
         return jsonify({"error": "model_not_loaded"}), 503
@@ -2687,41 +2356,17 @@ def debug_test_pipeline():
         except Exception as e:
             diag["steps"].append({"step": "audio_analysis", "error": str(e)})
 
-        # Step 4: Run the active transcription engine
-        if active_engine == "parakeet" and _parakeet_recognizer is not None:
-            try:
-                raw_text, engine_ms = run_parakeet_raw(wav_file)
-                diag["steps"].append({
-                    "step": "parakeet",
-                    "duration_ms": engine_ms,
-                    "raw_text": raw_text[:500],
-                })
-            except Exception as e:
-                diag["steps"].append({"step": "parakeet", "error": str(e)})
-                return jsonify(diag), 500
-        else:
-            global _whisper_extra_flags
-            whisper_bin = WHISPER_BIN or find_whisper_bin()
-            if _whisper_extra_flags is None:
-                _whisper_extra_flags = _detect_whisper_flags()
-            whisper_cmd = [
-                whisper_bin, "--model", model_path, "--language", "en",
-                *_whisper_extra_flags, "--file", wav_file,
-            ]
-            diag["whisper_cmd"] = " ".join(whisper_cmd)
-            t0 = time.time()
-            whisper_result = subprocess.run(
-                whisper_cmd, capture_output=True, text=True, timeout=60,
-            )
-            whisper_ms = int((time.time() - t0) * 1000)
+        # Step 4: Run Parakeet
+        try:
+            raw_text, engine_ms = run_parakeet_raw(wav_file)
             diag["steps"].append({
-                "step": "whisper",
-                "exit_code": whisper_result.returncode,
-                "duration_ms": whisper_ms,
-                "raw_stdout": whisper_result.stdout[:500],
-                "stderr_tail": "\n".join(whisper_result.stderr.strip().splitlines()[-10:]) if whisper_result.stderr else "",
+                "step": "parakeet",
+                "duration_ms": engine_ms,
+                "raw_text": raw_text[:500],
             })
-            raw_text = whisper_result.stdout.strip()
+        except Exception as e:
+            diag["steps"].append({"step": "parakeet", "error": str(e)})
+            return jsonify(diag), 500
 
         # Final text
         text = raw_text
@@ -3084,316 +2729,37 @@ def put_settings():
     return jsonify(runtime_settings)
 
 
-# --- Benchmark ---
-
-# Lock to prevent concurrent benchmarks (they're resource-heavy)
-benchmark_lock = threading.Lock()
-benchmark_running = False
-
-
-def run_whisper_on_model(model_file: str, wav_path: str, use_vad: bool = False) -> tuple[str, int]:
-    """Run whisper.cpp on a WAV file with a specific model. Returns (text, duration_ms)."""
-    global _whisper_extra_flags
-
-    whisper_bin = WHISPER_BIN or find_whisper_bin()
-    if not whisper_bin:
-        raise RuntimeError("whisper.cpp binary not found")
-
-    if _whisper_extra_flags is None:
-        _whisper_extra_flags = _detect_whisper_flags()
-
-    vad_flags = _get_vad_flags() if use_vad else []
-
-    cmd = [
-        whisper_bin,
-        "--model", model_file,
-        "--language", "en",
-        *_whisper_extra_flags,
-        *vad_flags,
-        "--file", wav_path,
-    ]
-
-    t0 = time.time()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    duration_ms = int((time.time() - t0) * 1000)
-
-    raw_text = result.stdout.strip()
-    text = raw_text
-    for marker in ["[BLANK_AUDIO]", "(silence)", "[silence]"]:
-        text = text.replace(marker, "")
-    text = text.strip()
-
-    return text, duration_ms
-
-
-@app.route("/models/benchmark", methods=["POST"])
-def benchmark_models():
-    """Benchmark downloaded models against a test audio clip.
-
-    This records a short audio clip (or accepts one), then runs it through
-    each requested model and returns timing + transcription results.
-
-    Body (optional):
-      {
-        "models": ["base.en", "small.en"],  // defaults to all downloaded
-        "duration": 3,                       // recording duration (2-10 sec, default 3)
-        "use_vad": false                     // use VAD if available
-      }
-
-    Or POST raw audio bytes with Content-Type: audio/* to benchmark
-    against uploaded audio.
-    """
-    global benchmark_running
-
-    if not model_loaded:
-        return jsonify({"error": "model_not_loaded"}), 503
-
-    if recording_process is not None:
-        return jsonify({"error": "recording_active", "message": "Cannot benchmark while recording."}), 409
-
-    if benchmark_running:
-        return jsonify({"error": "benchmark_running", "message": "A benchmark is already in progress."}), 409
-
-    with benchmark_lock:
-        benchmark_running = True
-        try:
-            return _do_benchmark()
-        finally:
-            benchmark_running = False
-
-
-def _do_benchmark():
-    """Execute the benchmark (called under lock)."""
-    # Parse request
-    content_type = request.content_type or ""
-    use_uploaded_audio = content_type.startswith("audio/")
-
-    if use_uploaded_audio:
-        requested_models = None
-        duration = 0
-        use_vad = False
-    else:
-        data = request.get_json(silent=True) or {}
-        requested_models = data.get("models")
-        duration = data.get("duration", 3)
-        use_vad = data.get("use_vad", False)
-        duration = max(2, min(10, int(duration)))
-
-    # Determine which models to benchmark. Parakeet runs through its own
-    # in-process engine, not whisper-cli, so it's handled separately.
-    all_models = list_models()
-    downloaded = [m for m in all_models if m["downloaded"]]
-    if not downloaded:
-        return jsonify({"error": "no_models", "message": "No models downloaded."}), 400
-
-    if requested_models:
-        selected = [m for m in downloaded if m["name"] in requested_models]
-        if not selected:
-            return jsonify({"error": "no_matching_models", "message": "None of the requested models are downloaded."}), 400
-    else:
-        selected = downloaded
-
-    targets = [m for m in selected if m["name"] != PARAKEET_MODEL_NAME]
-    parakeet_target = next((m for m in selected if m["name"] == PARAKEET_MODEL_NAME), None)
-
-    add_log("info", f"Benchmark starting: {len(targets)} models, duration={duration}s, vad={use_vad}")
-
-    with tempfile.TemporaryDirectory() as td:
-        wav_path = os.path.join(td, "benchmark.wav")
-
-        if use_uploaded_audio:
-            # Save uploaded audio, transcode to WAV
-            input_path = os.path.join(td, "uploaded.audio")
-            with open(input_path, "wb") as f:
-                f.write(request.get_data())
-            if not transcode_to_wav(input_path, wav_path):
-                return jsonify({"error": "transcode_failed", "message": "Failed to convert uploaded audio."}), 400
-        else:
-            # Record audio from mic
-            raw_file = os.path.join(td, f"benchmark.{audio_ext}")
-            rec_cmd = _mic_record_cmd(raw_file, limit_sec=duration, fmt=audio_format)
-            try:
-                subprocess.run(rec_cmd, timeout=duration + 5)
-                time.sleep(duration + 1)
-                subprocess.run(["termux-microphone-record", "-q"], timeout=5)
-                time.sleep(1)
-            except Exception as e:
-                return jsonify({"error": "recording_failed", "message": str(e)}), 500
-
-            raw_size = os.path.getsize(raw_file) if os.path.isfile(raw_file) else 0
-            if raw_size < 100:
-                return jsonify({"error": "recording_empty", "message": "Recording produced no audio."}), 500
-
-            if not transcode_to_wav(raw_file, wav_path):
-                return jsonify({"error": "transcode_failed", "message": "Failed to transcode recording."}), 500
-
-        # Get WAV info
-        wav_size = os.path.getsize(wav_path)
-        audio_duration_sec = round((wav_size - 44) / 32000, 1)  # 16kHz × 2 bytes
-
-        # Benchmark each model
-        results = []
-        for m in targets:
-            model_file = os.path.join(MODEL_DIR, m["file"])
-            add_log("info", f"Benchmarking {m['name']}...")
-            try:
-                text, inference_ms = run_whisper_on_model(model_file, wav_path, use_vad)
-                speed_ratio = round(audio_duration_sec / (inference_ms / 1000), 1) if inference_ms > 0 else 0
-                results.append({
-                    "model": m["name"],
-                    "size_mb": m["size_mb"],
-                    "text": text,
-                    "inference_ms": inference_ms,
-                    "speed_ratio": speed_ratio,
-                    "error": None,
-                })
-                add_log("info", f"Benchmark {m['name']}: {inference_ms}ms, {speed_ratio}x, \"{text[:60]}\"")
-            except Exception as e:
-                results.append({
-                    "model": m["name"],
-                    "size_mb": m["size_mb"],
-                    "text": "",
-                    "inference_ms": 0,
-                    "speed_ratio": 0,
-                    "error": str(e),
-                })
-                add_log("error", f"Benchmark {m['name']} failed: {e}")
-
-        # Benchmark the in-process engine (Parakeet). A recognizer
-        # loaded only for the benchmark is unloaded again afterwards, so the
-        # phone keeps no more than the active engine's model in RAM.
-        for engine, target, load, run, unload in [
-            ("parakeet", parakeet_target, load_parakeet, run_parakeet_raw, unload_parakeet),
-        ]:
-            if target is None:
-                continue
-            name = target["name"]
-            add_log("info", f"Benchmarking {name}...")
-            try:
-                if not load():
-                    raise RuntimeError(f"{engine.capitalize()} engine unavailable (onnxruntime/numpy not installed?)")
-                text, inference_ms = run(wav_path)
-                speed_ratio = round(audio_duration_sec / (inference_ms / 1000), 1) if inference_ms > 0 else 0
-                results.append({
-                    "model": name,
-                    "size_mb": target["size_mb"],
-                    "text": text,
-                    "inference_ms": inference_ms,
-                    "speed_ratio": speed_ratio,
-                    "error": None,
-                })
-                add_log("info", f"Benchmark {name}: {inference_ms}ms, {speed_ratio}x, \"{text[:60]}\"")
-            except Exception as e:
-                results.append({
-                    "model": name,
-                    "size_mb": target["size_mb"],
-                    "text": "",
-                    "inference_ms": 0,
-                    "speed_ratio": 0,
-                    "error": str(e),
-                })
-                add_log("error", f"Benchmark {name} failed: {e}")
-            finally:
-                if active_engine != engine:
-                    unload()
-
-        add_log("info", f"Benchmark complete: {len(results)} models tested")
-
-        return jsonify({
-            "audio_duration_sec": audio_duration_sec,
-            "use_vad": use_vad,
-            "vad_available": _detect_vad_support(),
-            "results": results,
-        })
-
-
 # --- Model management ---
-
-# Known models that update-model.sh can download.
-# Keep in sync with update-model.sh.
-MODEL_CATALOG = [
-    {"name": "tiny.en",              "size_mb": 75,   "description": "Fastest, basic accuracy"},
-    {"name": "tiny.en-q5_1",         "size_mb": 31,   "description": "Fastest quantized, basic accuracy"},
-    {"name": "base.en",              "size_mb": 142,  "description": "Fast, good accuracy"},
-    {"name": "base.en-q5_1",         "size_mb": 60,   "description": "Fast quantized, good accuracy"},
-    {"name": "small.en",             "size_mb": 466,  "description": "Slower, better accuracy"},
-    {"name": "small.en-q5_1",        "size_mb": 190,  "description": "Best speed/accuracy for phone"},
-    {"name": "medium.en",            "size_mb": 1500, "description": "Slow, great accuracy"},
-    {"name": "medium.en-q5_0",       "size_mb": 515,  "description": "Great accuracy, quantized"},
-    {"name": "large-v3-turbo",       "size_mb": 1500, "description": "6x faster than large, excellent accuracy"},
-    {"name": "large-v3-turbo-q5_0",  "size_mb": 547,  "description": "Turbo quantized — best speed/accuracy tradeoff"},
-    {"name": "large-v3-turbo-q8_0",  "size_mb": 810,  "description": "Turbo quantized — near-full accuracy"},
-    {"name": "distil-small.en",      "size_mb": 350,  "description": "Optimized small model"},
-    {"name": "distil-medium.en",     "size_mb": 750,  "description": "Optimized medium model"},
-]
-
+#
+# Parakeet is the only speech-to-text model; GET /models lists just it and
+# PUT /model (re)loads it, e.g. after ./update-model.sh parakeet.
 
 def list_models() -> list[dict]:
-    """Return catalog of known models, annotated with download/active status."""
-    # Scan disk for downloaded models
-    on_disk: dict[str, int] = {}
-    if os.path.isdir(MODEL_DIR):
-        for fname in os.listdir(MODEL_DIR):
-            if fname.startswith("ggml-") and fname.endswith(".bin"):
-                fpath = os.path.join(MODEL_DIR, fname)
-                name = fname.replace("ggml-", "").replace(".bin", "")
-                on_disk[name] = round(os.path.getsize(fpath) / (1024 * 1024))
-
-    # Build result from catalog, marking downloaded/active
-    models = []
-    seen = set()
-    for entry in MODEL_CATALOG:
-        name = entry["name"]
-        seen.add(name)
-        downloaded = name in on_disk
-        models.append({
-            "name": name,
-            "file": f"ggml-{name}.bin",
-            "size_mb": on_disk[name] if downloaded else entry["size_mb"],
-            "description": entry["description"],
-            "downloaded": downloaded,
-            "active": downloaded and os.path.join(MODEL_DIR, f"ggml-{name}.bin") == model_path,
-        })
-
-    # Append any downloaded models not in the catalog (e.g. large, custom)
-    for name, size in sorted(on_disk.items()):
-        if name not in seen:
-            models.append({
-                "name": name,
-                "file": f"ggml-{name}.bin",
-                "size_mb": size,
-                "description": "",
-                "downloaded": True,
-                "active": os.path.join(MODEL_DIR, f"ggml-{name}.bin") == model_path,
-            })
-
-    # Parakeet engine (sherpa-onnx model directory, not a ggml file)
+    """Return the one known model (Parakeet) with download/active status."""
     parakeet_downloaded = find_parakeet_model_files() is not None
-    models.append({
+    return [{
         "name": PARAKEET_MODEL_NAME,
         "file": PARAKEET_DIR_NAME,
         "size_mb": parakeet_model_size_mb() if parakeet_downloaded else PARAKEET_CATALOG_SIZE_MB,
-        "description": "NVIDIA Parakeet via sherpa-onnx — faster and more accurate than whisper",
+        "description": "NVIDIA Parakeet TDT 0.6B v2 — the speech-to-text engine",
         "downloaded": parakeet_downloaded,
         "active": active_engine == "parakeet",
-    })
-
-    return models
+    }]
 
 
 @app.route("/models", methods=["GET"])
 def get_models():
-    """List known Whisper models with download and active status."""
+    """List the known speech models with download and active status."""
     return jsonify({"models": list_models()})
 
 
 @app.route("/model", methods=["PUT"])
 def put_model():
-    """Switch the active model — a Whisper model or Parakeet.
+    """(Re)load the Parakeet model.
 
-    Body: {"model": "small.en"}  (the model name, not the filename)
+    Body: {"model": "parakeet-tdt-0.6b-v2"}  (the model name, not the filename)
     """
-    global model_path, model_name, model_size_mb, model_loaded, active_engine
+    global model_name, model_size_mb, model_loaded, active_engine
 
     if recording_process is not None:
         return jsonify({
@@ -3417,57 +2783,28 @@ def put_model():
 
     requested = requested.strip()
 
-    # Switch to the Parakeet engine
-    if requested == PARAKEET_MODEL_NAME:
-        if find_parakeet_model_files() is None:
-            return jsonify({
-                "error": "model_not_found",
-                "message": f"Parakeet model not found. Run: ./update-model.sh parakeet",
-            }), 404
-        if not load_parakeet():
-            return jsonify({
-                "error": "engine_unavailable",
-                "message": "No Parakeet backend. In Termux run: pkg install python-numpy python-onnxruntime",
-            }), 500
-
-        active_engine = "parakeet"
-        model_name = PARAKEET_MODEL_NAME
-        model_size_mb = parakeet_model_size_mb()
-        model_loaded = True
-        # Free whisper-server RAM — whisper falls back to subprocess mode if needed
-        stop_whisper_server()
-        add_log("info", f"Engine switched to: parakeet ({model_size_mb} MB)")
-        return jsonify({
-            "ok": True,
-            "model": model_name,
-            "model_size_mb": model_size_mb,
-        })
-
-    # Switch to a Whisper model
-    new_file = f"ggml-{requested}.bin"
-    new_path = os.path.join(MODEL_DIR, new_file)
-
-    if not os.path.isfile(new_path):
+    if requested != PARAKEET_MODEL_NAME:
         return jsonify({
             "error": "model_not_found",
-            "message": f"Model file not found: {new_file}",
+            "message": f"Unknown model '{requested}'. {PARAKEET_MODEL_NAME} is the only speech model.",
         }), 404
 
-    was_parakeet = active_engine == "parakeet"
-    active_engine = "whisper"
-    model_path = new_path
-    model_name = requested
-    model_size_mb = round(os.path.getsize(new_path) / (1024 * 1024))
+    if find_parakeet_model_files() is None:
+        return jsonify({
+            "error": "model_not_found",
+            "message": parakeet_setup_hint(),
+        }), 404
+    if not load_parakeet():
+        return jsonify({
+            "error": "engine_unavailable",
+            "message": parakeet_setup_hint(),
+        }), 500
+
+    active_engine = "parakeet"
+    model_name = PARAKEET_MODEL_NAME
+    model_size_mb = parakeet_model_size_mb()
     model_loaded = True
-    add_log("info", f"Model switched to: {model_name} ({model_size_mb} MB)")
-
-    # Free the recognizer RAM when leaving an in-process engine
-    if was_parakeet:
-        unload_parakeet()
-
-    # (Re)start the persistent whisper-server with the new model
-    restart_whisper_server(new_path)
-
+    add_log("info", f"Engine loaded: parakeet ({model_size_mb} MB)")
     return jsonify({
         "ok": True,
         "model": model_name,
@@ -3477,11 +2814,19 @@ def put_model():
 
 # --- Main ---
 
-def select_engine():
-    """Pick the transcription engine at startup.
+def parakeet_setup_hint() -> str:
+    """What to do when Parakeet is not usable, named for whichever half is missing."""
+    if find_parakeet_model_files() is None:
+        return "Parakeet speech model not found. Run: ./update-model.sh parakeet"
+    return ("No Parakeet backend installed. In Termux run: "
+            "pkg install python-numpy python-onnxruntime")
 
-    Prefers Parakeet (faster + more accurate) when its model and sherpa-onnx
-    are available, unless STT_ENGINE=whisper forces whisper.cpp.
+
+def select_engine():
+    """Load Parakeet at startup — it is the only speech-to-text engine.
+
+    Without it the server stays up but unloaded: /status and the
+    transcription endpoints say how to get the model.
     """
     global active_engine, model_name, model_size_mb, model_loaded, STT_ENGINE
 
@@ -3490,7 +2835,7 @@ def select_engine():
                 f"(allowed: {', '.join(STT_ENGINES)}) — using auto")
         STT_ENGINE = "auto"
 
-    if STT_ENGINE in ("auto", "parakeet") and load_parakeet():
+    if load_parakeet():
         active_engine = "parakeet"
         model_name = PARAKEET_MODEL_NAME
         model_size_mb = parakeet_model_size_mb()
@@ -3498,11 +2843,9 @@ def select_engine():
         add_log("info", f"Engine: parakeet ({model_name}, {model_size_mb} MB)")
         return
 
-    if STT_ENGINE == "parakeet":
-        add_log("error", "STT_ENGINE=parakeet but Parakeet is unavailable — falling back to whisper")
-
-    active_engine = "whisper"
-    add_log("info", f"Engine: whisper ({model_name or 'no model'})")
+    active_engine = "none"
+    model_loaded = False
+    add_log("error", f"Parakeet is required but unavailable. {parakeet_setup_hint()}")
 
 
 if __name__ == "__main__":
@@ -3511,25 +2854,10 @@ if __name__ == "__main__":
     load_symbols()
     load_cleanup_settings()
     load_target_settings()
-    load_model()
     select_engine()
     _detect_termux_api_bin()
     detect_audio_format()
     detect_chunked_support()
-
-    whisper_bin = WHISPER_BIN or find_whisper_bin()
-    if whisper_bin:
-        add_log("info", f"Whisper binary: {whisper_bin}")
-    elif active_engine == "whisper":
-        add_log("error", "Whisper binary not found — transcription will fail")
-
-    # Persistent whisper-server (model loaded once, fast inference) only makes
-    # sense when whisper is the active engine — Parakeet is already in-process.
-    if model_loaded and active_engine == "whisper":
-        if start_whisper_server(model_path):
-            add_log("info", "Using persistent whisper-server mode (model loaded once)")
-        else:
-            add_log("info", "Using subprocess mode (model loaded per request)")
 
     # Resident cleanup LLM — started regardless of the runtime toggle so
     # flipping cleanup on never pays a model-load wait mid-dictation.

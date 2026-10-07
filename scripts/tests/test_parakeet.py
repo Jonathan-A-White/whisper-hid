@@ -245,7 +245,7 @@ class TestRunTranscription:
         text, _ = server.run_transcription(str(wav))
         assert text == ""
 
-    def test_falls_back_to_whisper_on_error(self, server, tmp_path):
+    def test_parakeet_failure_is_an_error_not_a_fallback(self, server, tmp_path):
         server.active_engine = "parakeet"
 
         class BrokenRecognizer:
@@ -253,19 +253,22 @@ class TestRunTranscription:
                 raise RuntimeError("boom")
 
         server._parakeet_recognizer = BrokenRecognizer()
-        server.run_whisper = lambda wav_path, postprocess=True: ("from whisper", 42)
 
         wav = tmp_path / "test.wav"
         write_wav(wav)
-        text, duration_ms = server.run_transcription(str(wav))
-        assert text == "from whisper"
-        assert duration_ms == 42
+        with pytest.raises(RuntimeError, match="Parakeet.*boom"):
+            server.run_transcription(str(wav))
 
-    def test_whisper_used_when_engine_whisper(self, server, tmp_path):
-        server.active_engine = "whisper"
-        server.run_whisper = lambda wav_path, postprocess=True: ("whisper text", 10)
-        text, _ = server.run_transcription(str(tmp_path / "missing.wav"))
-        assert text == "whisper text"
+    def test_no_model_says_how_to_get_it(self, server, tmp_path):
+        server.active_engine = "none"
+        with pytest.raises(RuntimeError, match=r"update-model\.sh parakeet"):
+            server.run_transcription(str(tmp_path / "missing.wav"))
+
+    def test_model_present_but_no_backend_says_how_to_install_it(self, server, tmp_path):
+        write_parakeet_model(tmp_path / "models")
+        server.active_engine = "none"
+        with pytest.raises(RuntimeError, match="python-onnxruntime"):
+            server.run_transcription(str(tmp_path / "missing.wav"))
 
 
 class TestModelsEndpoint:
@@ -294,13 +297,9 @@ class TestModelsEndpoint:
 class TestSwitchEngine:
     @pytest.fixture
     def client(self, server, tmp_path):
-        model_dir = tmp_path / "models"
-        (model_dir / "ggml-base.en.bin").write_bytes(b"\x00" * 1024)
-        server.model_path = str(model_dir / "ggml-base.en.bin")
-        server.model_name = "base.en"
-        server.model_loaded = True
+        server.model_loaded = False
+        server.active_engine = "none"
         server.recording_process = None
-        server.INSTALL_DIR = str(tmp_path)  # no whisper-server binary here
         server.app.config["TESTING"] = True
         return server.app.test_client()
 
@@ -330,7 +329,8 @@ class TestSwitchEngine:
         )
         assert resp.status_code == 404
         assert resp.get_json()["error"] == "model_not_found"
-        assert server.active_engine == "whisper"
+        assert "update-model.sh parakeet" in resp.get_json()["message"]
+        assert server.active_engine == "none"
 
     def test_switch_to_parakeet_no_backend(self, server, client, tmp_path):
         write_parakeet_model(tmp_path / "models")
@@ -344,27 +344,7 @@ class TestSwitchEngine:
         )
         assert resp.status_code == 500
         assert resp.get_json()["error"] == "engine_unavailable"
-        assert server.active_engine == "whisper"
-
-    def test_switch_back_to_whisper_unloads_parakeet(self, server, client, tmp_path):
-        write_parakeet_model(tmp_path / "models")
-        sys.modules["sherpa_onnx"] = make_fake_sherpa()
-        client.put(
-            "/model",
-            data=json.dumps({"model": server.PARAKEET_MODEL_NAME}),
-            content_type="application/json",
-        )
-        assert server.active_engine == "parakeet"
-
-        resp = client.put(
-            "/model",
-            data=json.dumps({"model": "base.en"}),
-            content_type="application/json",
-        )
-        assert resp.status_code == 200
-        assert server.active_engine == "whisper"
-        assert server.model_name == "base.en"
-        assert server._parakeet_recognizer is None
+        assert server.active_engine == "none"
 
 
 # The engine value removed in mw-fyick2 (spelled in two parts so the
@@ -382,48 +362,81 @@ class TestSelectEngine:
         assert server.model_loaded is True
         assert server.model_name == server.PARAKEET_MODEL_NAME
 
-    def test_whisper_when_parakeet_unavailable(self, server):
+    def test_no_model_leaves_server_unloaded_and_says_how_to_get_it(self, server):
         server.STT_ENGINE = "auto"
-        server.model_name = "base.en"
         server.select_engine()
-        assert server.active_engine == "whisper"
+        assert server.active_engine == "none"
+        assert server.model_loaded is False
+        errors = [e["msg"] for e in server.log_buffer if e["level"] == "error"]
+        assert any("./update-model.sh parakeet" in m for m in errors)
 
-    def test_forced_whisper(self, server, tmp_path):
+    def test_model_but_no_backend_says_how_to_install_it(self, server, tmp_path):
         write_parakeet_model(tmp_path / "models")
-        sys.modules["sherpa_onnx"] = make_fake_sherpa()
-        server.STT_ENGINE = "whisper"
+        sys.modules["sherpa_onnx"] = None
+        sys.modules["parakeet_onnx"] = None
+        server.STT_ENGINE = "auto"
         server.select_engine()
-        assert server.active_engine == "whisper"
-        assert server._parakeet_recognizer is None
+        assert server.model_loaded is False
+        errors = [e["msg"] for e in server.log_buffer if e["level"] == "error"]
+        assert any("python-onnxruntime" in m for m in errors)
 
     def test_removed_engine_value_is_refused_with_allowed_values(self, server, tmp_path):
-        # The removed engine must not start anything special, and the log
+        # A removed engine name must not start anything special, and the log
         # must name the values that are accepted.
         write_parakeet_model(tmp_path / "models")
         sys.modules["sherpa_onnx"] = make_fake_sherpa()
-        server.STT_ENGINE = REMOVED_ENGINE
-        server.select_engine()
-        refusals = [e["msg"] for e in server.log_buffer
-                    if e["level"] == "error" and "STT_ENGINE" in e["msg"]]
-        assert len(refusals) == 1
-        assert REMOVED_ENGINE in refusals[0]
-        for allowed in ("auto", "whisper", "parakeet"):
-            assert allowed in refusals[0]
-        # Falls back to the default ("auto"), which prefers Parakeet here.
-        assert server.active_engine == "parakeet"
+        for removed in (REMOVED_ENGINE, "whisper"):
+            server.log_buffer.clear()
+            server.STT_ENGINE = removed
+            server.select_engine()
+            refusals = [e["msg"] for e in server.log_buffer
+                        if e["level"] == "error" and "STT_ENGINE" in e["msg"]]
+            assert len(refusals) == 1
+            assert removed in refusals[0]
+            for allowed in ("auto", "parakeet"):
+                assert allowed in refusals[0]
+            # Falls back to the default ("auto"), which prefers Parakeet here.
+            assert server.active_engine == "parakeet"
 
-    def test_unknown_value_falls_back_to_whisper_when_nothing_installed(self, server):
+    def test_unknown_value_with_nothing_installed_is_unloaded(self, server):
         server.STT_ENGINE = "bogus"
-        server.model_name = "base.en"
         server.select_engine()
-        assert server.active_engine == "whisper"
+        assert server.active_engine == "none"
+        assert server.model_loaded is False
 
     def test_valid_values_log_no_refusal(self, server):
-        for value in ("auto", "whisper", "parakeet"):
+        for value in ("auto", "parakeet"):
             server.log_buffer.clear()
             server.STT_ENGINE = value
             server.select_engine()
             assert not [e for e in server.log_buffer if "not a valid STT_ENGINE" in e["msg"]]
+
+
+class TestWithoutParakeetModel:
+    """No Parakeet model: the server says how to get it, never falls back."""
+
+    @pytest.fixture
+    def client(self, server):
+        server.STT_ENGINE = "auto"
+        server.select_engine()
+        server.app.config["TESTING"] = True
+        return server.app.test_client()
+
+    def test_status_names_the_fix(self, client):
+        status = client.get("/status").get_json()
+        assert status["status"] == "error"
+        assert status["engine"] == "none"
+        assert "./update-model.sh parakeet" in status["message"]
+
+    def test_transcribe_is_refused_with_the_fix(self, client):
+        resp = client.post("/transcribe", data=b"audio")
+        assert resp.status_code == 503
+        assert "./update-model.sh parakeet" in resp.get_json()["message"]
+
+    def test_recording_start_is_refused_with_the_fix(self, client):
+        resp = client.post("/transcribe/start")
+        assert resp.status_code == 503
+        assert "./update-model.sh parakeet" in resp.get_json()["message"]
 
 
 class TestParakeetOnnxFbank:

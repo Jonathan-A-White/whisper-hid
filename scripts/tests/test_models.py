@@ -1,9 +1,10 @@
-"""Tests for the model management endpoints."""
+"""Tests for the model management endpoints (Parakeet is the only engine)."""
 
 import importlib.util
 import json
 import os
 import sys
+import types
 
 import pytest
 
@@ -20,232 +21,153 @@ def _load_server_module():
     return mod
 
 
+# File prefix of the removed engine's models (split so the source tree names
+# that engine nowhere).
+REMOVED_PREFIX = "gg" "ml-"
+
+
+def _write_parakeet_model(model_dir):
+    base = model_dir / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8"
+    base.mkdir(parents=True)
+    for part in ["encoder", "decoder", "joiner"]:
+        (base / f"{part}.int8.onnx").write_bytes(b"\x00" * 1024)
+    (base / "tokens.txt").write_text("<blk> 0\n")
+
+
+def _fake_sherpa():
+    mod = types.ModuleType("sherpa_onnx")
+    mod.OfflineRecognizer = types.SimpleNamespace(
+        from_transducer=lambda **kwargs: object()
+    )
+    return mod
+
+
 @pytest.fixture
-def server():
-    """Load the whisper server module."""
-    return _load_server_module()
+def server(tmp_path):
+    saved = {name: sys.modules.pop(name, None) for name in ["sherpa_onnx", "parakeet_onnx"]}
+    mod = _load_server_module()
+    mod.MODEL_DIR = str(tmp_path / "models")
+    os.makedirs(mod.MODEL_DIR, exist_ok=True)
+    mod.recording_process = None
+    mod.app.config["TESTING"] = True
+    yield mod
+    mod._parakeet_recognizer = None
+    for name, value in saved.items():
+        if value is not None:
+            sys.modules[name] = value
+        else:
+            sys.modules.pop(name, None)
+
+
+@pytest.fixture
+def client(server):
+    return server.app.test_client()
 
 
 class TestListModels:
-    """Test the GET /models endpoint."""
+    """GET /models lists Parakeet and nothing else."""
 
-    @pytest.fixture
-    def client(self, server, tmp_path):
-        model_dir = tmp_path / "models"
-        model_dir.mkdir()
-        (model_dir / "ggml-base.en.bin").write_bytes(b"\x00" * 1024)
-        (model_dir / "ggml-small.en.bin").write_bytes(b"\x00" * 2048)
-        (model_dir / "ggml-tiny.en.bin").write_bytes(b"\x00" * 512)
-        # Non-model files should be ignored
-        (model_dir / "README.txt").write_text("not a model")
-        (model_dir / "other.bin").write_bytes(b"\x00" * 100)
-
-        server.MODEL_DIR = str(model_dir)
-        server.model_path = str(model_dir / "ggml-base.en.bin")
-        server.model_name = "base.en"
-        server.model_loaded = True
-        server.app.config["TESTING"] = True
-        return server.app.test_client()
-
-    def test_includes_catalog_and_downloaded(self, client, server):
-        resp = client.get("/models")
-        assert resp.status_code == 200
-        models = resp.get_json()["models"]
-        names = [m["name"] for m in models]
-        # All catalog entries should appear
-        for entry in server.MODEL_CATALOG:
-            assert entry["name"] in names
-        # Downloaded models should appear too
-        assert "base.en" in names
-        assert "small.en" in names
-        assert "tiny.en" in names
-
-    def test_downloaded_flag(self, client):
-        resp = client.get("/models")
-        models = resp.get_json()["models"]
-        by_name = {m["name"]: m for m in models}
-        assert by_name["base.en"]["downloaded"] is True
-        assert by_name["small.en"]["downloaded"] is True
-        assert by_name["tiny.en"]["downloaded"] is True
-        # medium.en is in catalog but not on disk
-        assert by_name["medium.en"]["downloaded"] is False
-
-    def test_active_flag(self, client):
-        resp = client.get("/models")
-        models = resp.get_json()["models"]
-        active = [m for m in models if m["active"]]
-        assert len(active) == 1
-        assert active[0]["name"] == "base.en"
-
-    def test_model_info_fields(self, client, server):
-        resp = client.get("/models")
-        models = resp.get_json()["models"]
-        for m in models:
-            assert "name" in m
-            assert "file" in m
-            assert "size_mb" in m
-            assert "description" in m
-            assert "downloaded" in m
-            assert "active" in m
-            if m["name"] == server.PARAKEET_MODEL_NAME:
-                # Parakeet is a sherpa-onnx model directory, not a ggml file
-                assert m["file"] == server.PARAKEET_DIR_NAME
-            else:
-                assert m["file"].startswith("ggml-")
-                assert m["file"].endswith(".bin")
-
-    def test_removed_engine_is_not_listed(self, client):
-        removed = "nemo" "tron"  # the engine removed in mw-fyick2
+    def test_lists_only_parakeet(self, client, server):
         models = client.get("/models").get_json()["models"]
-        assert not [m for m in models if removed in (m["name"] + m["file"] + m["description"]).lower()]
+        assert [m["name"] for m in models] == [server.PARAKEET_MODEL_NAME]
 
-    def test_description_from_catalog(self, client, server):
-        resp = client.get("/models")
-        models = resp.get_json()["models"]
-        by_name = {m["name"]: m for m in models}
-        for entry in server.MODEL_CATALOG:
-            assert by_name[entry["name"]]["description"] == entry["description"]
+    def test_other_model_files_on_disk_are_not_listed(self, client, server, tmp_path):
+        # Leftover files from the removed engine must not show up.
+        (tmp_path / "models" / (REMOVED_PREFIX + "base.en.bin")).write_bytes(b"\x00" * 1024)
+        models = client.get("/models").get_json()["models"]
+        assert [m["name"] for m in models] == [server.PARAKEET_MODEL_NAME]
 
     def test_not_downloaded_uses_catalog_size(self, client, server):
-        resp = client.get("/models")
-        models = resp.get_json()["models"]
-        by_name = {m["name"]: m for m in models}
-        # medium.en is not downloaded — should use catalog size
-        catalog_medium = next(e for e in server.MODEL_CATALOG if e["name"] == "medium.en")
-        assert by_name["medium.en"]["size_mb"] == catalog_medium["size_mb"]
+        entry = client.get("/models").get_json()["models"][0]
+        assert entry["downloaded"] is False
+        assert entry["active"] is False
+        assert entry["size_mb"] == server.PARAKEET_CATALOG_SIZE_MB
 
-    def test_custom_model_not_in_catalog(self, server, tmp_path):
-        """Models on disk that aren't in the catalog should still appear."""
-        model_dir = tmp_path / "models2"
-        model_dir.mkdir()
-        (model_dir / "ggml-custom-finetune.bin").write_bytes(b"\x00" * 4096)
+    def test_downloaded_and_active(self, client, server, tmp_path):
+        _write_parakeet_model(tmp_path / "models")
+        server.active_engine = "parakeet"
+        entry = client.get("/models").get_json()["models"][0]
+        assert entry["downloaded"] is True
+        assert entry["active"] is True
 
-        server.MODEL_DIR = str(model_dir)
-        server.model_path = ""
-        server.app.config["TESTING"] = True
-        client = server.app.test_client()
+    def test_model_info_fields(self, client, server):
+        entry = client.get("/models").get_json()["models"][0]
+        for field in ("name", "file", "size_mb", "description", "downloaded", "active"):
+            assert field in entry
+        assert entry["file"] == server.PARAKEET_DIR_NAME
 
-        resp = client.get("/models")
-        models = resp.get_json()["models"]
-        by_name = {m["name"]: m for m in models}
-        assert "custom-finetune" in by_name
-        assert by_name["custom-finetune"]["downloaded"] is True
-        assert by_name["custom-finetune"]["description"] == ""
-
-    def test_empty_model_dir_returns_catalog(self, server, tmp_path):
-        empty_dir = tmp_path / "empty_models"
-        empty_dir.mkdir()
-        server.MODEL_DIR = str(empty_dir)
-        server.app.config["TESTING"] = True
-        client = server.app.test_client()
-        resp = client.get("/models")
-        models = resp.get_json()["models"]
-        # Should still return catalog entries plus parakeet (all not downloaded)
-        assert len(models) == len(server.MODEL_CATALOG) + 1
-        assert all(m["downloaded"] is False for m in models)
-
-    def test_missing_model_dir_returns_catalog(self, server, tmp_path):
+    def test_missing_model_dir(self, client, server, tmp_path):
         server.MODEL_DIR = str(tmp_path / "nonexistent")
-        server.app.config["TESTING"] = True
-        client = server.app.test_client()
-        resp = client.get("/models")
-        models = resp.get_json()["models"]
-        assert len(models) == len(server.MODEL_CATALOG) + 1
-        assert all(m["downloaded"] is False for m in models)
+        models = client.get("/models").get_json()["models"]
+        assert len(models) == 1
+        assert models[0]["downloaded"] is False
 
 
 class TestSwitchModel:
-    """Test the PUT /model endpoint."""
+    """PUT /model only knows Parakeet."""
 
-    @pytest.fixture
-    def setup(self, server, tmp_path):
-        model_dir = tmp_path / "models"
-        model_dir.mkdir()
-        (model_dir / "ggml-base.en.bin").write_bytes(b"\x00" * 1024)
-        (model_dir / "ggml-small.en.bin").write_bytes(b"\x00" * 2048)
+    def _put(self, client, body):
+        return client.put("/model", data=json.dumps(body), content_type="application/json")
 
-        server.MODEL_DIR = str(model_dir)
-        server.model_path = str(model_dir / "ggml-base.en.bin")
-        server.model_name = "base.en"
-        server.model_size_mb = 0
-        server.model_loaded = True
-        server.recording_process = None
-        server.app.config["TESTING"] = True
-        return server, server.app.test_client()
-
-    def test_switch_model(self, setup):
-        server, client = setup
-        resp = client.put(
-            "/model",
-            data=json.dumps({"model": "small.en"}),
-            content_type="application/json",
-        )
+    def test_switch_to_parakeet(self, client, server, tmp_path):
+        _write_parakeet_model(tmp_path / "models")
+        sys.modules["sherpa_onnx"] = _fake_sherpa()
+        resp = self._put(client, {"model": server.PARAKEET_MODEL_NAME})
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["ok"] is True
-        assert data["model"] == "small.en"
-        assert server.model_name == "small.en"
+        assert resp.get_json()["model"] == server.PARAKEET_MODEL_NAME
+        assert server.active_engine == "parakeet"
         assert server.model_loaded is True
 
-    def test_switch_to_nonexistent_model(self, setup):
-        server, client = setup
-        resp = client.put(
-            "/model",
-            data=json.dumps({"model": "large-v3"}),
-            content_type="application/json",
-        )
+    def test_other_model_is_refused(self, client, server):
+        resp = self._put(client, {"model": "small.en"})
         assert resp.status_code == 404
         assert resp.get_json()["error"] == "model_not_found"
-        assert server.model_name == "base.en"
+        assert server.PARAKEET_MODEL_NAME in resp.get_json()["message"]
 
-    def test_switch_missing_body(self, setup):
-        _, client = setup
-        resp = client.put(
-            "/model",
-            data="not json",
-            content_type="application/json",
-        )
+    def test_missing_model_says_how_to_get_it(self, client, server):
+        resp = self._put(client, {"model": server.PARAKEET_MODEL_NAME})
+        assert resp.status_code == 404
+        assert "update-model.sh parakeet" in resp.get_json()["message"]
+
+    def test_switch_missing_body(self, client):
+        resp = client.put("/model", data="not json", content_type="application/json")
         assert resp.status_code == 400
 
-    def test_switch_empty_model_name(self, setup):
-        _, client = setup
-        resp = client.put(
-            "/model",
-            data=json.dumps({"model": ""}),
-            content_type="application/json",
-        )
-        assert resp.status_code == 400
+    def test_switch_empty_model_name(self, client):
+        assert self._put(client, {"model": ""}).status_code == 400
 
-    def test_switch_no_model_field(self, setup):
-        _, client = setup
-        resp = client.put(
-            "/model",
-            data=json.dumps({"wrong_field": "base.en"}),
-            content_type="application/json",
-        )
-        assert resp.status_code == 400
+    def test_switch_no_model_field(self, client):
+        assert self._put(client, {"wrong_field": "x"}).status_code == 400
 
-    def test_switch_while_recording(self, setup):
-        server, client = setup
+    def test_switch_while_recording(self, client, server):
         server.recording_process = "fake"
-        resp = client.put(
-            "/model",
-            data=json.dumps({"model": "small.en"}),
-            content_type="application/json",
-        )
+        resp = self._put(client, {"model": server.PARAKEET_MODEL_NAME})
         assert resp.status_code == 409
         assert resp.get_json()["error"] == "recording_active"
         server.recording_process = None
 
-    def test_switch_updates_active_in_models_list(self, setup):
-        _, client = setup
-        client.put(
-            "/model",
-            data=json.dumps({"model": "small.en"}),
-            content_type="application/json",
-        )
-        resp = client.get("/models")
-        models = resp.get_json()["models"]
-        active = [m for m in models if m["active"]]
-        assert len(active) == 1
-        assert active[0]["name"] == "small.en"
+
+class TestRemovedEngineIsGone:
+    """The removed engine leaves nothing behind in the server."""
+
+    @pytest.mark.parametrize("name", [
+        "MODEL_CATALOG", "WHISPER_BIN", "DEFAULT_MODEL", "find_whisper_bin",
+        "start_whisper_server", "run_whisper", "run_whisper_on_model",
+        "_detect_whisper_flags", "_detect_vad_support", "load_model",
+    ])
+    def test_symbol_is_gone(self, server, name):
+        assert not hasattr(server, name)
+
+    @pytest.mark.parametrize("path", ["/models/benchmark"])
+    def test_route_is_gone(self, client, path):
+        assert client.post(path).status_code == 404
+
+    def test_status_has_no_whisper_server_mode(self, client, server, tmp_path):
+        _write_parakeet_model(tmp_path / "models")
+        sys.modules["sherpa_onnx"] = _fake_sherpa()
+        server.STT_ENGINE = "auto"
+        server.select_engine()
+        status = client.get("/status").get_json()
+        assert status["engine"] == "parakeet"
+        assert status["engine_backend"] == "sherpa-onnx"
+        assert "whisper_server_mode" not in status
