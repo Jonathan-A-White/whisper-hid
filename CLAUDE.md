@@ -3,7 +3,7 @@
 ## What this is
 Three-component system that turns a Samsung phone into a speech-to-text
 Bluetooth keyboard. A PWA provides the UI, a Python+Flask server in Termux
-handles mic capture and Whisper transcription, and a headless Kotlin service
+handles mic capture and Parakeet transcription, and a headless Kotlin service
 sends keystrokes via Bluetooth HID.
 
 ## Architecture (SPEC-2)
@@ -14,7 +14,7 @@ sends keystrokes via Bluetooth HID.
 
 ## Key technical decisions
 - BluetoothHidDevice API (Android 9+) — no root needed
-- whisper.cpp built natively in Termux (ARM64 NEON)
+- Parakeet TDT 0.6B v2 is the only speech-to-text engine (in-process, onnxruntime)
 - HTTP APIs replace the old TCP socket protocol
 - PWA hosted on GitHub Pages — UI updates without APK reinstall
 - Mic capture stays in Termux (browser can't reliably access BT headset mic)
@@ -456,13 +456,13 @@ gets no headset mic. "Zoom mode" releases the link without stopping anything:
 
 ## Whisper server debugging
 
-The Whisper server (scripts/whisper-server.py) wraps whisper.cpp via subprocess.
+The Whisper server (scripts/whisper-server.py) runs Parakeet in-process.
 Most "no speech detected" bugs are NOT mic problems — check the full pipeline:
 
 ### Diagnostic endpoints
 - `GET /logs` — circular buffer of recent events with timestamps
 - `POST /debug/test-pipeline` — records 3s of audio and returns diagnostics
-  for every pipeline stage (recording, transcode, audio energy, whisper output).
+  for every pipeline stage (recording, transcode, audio energy, Parakeet output).
   Includes `mic_bandwidth` (`estimate_bandwidth()`, pure-Python FFT — no numpy
   dependency): verdict `narrowband` means the audio has no content above
   ~4 kHz. With a Bluetooth headset mic that's the SCO link on CVSD instead of
@@ -477,25 +477,20 @@ Most "no speech detected" bugs are NOT mic problems — check the full pipeline:
 2. **Transcode**: `ffmpeg` converts to 16kHz mono WAV
    - Check: WAV size should be ~(duration × 32000) bytes
    - Failure mode: small WAV (<1000B) = corrupt input or wrong codec
-3. **Whisper inference**: whisper-cli processes WAV → text
-   - Check: processing time should be proportional to audio length (seconds, not milliseconds)
-   - Failure mode: **if whisper finishes in <100ms for multi-second audio, it didn't
-     process the file** — it printed help text and exited. This means a CLI flag is wrong.
-
-### whisper.cpp CLI flag compatibility
-**Critical**: whisper.cpp CLI flags change between versions. The server uses dynamic
-flag detection — probing `whisper-cli --help` output before building the command.
-When adding new whisper flags:
-- Boolean flags (--no-timestamps, --no-gpu) take NO argument — never pass "true"/"false"
-- Always check `--help` output before assuming a flag exists
-- See `_detect_whisper_flags()` in whisper-server.py
+3. **Parakeet inference**: Parakeet transcribes the WAV → text
+   - Check: processing time should be proportional to audio length (~1/10 of it)
+   - Failure mode: the server is up but unloaded — `/status` says
+     `"status": "error"` and names the fix (`./update-model.sh parakeet`, or
+     `pkg install python-numpy python-onnxruntime` when only the backend is missing)
 
 ### Parakeet engine
-The server supports a second transcription engine: NVIDIA Parakeet TDT 0.6B v2
-(int8), run in-process. It is both faster (~10x real-time on phone-class CPUs
-vs ~2x for whisper base.en) and more accurate (WER comparable to whisper
-large-v3). When the model directory and a backend are present, the server
-prefers Parakeet automatically at startup.
+NVIDIA Parakeet TDT 0.6B v2 (int8), run in-process, is the ONLY speech-to-text
+engine (~10x real-time on phone-class CPUs, WER comparable to whisper
+large-v3). whisper.cpp (ggml tiny.en to large-v3-turbo) and Nemotron Speech
+Streaming were considered and removed in 2026-10 (see the README's "Speech
+Models"); don't reintroduce a second engine or a fallback without a reason.
+Parakeet is required: without its model the server stays up but unloaded,
+and `/status`, `/transcribe` and `/transcribe/start` say how to get it.
 
 Two interchangeable backends (tried in this order by `load_parakeet()`):
 1. **sherpa-onnx** Python package — C++ decode loop, used where pip wheels
@@ -508,19 +503,21 @@ Two interchangeable backends (tried in this order by `load_parakeet()`):
    Verified to produce byte-identical transcripts to the upstream
    sherpa-onnx reference script on real audio.
 
-- **Engine selection**: `STT_ENGINE` env var — `auto` (default, prefers
-  parakeet), `whisper` (force whisper.cpp), `parakeet`. Any other value is
-  logged as an error naming these three and treated as `auto`
+- **Engine selection**: `STT_ENGINE` env var — `auto` (default) or
+  `parakeet`, which mean the same. Any other value (including the removed
+  engines' names) is logged as an error naming these two and treated as `auto`
 - **Model files**: `models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8/`
   (encoder/decoder/joiner .int8.onnx + tokens.txt, ~630 MB on disk)
 - **Install**: `./update-model.sh parakeet` downloads the model;
-  setup-termux.sh installs backend + model automatically (non-fatally)
-- **Switching**: `PUT /model {"model": "parakeet-tdt-0.6b-v2"}` — also listed
-  in `GET /models` and the PWA model dropdown like any whisper model
-- **Status**: `GET /status` includes `"engine": "parakeet" | "whisper"` and
-  `"engine_backend"` ("sherpa-onnx", "onnxruntime", or "whisper.cpp")
-- **Fallback**: any Parakeet failure falls back to whisper.cpp per-request;
-  switching engines frees the inactive engine's RAM (parakeet ~700 MB loaded)
+  setup-termux.sh installs backend + model, and exits non-zero (after the
+  remaining steps) when Parakeet could not be installed
+- **Loading**: `PUT /model {"model": "parakeet-tdt-0.6b-v2"}` (re)loads it
+  after a download, without a restart; any other name is a 404. `GET /models`
+  lists just Parakeet; Settings > Speech model shows it read-only
+- **Status**: `GET /status` includes `"engine": "parakeet" | "none"` and
+  `"engine_backend"` ("sherpa-onnx" or "onnxruntime")
+- **No fallback**: a Parakeet failure is a 500 `transcription_failed` for that
+  request (`run_transcription()` raises RuntimeError), never a silent switch
 - **Threads**: `PARAKEET_THREADS` env var (default 4)
 - **fbank gotchas** (parakeet_onnx.py must match kaldi-native-fbank exactly):
   hann window is PERIODIC (2π/N, not 2π/(N-1)); std normalization is
@@ -574,21 +571,8 @@ instead of ~duration/10 with Parakeet).
   synthetic levels, WAV slicing, poller with mocked decode/engine, join+
   postprocess assembly).
 
-### Persistent whisper-server mode
-The server can use a long-running `whisper-server` process (from whisper.cpp) that
-loads the model once and serves inference requests via HTTP on port 9878. This
-eliminates the ~1-3s model load overhead on every transcription.
-
-- **Binary**: built with `-DWHISPER_BUILD_SERVER=ON` in setup-termux.sh
-- **Startup**: launched automatically if the binary exists; falls back to
-  subprocess mode (whisper-cli per request) if not
-- **Model switching**: `PUT /model` restarts the whisper-server with the new model
-- **Status**: `GET /status` includes `"whisper_server_mode": true/false`
-- **Benchmarks**: still use one-shot subprocess mode (tests multiple models)
-- **Config**: `WHISPER_SERVER_PORT` env var (default 9878)
-
 ### Common "no speech" causes (ranked by likelihood)
-1. Wrong whisper CLI flags → whisper prints help and exits instantly (check timing)
+1. Parakeet not loaded → `/status` says so and names the fix
 2. Audio file not flushed → add sleep after `termux-microphone-record -q` (currently 2s)
 3. AAC codec mismatch → server auto-detects AAC vs AMR-WB at startup
 4. Actual silence → check audio_analysis step in /debug/test-pipeline (max_amplitude < 100)
@@ -739,9 +723,8 @@ Parakeet — no network. The same resident llama-server also powers cleanup
 (`POST /corrections/suggest`), and glossary-aware corrections.
 
 ### How it works
-- A resident `llama-server` (built from llama.cpp, same Termux build story as
-  whisper.cpp) runs on localhost:9879, launched at whisper-server startup and
-  mirroring the persistent whisper-server lifecycle. The model stays loaded
+- A resident `llama-server` (built from llama.cpp in setup-termux.sh) runs on
+  localhost:9879, launched at whisper-server startup and stopped at exit. The model stays loaded
   (~1.3 GB RAM for the 1.7B) so flipping the toggle never pays a load wait.
 - `apply_cleanup()` is called from `_postprocess_text()` BEFORE word
   corrections and symbols, so corrections/symbol phrases still match the

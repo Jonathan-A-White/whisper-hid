@@ -58,8 +58,8 @@ Open Termux and paste:
 curl -fsSL https://raw.githubusercontent.com/Jonathan-A-White/whisper-hid/main/scripts/bootstrap.sh | bash
 ```
 
-This clones the repo, installs dependencies, builds whisper.cpp, downloads
-the default model, fetches the latest APK from GitHub Releases (opening the
+This clones the repo, installs dependencies, installs the Parakeet
+model, fetches the latest APK from GitHub Releases (opening the
 Android installer for you), and starts the Whisper server. It's idempotent —
 safe to re-run if anything fails partway.
 
@@ -85,7 +85,7 @@ Then speak into your microphone — text appears on your laptop as keyboard inpu
 # In Termux:
 git clone https://github.com/Jonathan-A-White/whisper-hid
 cd whisper-hid
-bash scripts/setup-termux.sh    # installs deps, builds whisper.cpp, downloads model
+bash scripts/setup-termux.sh    # installs deps, Parakeet and the cleanup LLM
 
 # Start/stop the server:
 cd ~/whisper-stt
@@ -148,31 +148,20 @@ The PWA updates itself — CI deploys it to GitHub Pages on every push to main.
 
 ## Speech Models
 
-Two transcription engines are supported:
+One engine: **Parakeet TDT 0.6B v2** (NVIDIA, int8) — runs in-process on the
+phone via onnxruntime, ~10x real-time, accuracy comparable to whisper
+large-v3. `setup-termux.sh` installs it; the server will not transcribe
+without it, and says to run `./scripts/update-model.sh parakeet` if the model
+is missing. **Settings > Speech model** just shows it.
 
-- **Parakeet** (NVIDIA Parakeet TDT 0.6B, recommended) — runs in-process via
-  onnxruntime. Faster *and* more accurate than every whisper option below.
-  Installed automatically by `setup-termux.sh`; the server prefers it at
-  startup whenever it's present.
-- **whisper.cpp** — the original engine, used as the automatic fallback
-  when Parakeet isn't installed (or if it ever fails).
+Considered and removed (2026-10): whisper.cpp (ggml tiny.en to large-v3-turbo) and Nemotron Speech Streaming 0.6B (live partial text, but much slower than Parakeet on the phone). Parakeet was the best.
 
-Swap models for different speed/accuracy trade-offs:
-
-```bash
-./scripts/update-model.sh <model-name>
-```
-
-| Model | Size | Speed (S24 Ultra) | Accuracy |
-|-------|------|-------------------|----------|
-| `parakeet` | ~640 MB | ~10x real-time | Best (comparable to whisper large-v3) |
-| `tiny.en` | 75 MB | ~10x real-time | Basic |
-| `base.en` | 142 MB | ~5x real-time | Good |
-| `small.en` | 466 MB | ~2x real-time | Better |
-| `distil-small.en` | ~350 MB | ~2-3x real-time | Better (optimized) |
-
-Default whisper model is `base.en`. The active model can also be switched
-from the PWA: **Settings > Speech model**.
+`STT_ENGINE` accepts `auto` or `parakeet` (the same thing); any other value
+is logged as an error and treated as `auto`. A phone set up before this change
+can reclaim space by deleting the old engines' leftovers under
+`~/whisper-stt`: the `models/*.bin` files, the engine's source-and-build
+directory (the one next to `llama.cpp`) and any `models/sherpa-onnx-nemotron-*`
+directory.
 
 ### Adding Parakeet to an existing install
 
@@ -186,14 +175,6 @@ cd ~/whisper-stt && ./stop-whisper-server.sh && ~/whisper-hid/scripts/start-whis
 
 Verify with `curl http://localhost:9876/status` — it should report
 `"engine": "parakeet"`, and the PWA's top bar will show the active model.
-
-### Nemotron was removed
-
-The Nemotron Speech Streaming trial engine is gone. `STT_ENGINE` accepts
-`auto`, `whisper` and `parakeet`; any other value (including the old
-`nemotron`) is logged as an error and treated as `auto`. If you downloaded the
-model, delete `~/whisper-stt/models/sherpa-onnx-nemotron-speech-streaming-en-0.6b-160ms-int8-2026-04-25`
-to reclaim ~635 MB.
 
 ## Dictation features
 
@@ -250,7 +231,6 @@ whisper-hid/
 │   ├── update-model.sh
 │   ├── update-all.sh             # Update the whole phone: pull, pip, server, APK
 │   ├── update-apk.sh             # Install the newest APK from GitHub Releases
-│   ├── diagnose-sigill.sh
 │   └── tests/                    # pytest suite for the server
 ├── .github/workflows/
 │   ├── build-apk.yml            # CI: build APK on push
