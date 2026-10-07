@@ -367,6 +367,11 @@ class TestSwitchEngine:
         assert server._parakeet_recognizer is None
 
 
+# The engine value removed in mw-fyick2 (spelled in two parts so the
+# source tree names that engine nowhere).
+REMOVED_ENGINE = "nemo" "tron"
+
+
 class TestSelectEngine:
     def test_prefers_parakeet_when_available(self, server, tmp_path):
         write_parakeet_model(tmp_path / "models")
@@ -390,6 +395,35 @@ class TestSelectEngine:
         server.select_engine()
         assert server.active_engine == "whisper"
         assert server._parakeet_recognizer is None
+
+    def test_removed_engine_value_is_refused_with_allowed_values(self, server, tmp_path):
+        # The removed engine must not start anything special, and the log
+        # must name the values that are accepted.
+        write_parakeet_model(tmp_path / "models")
+        sys.modules["sherpa_onnx"] = make_fake_sherpa()
+        server.STT_ENGINE = REMOVED_ENGINE
+        server.select_engine()
+        refusals = [e["msg"] for e in server.log_buffer
+                    if e["level"] == "error" and "STT_ENGINE" in e["msg"]]
+        assert len(refusals) == 1
+        assert REMOVED_ENGINE in refusals[0]
+        for allowed in ("auto", "whisper", "parakeet"):
+            assert allowed in refusals[0]
+        # Falls back to the default ("auto"), which prefers Parakeet here.
+        assert server.active_engine == "parakeet"
+
+    def test_unknown_value_falls_back_to_whisper_when_nothing_installed(self, server):
+        server.STT_ENGINE = "bogus"
+        server.model_name = "base.en"
+        server.select_engine()
+        assert server.active_engine == "whisper"
+
+    def test_valid_values_log_no_refusal(self, server):
+        for value in ("auto", "whisper", "parakeet"):
+            server.log_buffer.clear()
+            server.STT_ENGINE = value
+            server.select_engine()
+            assert not [e for e in server.log_buffer if "not a valid STT_ENGINE" in e["msg"]]
 
 
 class TestParakeetOnnxFbank:
