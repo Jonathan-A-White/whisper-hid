@@ -80,7 +80,7 @@ export interface LogEntry {
 export type NewlineMode = "enter" | "ctrl_j" | "backslash_enter" | "end_enter";
 
 /** Which app the keystrokes are going to (whisper server: GET/PUT /target). */
-export type TargetMode = "plain" | "claude" | "codex";
+export type TargetMode = "plain" | "claude" | "codex" | "terminal";
 
 export interface TargetInfo {
   name: TargetMode;

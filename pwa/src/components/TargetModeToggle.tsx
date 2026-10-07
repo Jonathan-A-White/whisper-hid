@@ -10,12 +10,14 @@ const ICONS: Record<TargetMode, string> = {
   plain: "📝",
   claude: "🤖",
   codex: "🧠",
+  terminal: "🖥️",
 };
 
 /**
  * Target app pill for the Talk screen: which app is receiving the
  * keystrokes. It decides how line breaks are typed (Claude Code's "\" +
- * Enter, Codex's Ctrl+J, or a real Enter) and which assistant the "prompt"
+ * Enter, Codex's Ctrl+J, or a real Enter, which a shell target also
+ * keeps for every pasted line) and which assistant the "prompt"
  * cleanup style writes for — a wrong setting either submits the prompt
  * halfway through or litters it with stray backslashes, so it sits next to
  * the other per-dictation toggles rather than in Settings.

@@ -20,6 +20,7 @@ import { EditBuffer, type VoiceEditState } from "./EditBuffer";
 import { PhoneModeToggle } from "./PhoneModeToggle";
 import { PhoneResult } from "./PhoneResult";
 import { SymbolModeToggle } from "./SymbolModeToggle";
+import { clipboardTextToType } from "../lib/clipboard";
 import { TargetModeToggle } from "./TargetModeToggle";
 import { ZoomModeToggle } from "./ZoomModeToggle";
 
@@ -68,7 +69,6 @@ export function TalkView({
   settings,
   onUpdateSettings,
 }: TalkViewProps) {
-  const { newlineMode } = target;
   const [lastText, setLastText] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastStats, setLastStats] = useState<TranscriptionStats | null>(null);
@@ -212,28 +212,17 @@ export function TalkView({
       setClipboardError("Clipboard is empty");
       return;
     }
-    // In a CLI target the line breaks survive: the HID service types each
-    // one as that app's newline-without-submit key (target mode pill), so
-    // the structure arrives intact as ONE prompt. With a plain-text target
-    // there is no such key — a "\n" would be a real Enter that submits
-    // mid-paste — so the clipboard is flattened to a single line unless the
-    // user has opted into newline separators. Either way "Newline after end
-    // of recording" alone decides the final, deliberate Enter.
-    text = text.replace(/\r\n?/g, "\n").trim();
-    if (newlineMode === "enter" && !settings.appendNewline) {
-      text = text
-        .split("\n")
-        .map((line) => line.trim())
-        .filter(Boolean)
-        .join(" ");
-    }
+    // Line breaks survive in every target but plain text (see
+    // clipboardTextToType); "Newline after end of recording" alone decides
+    // the final, deliberate Enter.
+    text = clipboardTextToType(text, target.target, settings);
     setLastError(null);
     setLastStats(null);
     setLastText(text);
     await store.addEntry(text);
     await hid.sendText(text);
     if (settings.newlineAfterEnd) await hid.sendNewline();
-  }, [hid, store, newlineMode, settings.appendNewline, settings.newlineAfterEnd]);
+  }, [hid, store, target.target, settings]);
 
   const handlePinnedTap = useCallback(
     async (text: string) => {
