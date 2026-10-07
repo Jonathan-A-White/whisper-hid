@@ -178,14 +178,6 @@ class MainActivity : AppCompatActivity() {
     private fun startHidService() {
         val intent = Intent(this, BluetoothHidService::class.java)
         ContextCompat.startForegroundService(this, intent)
-        startBluetoothSco()
-    }
-
-    private fun startBluetoothSco() {
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-        audioManager.startBluetoothSco()
-        audioManager.isBluetoothScoOn = true
     }
 
     private fun stopBluetoothSco() {

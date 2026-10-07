@@ -345,10 +345,27 @@ mic requires system-wide SCO routing, handled by the Kotlin HID service
 - SCO startup is retried (it commonly fails right after profile connect);
   `setBluetoothScoOn(true)` is applied once `ACTION_SCO_AUDIO_STATE_UPDATED`
   reports connected.
-- State exposed in HID `/status` as `"headset_mic": {available, active, device}`;
-  the PWA StatusBar shows a 🎧 dot (green = headset mic in use).
+- **The link is open only while a dictation runs.** A held SCO link silences
+  every other app's audio on a headset that has a mic (a Plantronics Voyager
+  Focus played no media at all: no YouTube, no Postern voice, until the link
+  was released). `HeadsetLinkController` (plain Kotlin, `HeadsetLinkControllerTest`)
+  opens it on `POST /dictation {"active": true}` (auth; blocks until the link
+  is up or 4s, answers `{connected, waited_ms}`) and closes it on
+  `{"active": false}`. Callers: the PWA's `useWhisper` (around
+  `/transcribe/start`..`stop`, via `hidDictation()`) and the voice keyboard
+  (`DictationLinkTranscriber`, same process). A client that dies mid-dictation
+  is released after 15 minutes. Anything that records by calling the Termux
+  server directly (curl) does not open the link and records from the phone mic.
+  "Dictation headset link up in Nms" in HID `/logs` is the first-word cost.
+- **"Keep the headset link warm"** (`PUT /headset-mic {"keep_warm": true}`,
+  Settings in the PWA, persisted, **off by default**) restores holding the
+  link whenever a headset with a mic is connected; `/status` `headset_mic`
+  reports `keep_warm` and `dictating`.
+- State exposed in HID `/status` as `"headset_mic": {available, active, enabled, keep_warm, dictating, device}`;
+  the PWA StatusBar shows a 🎧 dot (green = headset mic in use, i.e. the link
+  is currently open; sky blue between dictations by default).
 - While SCO is active, phone audio plays through the headset at call quality
-  (16 kHz mono) — acceptable for a dedicated dictation device.
+  (16 kHz mono). That is why it is held only during a dictation.
 - Some devices (observed on Samsung/OneUI) silently tear down the SCO link
   every ~15-30s. Two mechanisms combat this:
   1. Holds `AUDIOFOCUS_GAIN` (voice communication usage) while the headset
@@ -398,8 +415,8 @@ explicitly: `mic` (default, unchanged behaviour), `voice_communication`
 - Tests: `pytest scripts/tests/test_mic_source.py`
 
 ### Zoom mode (release headset mic to another device)
-A headset has a single call-audio (SCO) channel. Because the HID service
-holds it continuously (keep-alive stream + auto-retry), a laptop sharing the
+A headset has a single call-audio (SCO) channel. When the HID service
+holds it (a dictation, or "Keep the headset link warm"), a laptop sharing the
 same multipoint headset can never open its own channel — Zoom on the laptop
 gets no headset mic. "Zoom mode" releases the link without stopping anything:
 - `PUT /headset-mic {"enabled": false}` (auth required) calls `disableSco()`

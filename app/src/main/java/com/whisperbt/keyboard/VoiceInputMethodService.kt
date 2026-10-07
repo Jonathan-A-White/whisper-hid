@@ -1,7 +1,11 @@
 package com.whisperbt.keyboard
 
+import android.content.ComponentName
+import android.content.Intent
+import android.content.ServiceConnection
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.view.KeyEvent
 import android.view.View
@@ -34,8 +38,32 @@ class VoiceInputMethodService : InputMethodService() {
         }
     }
 
-    private val controller = VoiceKeyboardController(HttpVoiceTranscriber(), ui) { work ->
-        worker.execute(work)
+    // The HID service, once bound (never started from here): it owns the
+    // headset's call link, which is open only while a dictation runs.
+    @Volatile private var hidService: BluetoothHidService? = null
+    private val hidConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            hidService = (service as BluetoothHidService.LocalBinder).getService()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            hidService = null
+        }
+    }
+
+    // Called on the worker thread: open() blocks until the headset mic is routed.
+    private val headsetLink = object : DictationLink {
+        override fun open() { hidService?.beginDictationLink() }
+        override fun close() { hidService?.endDictationLink() }
+    }
+
+    private val controller = VoiceKeyboardController(
+        DictationLinkTranscriber(HttpVoiceTranscriber(), headsetLink), ui
+    ) { work -> worker.execute(work) }
+
+    override fun onCreate() {
+        super.onCreate()
+        bindService(Intent(this, BluetoothHidService::class.java), hidConnection, 0)
     }
 
     override fun onCreateInputView(): View {
@@ -51,6 +79,7 @@ class VoiceInputMethodService : InputMethodService() {
     }
 
     override fun onDestroy() {
+        try { unbindService(hidConnection) } catch (_: IllegalArgumentException) {}
         worker.shutdown()
         super.onDestroy()
     }

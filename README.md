@@ -216,8 +216,14 @@ All of these run on the phone and are toggled from the PWA:
   background at silence boundaries while you speak, so tapping Stop costs
   about a second instead of the whole recording.
 - **Bluetooth headset mic** — the Android app routes the headset's mic to
-  Termux system-wide and holds the link open; *Zoom mode* releases it so a
-  laptop sharing the same multipoint headset can use it for a call.
+  Termux system-wide, but only while a dictation runs: the headset's call
+  link opens when you start recording and closes when the text is back, so
+  music, video and voice from other apps play normally on the headset the
+  rest of the time. Settings > *Keep the headset link warm* holds the link
+  whenever the headset is connected instead (first word a moment sooner, but
+  a headset with a mic then plays no other audio). *Zoom mode* releases the
+  link entirely so a laptop sharing the same multipoint headset can use it
+  for a call.
 - **Stop typing** — a kill switch on the Talk screen that halts an in-flight
   send and releases any held key.
 

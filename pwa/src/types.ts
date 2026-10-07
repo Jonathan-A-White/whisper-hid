@@ -27,6 +27,10 @@ export interface HidStatus {
     active: boolean;
     /** false = released for other devices (Zoom mode); absent on older APKs */
     enabled?: boolean;
+    /** true = the headset link is held whenever a headset is connected, not only during a dictation; absent on older APKs */
+    keep_warm?: boolean;
+    /** true while a dictation holds the link; absent on older APKs */
+    dictating?: boolean;
     device?: string;
   };
 }

@@ -483,6 +483,7 @@ export async function hidHeadsetMic(enabled: boolean): Promise<{
   available: boolean;
   active: boolean;
   enabled: boolean;
+  keep_warm?: boolean;
   device?: string;
 }> {
   const res = await hidFetch("/headset-mic", {
@@ -493,6 +494,44 @@ export async function hidHeadsetMic(enabled: boolean): Promise<{
     throw new Error("AUTH_FAILED");
   }
   return res.json();
+}
+
+/**
+ * "Keep the headset link warm": hold the headset's call link (SCO) whenever a
+ * headset with a mic is connected, not only during a dictation. Off by
+ * default: a held link silences every other app's audio on that headset.
+ */
+export async function hidKeepLinkWarm(keepWarm: boolean): Promise<{
+  ok: boolean;
+  keep_warm: boolean;
+}> {
+  const res = await hidFetch("/headset-mic", {
+    method: "PUT",
+    body: JSON.stringify({ keep_warm: keepWarm }),
+  });
+  if (res.status === 403) {
+    throw new Error("AUTH_FAILED");
+  }
+  return res.json();
+}
+
+/**
+ * Tell the HID service a dictation is starting (active) or has ended. Starting
+ * opens the headset's call link and resolves once it is up, so the recording
+ * that follows is routed to the headset mic; ending closes it so other apps
+ * can play audio over the headset again. Never throws: with no headset, an
+ * older APK (404) or the service down, dictation just goes ahead on the phone
+ * mic as before.
+ */
+export async function hidDictation(active: boolean): Promise<void> {
+  try {
+    await hidFetch("/dictation", {
+      method: "POST",
+      body: JSON.stringify({ active }),
+    });
+  } catch {
+    // best effort
+  }
 }
 
 export async function hidRestart() {
