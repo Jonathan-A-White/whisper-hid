@@ -387,3 +387,57 @@ class TestModelCatalog:
         text = open(path).read()
         for entry in server.CLEANUP_MODEL_CATALOG:
             assert entry["file"] in text, entry["file"]
+
+
+class TestCleanupTiming:
+    """A dictation reports how long cleanup took, only when cleanup ran
+    (mw-sd45rc.1)."""
+
+    @pytest.fixture
+    def client(self, server):
+        server.model_loaded = True
+        server.active_engine = "parakeet"
+        server._parakeet_recognizer = object()
+        server.run_parakeet_raw = lambda path: ("so um hello there everyone", 120)
+        server.transcode_to_wav = lambda src, dst: False  # body is already a WAV
+        return server.app.test_client(), server
+
+    @staticmethod
+    def _wav():
+        return b"RIFF" + b"\x00" * 40 + b"\x00" * 32000
+
+    def test_cleanup_on_reports_cleanup_ms_next_to_transcription_ms(self, client):
+        c, server = client
+        _arm(server, "Hello there everyone.")
+        body = c.post("/transcribe", data=self._wav()).get_json()
+        assert body["duration_ms"] == 120
+        assert isinstance(body["cleanup_ms"], int)
+        assert body["cleanup_ms"] >= 0
+
+    def test_cleanup_off_reports_no_cleanup_ms(self, client):
+        c, server = client
+        server.cleanup_settings = {"enabled": False}
+        body = c.post("/transcribe", data=self._wav()).get_json()
+        assert body["duration_ms"] == 120
+        assert "cleanup_ms" not in body
+
+    def test_cleanup_time_does_not_leak_into_the_next_dictation(self, client):
+        c, server = client
+        _arm(server, "Hello there everyone.")
+        assert "cleanup_ms" in c.post("/transcribe", data=self._wav()).get_json()
+        server.cleanup_settings = {"enabled": False}
+        assert "cleanup_ms" not in c.post("/transcribe", data=self._wav()).get_json()
+
+    def test_symbol_mode_skips_cleanup_so_no_cleanup_ms(self, client):
+        c, server = client
+        _arm(server, "mangled")
+        server.symbol_settings = {"enabled": True, "entries": []}
+        body = c.post("/transcribe", data=self._wav()).get_json()
+        assert "cleanup_ms" not in body
+
+    def test_llm_down_reports_no_cleanup_ms(self, client):
+        c, server = client
+        _arm(server, "unused")
+        server._is_cleanup_server_alive = lambda: False
+        body = c.post("/transcribe", data=self._wav()).get_json()
+        assert "cleanup_ms" not in body

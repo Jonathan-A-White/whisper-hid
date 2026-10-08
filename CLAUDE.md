@@ -793,6 +793,16 @@ model that fails to load gets a FAILED row and the rest still run. The system
 prompt in the script copies `CLEANUP_SYSTEM_PROMPT` — keep them in step.
 Test: `pytest scripts/tests/test_bench_cleanup.py` (fake llama-server).
 
+### Cleanup timing
+`/transcribe` and `/transcribe/stop` add `cleanup_ms` next to `duration_ms`
+(the engine time) only when the cleanup LLM actually answered that dictation
+(`last_cleanup_ms`, reset in `_postprocess_text()`); with Cleanup off, symbol
+mode on, or the LLM down the field is absent. The PWA turns the pair into a
+`timing` record on the History entry (`lib/cleanupTiming.ts`): a small grey
+"whisper X s + cleanup Y s" line, and averages under the cleanup model row in
+Settings (hidden while no entry has one). Tests: `TestCleanupTiming` in
+`test_cleanup.py`, `cleanupTiming.test.ts`.
+
 ### Voice editing (`POST /edit`)
 Body `{"text", "command"}` — the LLM applies a spoken instruction ("replace
 Mike with Sarah", "delete the last sentence", "make it more formal") to the

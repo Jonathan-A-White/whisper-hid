@@ -41,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.12.2"
+SERVER_VERSION = "1.13.0"
 
 # --- Configuration ---
 
@@ -1023,6 +1023,18 @@ def _cleanup_result_ok(original: str, cleaned: str, bounds: tuple[float, float] 
     return bounds[0] <= ratio <= bounds[1]
 
 
+# How long the LLM cleanup of the dictation being finished took, in ms; None
+# when it did not run (off, symbol mode, server down, request failed). Reset
+# by _postprocess_text() and read by the transcribe endpoints, all under
+# transcribe_lock, so one dictation's time never reaches the next.
+last_cleanup_ms: int | None = None
+
+
+def _cleanup_fields() -> dict:
+    """The response fields that report cleanup time (empty when it did not run)."""
+    return {} if last_cleanup_ms is None else {"cleanup_ms": last_cleanup_ms}
+
+
 def apply_cleanup(text: str) -> str:
     """Run LLM speech cleanup (in the active style) on a final transcript.
 
@@ -1048,6 +1060,8 @@ def apply_cleanup(text: str) -> str:
         add_log("warn", f"Cleanup failed ({e}) — using raw text")
         return text
     ms = int((time.time() - t0) * 1000)
+    global last_cleanup_ms
+    last_cleanup_ms = ms
 
     if not _cleanup_result_ok(text, cleaned, CLEANUP_STYLES[style]["ratio"]):
         add_log("warn", f"Cleanup [{style}] rejected ({len(text)} -> {len(cleaned)} chars, {ms}ms) — using raw text")
@@ -1677,6 +1691,8 @@ def _clean_raw_text(text: str) -> str:
 def _postprocess_text(text: str, source: str) -> str:
     """Shared transcription cleanup: strip silence markers, collapse
     whitespace, apply LLM speech cleanup, word corrections, symbols."""
+    global last_cleanup_ms
+    last_cleanup_ms = None
     text = _clean_raw_text(text)
 
     if not text:
@@ -2241,6 +2257,7 @@ def transcribe():
                     "duration_ms": duration_ms,
                     "audio_duration_sec": audio_duration_sec,
                     "speed_ratio": speed_ratio,
+                    **_cleanup_fields(),
                 })
             finally:
                 for p in [input_path, input_path + ".wav"]:
@@ -2359,6 +2376,7 @@ def transcribe_stop():
                 "duration_ms": duration_ms,
                 "audio_duration_sec": audio_duration_sec,
                 "speed_ratio": speed_ratio,
+                **_cleanup_fields(),
             }
             if chunked_used:
                 payload["chunked"] = True
