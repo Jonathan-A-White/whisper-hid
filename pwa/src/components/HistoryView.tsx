@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import type { SendTo } from "../types";
+import { tapHistoryEntry } from "../lib/historyTap";
 
 interface HistoryViewProps {
   store: {
@@ -13,17 +15,19 @@ interface HistoryViewProps {
   hid: {
     sendText: (text: string) => Promise<boolean>;
   };
+  sendTo?: SendTo;
 }
 
 const DELETE_WIDTH = 80;
 const SWIPE_THRESHOLD = 40;
 const LONG_PRESS_MS = 500;
 
-export function HistoryView({ store, hid }: HistoryViewProps) {
+export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
   const [confirmClear, setConfirmClear] = useState(false);
   const [swipedId, setSwipedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
+  const [copiedId, setCopiedId] = useState<string | null>(null);
   const touchRef = useRef<{
     startX: number;
     startY: number;
@@ -35,6 +39,22 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired = useRef(false);
   const editTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // The brief "Copied" notice on the tapped entry
+  useEffect(() => {
+    if (!copiedId) return;
+    const t = setTimeout(() => setCopiedId(null), 2000);
+    return () => clearTimeout(t);
+  }, [copiedId]);
+
+  const handleTap = async (id: string, text: string) => {
+    const { copied } = await tapHistoryEntry(text, {
+      sendTo,
+      hid,
+      clipboard: navigator.clipboard,
+    });
+    if (copied) setCopiedId(id);
+  };
 
   const setCardRef = useCallback(
     (id: string) => (el: HTMLDivElement | null) => {
@@ -285,7 +305,7 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
                             closeSwipe();
                             return;
                           }
-                          hid.sendText(entry.text);
+                          handleTap(entry.id, entry.text);
                         }}
                         className="text-left text-sm text-gray-200 flex-1 hover:text-white"
                       >
@@ -305,6 +325,9 @@ export function HistoryView({ store, hid }: HistoryViewProps) {
                       </button>
                     </div>
                     <p className="text-xs text-gray-600 mt-1">
+                      {copiedId === entry.id && (
+                        <span className="text-green-400">Copied · </span>
+                      )}
                       {formatTime(entry.timestamp)}
                       {entry.model && (
                         <span className="text-gray-500"> · {entry.model}</span>

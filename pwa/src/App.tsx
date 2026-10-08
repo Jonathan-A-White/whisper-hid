@@ -104,7 +104,7 @@ export default function App() {
             onUpdateSettings={updateSettings}
           />
         ) : tab === "history" ? (
-          <HistoryView store={store} hid={hid} />
+          <HistoryView store={store} hid={hid} sendTo={settings.sendTo} />
         ) : (
           <SettingsView
             settings={settings}
