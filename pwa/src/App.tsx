@@ -10,6 +10,7 @@ import { HistoryView } from "./components/HistoryView";
 import { SettingsView } from "./components/SettingsView";
 import { SetupWizard } from "./components/SetupWizard";
 import { DebugLog } from "./components/DebugLog";
+import { UpdateBanner } from "./components/UpdateBanner";
 import type { Tab, Settings } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 
@@ -82,6 +83,7 @@ export default function App() {
 
   return (
     <div className="h-[100dvh] bg-black flex flex-col overflow-hidden">
+      <UpdateBanner />
       <StatusBar
         hidStatus={hid.status}
         hidReachable={hid.reachable}
