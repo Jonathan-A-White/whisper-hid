@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { getCleanup, putCleanup, type CleanupStyleInfo } from "../lib/api";
 import type { TargetMode } from "../types";
+import { CleanupInfo } from "./CleanupInfo";
 
 interface CleanupToggleProps {
   /** Active target app — the "prompt" style is named after it, so its label
@@ -61,7 +62,7 @@ export function CleanupToggle({ target }: CleanupToggleProps) {
   };
 
   return (
-    <div className="mt-2 flex items-center gap-2">
+    <div className="mt-2 w-full flex flex-wrap items-center gap-2">
       <button
         onClick={toggle}
         className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
@@ -87,6 +88,7 @@ export function CleanupToggle({ target }: CleanupToggleProps) {
           ))}
         </select>
       )}
+      <CleanupInfo />
     </div>
   );
 }

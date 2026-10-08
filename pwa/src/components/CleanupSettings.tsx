@@ -5,6 +5,7 @@ import {
   type CleanupConfig,
   type CleanupModelInfo,
 } from "../lib/api";
+import { CleanupInfo } from "./CleanupInfo";
 
 /**
  * Settings section for the speech cleanup LLM: pick which model the resident
@@ -66,9 +67,10 @@ export function CleanupSettings() {
 
   return (
     <div>
-      <label className="text-sm text-gray-300 block mb-1">
-        Speech cleanup model
-      </label>
+      <div className="flex flex-wrap items-center gap-2 mb-1">
+        <label className="text-sm text-gray-300">Speech cleanup model</label>
+        <CleanupInfo />
+      </div>
       {downloaded.length > 0 ? (
         <select
           value={active?.name ?? ""}
