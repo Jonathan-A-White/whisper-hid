@@ -34,6 +34,7 @@ import {
   type PressStep,
 } from "../lib/talkPress";
 import { TargetModeToggle } from "./TargetModeToggle";
+import { TypeClipboardButton } from "./TypeClipboardButton";
 import { ZoomModeToggle } from "./ZoomModeToggle";
 
 interface TalkViewProps {
@@ -398,6 +399,14 @@ export function TalkView({
 
             {/* Zoom mode quick toggle — release headset mic to the laptop */}
             <ZoomModeToggle status={hid.status} onToggle={hid.setHeadsetMic} />
+
+            {/* Type clipboard: types what is on the phone clipboard on the host */}
+            <TypeClipboardButton
+              target={target.target}
+              settings={settings}
+              hid={hid}
+              store={store}
+            />
 
             {/* Phone mode result: the text with Copy again / Share */}
             {phoneMode && phoneText !== null && !lastError && (

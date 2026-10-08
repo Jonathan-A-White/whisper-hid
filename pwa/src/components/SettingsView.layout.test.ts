@@ -22,17 +22,15 @@ describe("SettingsView Talk options", () => {
     expect(section).toBeLessThan(edit);
   });
 
-  it("holds Symbols, Cleanup and Type clipboard under Talk options", () => {
+  it("holds Symbols and Cleanup under Talk options, and no Type clipboard", () => {
     const section = lineOf("Talk options");
     const edit = lineOf("Edit before send");
-    for (const control of [
-      "<SymbolModeToggle",
-      "<CleanupToggle",
-      "<TypeClipboardButton",
-    ]) {
+    for (const control of ["<SymbolModeToggle", "<CleanupToggle"]) {
       const at = lineOf(control);
       expect(at, control).toBeGreaterThan(section);
       expect(at, control).toBeLessThan(edit);
     }
+    expect(source).not.toContain("TypeClipboardButton");
+    expect(source).not.toContain("Type clipboard");
   });
 });

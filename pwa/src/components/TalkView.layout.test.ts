@@ -32,7 +32,14 @@ describe("TalkView layout", () => {
   it("keeps the cooler switches off the Talk screen (they live in Settings)", () => {
     expect(source).not.toContain("<SymbolModeToggle");
     expect(source).not.toContain("<CleanupToggle");
-    expect(source).not.toContain("Type clipboard");
+  });
+
+  it("puts Type clipboard right after Zoom mode, above the controls block", () => {
+    const zoom = lineOf("<ZoomModeToggle");
+    const clipboard = lineOf("<TypeClipboardButton");
+    const controls = lineOf('data-testid="talk-controls"');
+    expect(clipboard).toBeGreaterThan(zoom);
+    expect(clipboard).toBeLessThan(controls);
   });
 
   it("puts the live words box, then the bar, inside the controls block", () => {
