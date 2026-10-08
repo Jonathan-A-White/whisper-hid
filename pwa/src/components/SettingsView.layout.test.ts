@@ -6,6 +6,7 @@ import symbolModeToggle from "./SymbolModeToggle.tsx?raw";
 import cleanupToggle from "./CleanupToggle.tsx?raw";
 import cleanupSettings from "./CleanupSettings.tsx?raw";
 import symbolReplacements from "./SymbolReplacements.tsx?raw";
+import wordCorrections from "./WordCorrections.tsx?raw";
 
 // There are no render tests for screens, so this checks the source: the six
 // section headings in order, one shared switch row for every on/off, and that
@@ -72,12 +73,42 @@ describe("SettingsView switches", () => {
     expect(settingsRow).toContain('role="switch"');
     expect(symbolModeToggle).toContain("SettingsSwitchRow");
     expect(cleanupToggle).toContain("SettingsSwitchRow");
-    expect(symbolReplacements).toContain("SettingsSwitchRow");
   });
 
   it("keeps every touch target at least 44px", () => {
     expect(settingsRow).toContain("min-h-[44px]");
     expect(settingsRow).toContain("min-w-[44px]");
+  });
+
+  it("binds the symbols setting to exactly one switch row", () => {
+    // SettingsView and its children: the only switch on the setting is the
+    // Talk card's SymbolModeToggle; the replacement list has none.
+    const children = [
+      source,
+      symbolModeToggle,
+      symbolReplacements,
+      wordCorrections,
+      cleanupToggle,
+      cleanupSettings,
+    ];
+    const writers = children.filter((c) => /putSymbols\(\s*\{\s*enabled/.test(c));
+    expect(writers).toEqual([symbolModeToggle]);
+    expect(symbolModeToggle.match(/<SettingsSwitchRow\b/g)).toHaveLength(1);
+    expect(symbolReplacements).not.toContain("SettingsSwitchRow");
+    expect(symbolReplacements).not.toContain("Symbol mode");
+    expect(symbolReplacements).not.toMatch(/config\.enabled/);
+  });
+
+  it("gives the delete buttons of both lists a 44px hit area", () => {
+    for (const [name, list] of [
+      ["WordCorrections", wordCorrections],
+      ["SymbolReplacements", symbolReplacements],
+    ] as const) {
+      const button = list.match(/<button\s+onClick=\{\(\) => handleRemove[^>]*>/);
+      expect(button, name).not.toBeNull();
+      expect(button![0], name).toContain("min-h-[44px]");
+      expect(button![0], name).toContain("min-w-[44px]");
+    }
   });
 });
 
