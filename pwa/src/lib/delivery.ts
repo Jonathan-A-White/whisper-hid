@@ -61,13 +61,14 @@ export interface DeliverOptions {
 }
 
 export type DeliverResult =
-  | { via: "hid" }
+  | { via: "hid"; copied: boolean }
   | { via: "phone"; copied: boolean };
 
 /**
- * Deliver a finished dictation. Computer: typed over HID as always. Phone:
- * nothing goes over Bluetooth; the text is copied at once, no tap needed
- * (Chrome allows it for a focused page), and the caller shows Copy / Share.
+ * Deliver a finished dictation. Both modes copy the text at once, no tap
+ * needed (Chrome allows it for a focused page). Computer: copied first, then
+ * typed over HID as always. Phone: nothing goes over Bluetooth, and the
+ * caller shows Copy / Share.
  */
 export async function deliver(
   text: string,
@@ -76,7 +77,8 @@ export async function deliver(
   if (deliveryFor(sendTo) === "phone") {
     return { via: "phone", copied: await copyToClipboard(text, clipboard) };
   }
+  const copied = await copyToClipboard(text, clipboard);
   await hid.sendText(text);
   if (newlineAfterEnd) await hid.sendNewline();
-  return { via: "hid" };
+  return { via: "hid", copied };
 }

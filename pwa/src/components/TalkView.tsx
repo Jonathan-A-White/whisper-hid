@@ -137,6 +137,9 @@ export function TalkView({
         setPhoneText(text);
         setClipboardError(null);
         setCopyNotice(result.copied ? "copied" : "tap");
+      } else {
+        // Computer mode: typing is the main act, so a refused copy says nothing
+        setCopyNotice(result.copied ? "copied" : null);
       }
     },
     [hid, settings.sendTo, settings.newlineAfterEnd]
@@ -458,6 +461,11 @@ export function TalkView({
                 onCopy={handleCopyAgain}
                 onShare={handleShare}
               />
+            )}
+
+            {/* Computer mode: the brief copied notice (the text was also typed) */}
+            {!phoneMode && copyNotice === "copied" && (
+              <p className="mt-2 text-xs text-green-400 text-center">Copied</p>
             )}
 
             {/* Queued items */}

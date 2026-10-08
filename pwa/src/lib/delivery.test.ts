@@ -62,19 +62,46 @@ describe("deliver", () => {
     expect(result).toEqual({ via: "phone", copied: false });
   });
 
-  it("computer mode: sends over HID as today, plus the newline when asked", async () => {
+  it("computer mode: copies the text, then sends over HID as before, plus the newline when asked", async () => {
+    const order: string[] = [];
     const hid = makeHid();
-    const writeText = vi.fn();
+    hid.sendText.mockImplementation(async () => {
+      order.push("type");
+      return true;
+    });
+    const writeText = vi.fn().mockImplementation(async () => {
+      order.push("copy");
+    });
     const result = await deliver("hello", {
       sendTo: "computer",
       newlineAfterEnd: true,
       hid,
       clipboard: { writeText },
     });
+    expect(writeText).toHaveBeenCalledWith("hello");
     expect(hid.sendText).toHaveBeenCalledWith("hello");
     expect(hid.sendNewline).toHaveBeenCalledTimes(1);
-    expect(writeText).not.toHaveBeenCalled();
-    expect(result).toEqual({ via: "hid" });
+    expect(order).toEqual(["copy", "type"]);
+    expect(result).toEqual({ via: "hid", copied: true });
+  });
+
+  it("computer mode: a clipboard that throws still types and reports not copied", async () => {
+    const hid = makeHid();
+    const writeText = vi.fn().mockRejectedValue(new Error("not focused"));
+    const result = await deliver("hello", {
+      sendTo: "computer",
+      hid,
+      clipboard: { writeText },
+    });
+    expect(hid.sendText).toHaveBeenCalledWith("hello");
+    expect(result).toEqual({ via: "hid", copied: false });
+  });
+
+  it("computer mode: no clipboard API still types and reports not copied", async () => {
+    const hid = makeHid();
+    const result = await deliver("hello", { hid, clipboard: undefined });
+    expect(hid.sendText).toHaveBeenCalledWith("hello");
+    expect(result).toEqual({ via: "hid", copied: false });
   });
 
   it("the default (no sendTo) is the computer, no newline unless asked", async () => {
