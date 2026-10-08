@@ -4,6 +4,9 @@ import { whisperStatus, hidStatus, hidKeepLinkWarm, getModels, getWhisperSetting
 import { WordCorrections } from "./WordCorrections";
 import { SymbolReplacements } from "./SymbolReplacements";
 import { CleanupSettings } from "./CleanupSettings";
+import { CleanupToggle } from "./CleanupToggle";
+import { SymbolModeToggle } from "./SymbolModeToggle";
+import { TypeClipboardButton } from "./TypeClipboardButton";
 
 /**
  * What the delay has to clear is the receiving *application*, and they
@@ -40,9 +43,15 @@ interface SettingsViewProps {
   onShowDebug: () => void;
   /** Active target app, or null on a server without /target */
   target: TargetInfo | null;
+  /** For Type clipboard */
+  hid: {
+    sendText: (text: string) => Promise<boolean>;
+    sendNewline: () => Promise<void>;
+  };
+  store: { addEntry: (text: string) => Promise<unknown> };
 }
 
-export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, target }: SettingsViewProps) {
+export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, target, hid, store }: SettingsViewProps) {
   const [whisperVersion, setWhisperVersion] = useState<string | null>(null);
   const [hidVersion, setHidVersion] = useState<string | null>(null);
   const [speechModel, setSpeechModel] = useState<ModelInfo | null>(null);
@@ -80,6 +89,21 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
   return (
     <div className="p-4 space-y-6">
       <h2 className="text-lg font-semibold text-white">Settings</h2>
+
+      {/* Talk options: the switches used less often than the ones on Talk */}
+      <section className="space-y-3">
+        <h3 className="text-sm font-semibold text-gray-300">Talk options</h3>
+        <div className="flex flex-col items-start gap-1">
+          <SymbolModeToggle />
+          <CleanupToggle target={target?.name ?? null} />
+          <TypeClipboardButton
+            target={target?.name ?? null}
+            settings={settings}
+            hid={hid}
+            store={store}
+          />
+        </div>
+      </section>
 
       {/* Toggle: Edit before send */}
       <label className="flex items-center justify-between">

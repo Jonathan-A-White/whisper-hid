@@ -21,12 +21,9 @@ import {
   deliveryFor,
   shareText,
 } from "../lib/delivery";
-import { CleanupToggle } from "./CleanupToggle";
 import { EditBuffer, type VoiceEditState } from "./EditBuffer";
 import { PhoneModeToggle } from "./PhoneModeToggle";
 import { PhoneResult } from "./PhoneResult";
-import { SymbolModeToggle } from "./SymbolModeToggle";
-import { clipboardTextToType } from "../lib/clipboard";
 import {
   IDLE,
   cancel,
@@ -290,36 +287,6 @@ export function TalkView({
     }
   }, [voiceEditState, whisper, editText]);
 
-  // Type the phone clipboard on the connected host — lets text composed in
-  // another app (e.g. a prompt drafted in Claude) be delivered through the
-  // same HID path as dictation, without riding on a dummy recording.
-  const handleTypeClipboard = useCallback(async () => {
-    setClipboardError(null);
-    let text = "";
-    try {
-      text = await navigator.clipboard.readText();
-    } catch {
-      // Clipboard read blocked (permission denied / unsupported) — open the
-      // empty edit buffer so the text can be pasted in manually instead.
-      setEditText("");
-      return;
-    }
-    if (!text.trim()) {
-      setClipboardError("Clipboard is empty");
-      return;
-    }
-    // Line breaks survive in every target but plain text (see
-    // clipboardTextToType); "Newline after end of recording" alone decides
-    // the final, deliberate Enter.
-    text = clipboardTextToType(text, target.target, settings);
-    setLastError(null);
-    setLastStats(null);
-    setLastText(text);
-    await store.addEntry(text);
-    await hid.sendText(text);
-    if (settings.newlineAfterEnd) await hid.sendNewline();
-  }, [hid, store, target.target, settings]);
-
   const handlePinnedTap = useCallback(
     async (text: string) => {
       await hid.sendText(text);
@@ -429,38 +396,24 @@ export function TalkView({
               onChange={(sendTo) => onUpdateSettings({ sendTo })}
             />
 
-            {/* Symbol mode quick toggle */}
-            <SymbolModeToggle />
-
-            {/* Speech cleanup quick toggle — local LLM polishes the transcript */}
-            <CleanupToggle target={target.target} />
-
             {/* Zoom mode quick toggle — release headset mic to the laptop */}
             <ZoomModeToggle status={hid.status} onToggle={hid.setHeadsetMic} />
 
-            {/* Type the phone clipboard on the host */}
-            <div className="mt-2 flex flex-col items-center">
-              <button
-                onClick={handleTypeClipboard}
-                className="px-4 py-1.5 rounded-full text-sm font-medium bg-gray-800 text-sky-400 hover:bg-gray-700 transition-colors"
-              >
-                ⌨️ Type clipboard
-              </button>
-              {clipboardError && (
-                <p className="mt-1 text-xs text-red-400 text-center">
-                  {clipboardError}
-                </p>
-              )}
-            </div>
-
             {/* Phone mode result: the text with Copy again / Share */}
             {phoneMode && phoneText !== null && !lastError && (
-              <PhoneResult
-                text={phoneText}
-                notice={copyNotice}
-                onCopy={handleCopyAgain}
-                onShare={handleShare}
-              />
+              <>
+                <PhoneResult
+                  text={phoneText}
+                  notice={copyNotice}
+                  onCopy={handleCopyAgain}
+                  onShare={handleShare}
+                />
+                {clipboardError && (
+                  <p className="mt-1 text-xs text-red-400 text-center">
+                    {clipboardError}
+                  </p>
+                )}
+              </>
             )}
 
             {/* Computer mode: the brief copied notice (the text was also typed) */}

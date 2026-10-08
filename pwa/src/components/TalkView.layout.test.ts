@@ -18,8 +18,6 @@ describe("TalkView layout", () => {
   const toggles = [
     "<TargetModeToggle",
     "<PhoneModeToggle",
-    "<SymbolModeToggle",
-    "<CleanupToggle",
     "<ZoomModeToggle",
     "Stop typing",
   ];
@@ -29,6 +27,12 @@ describe("TalkView layout", () => {
     for (const toggle of toggles) {
       expect(lineOf(toggle), toggle).toBeLessThan(controls);
     }
+  });
+
+  it("keeps the cooler switches off the Talk screen (they live in Settings)", () => {
+    expect(source).not.toContain("<SymbolModeToggle");
+    expect(source).not.toContain("<CleanupToggle");
+    expect(source).not.toContain("Type clipboard");
   });
 
   it("puts the live words box, then the bar, inside the controls block", () => {
