@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import type { SendTo } from "../types";
 import {
   copyEntry,
@@ -9,6 +9,7 @@ import {
   toggleActionRow,
 } from "../lib/historyActions";
 import { HistoryActions } from "./HistoryActions";
+import { EntryEditor } from "./EntryEditor";
 
 interface HistoryViewProps {
   store: {
@@ -32,7 +33,6 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const editTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // The brief "Copied" notice on the tapped entry
   useEffect(() => {
@@ -45,15 +45,6 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
     const { copied } = await copyEntry(text, navigator.clipboard);
     if (copied) setCopiedId(id);
   };
-
-  // Auto-focus textarea when editing starts
-  useEffect(() => {
-    if (editingId && editTextareaRef.current) {
-      const ta = editTextareaRef.current;
-      ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
-    }
-  }, [editingId]);
 
   const startEditing = (entry: { id: string; text: string }) => {
     const next = editEntry(entry);
@@ -130,31 +121,12 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
             <div key={entry.id} className="rounded">
               <div className="bg-gray-900 p-3 border border-gray-800 rounded">
                 {editingId === entry.id ? (
-                  /* Inline editor */
-                  <div onClick={(e) => e.stopPropagation()}>
-                    <textarea
-                      ref={editTextareaRef}
-                      value={editText}
-                      onChange={(e) => setEditText(e.target.value)}
-                      rows={3}
-                      className="w-full bg-gray-800 text-white border border-gray-600 rounded px-2 py-1 text-sm resize-none focus:outline-none focus:border-blue-500"
-                    />
-                    <div className="flex gap-2 mt-2">
-                      <button
-                        onClick={saveEdit}
-                        disabled={!editText.trim()}
-                        className="text-xs bg-blue-600 text-white px-3 py-1 rounded disabled:opacity-40"
-                      >
-                        Save
-                      </button>
-                      <button
-                        onClick={cancelEdit}
-                        className="text-xs text-gray-400 px-3 py-1"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
+                  <EntryEditor
+                    text={editText}
+                    onChange={setEditText}
+                    onSave={saveEdit}
+                    onCancel={cancelEdit}
+                  />
                 ) : (
                   /* Normal display */
                   <>

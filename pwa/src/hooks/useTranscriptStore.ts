@@ -160,6 +160,8 @@ export function useTranscriptStore() {
 
   return {
     entries: filteredEntries,
+    /** Every entry, ignoring the search box (the Talk screen's front message). */
+    allEntries: entries,
     pinnedEntries,
     searchQuery,
     setSearchQuery,
