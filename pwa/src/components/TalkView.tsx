@@ -341,10 +341,10 @@ export function TalkView({
   });
 
   return (
-    <div className="flex flex-col h-full p-6 overflow-hidden">
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Pinned items — fixed at top, never scrolls away */}
       {store.pinnedEntries.length > 0 && (
-        <div className="flex-shrink-0 w-full mb-4 overflow-x-auto">
+        <div className="flex-shrink-0 w-full px-6 pt-6 mb-4 overflow-x-auto">
           <div className="flex gap-2 pb-1">
             {store.pinnedEntries.map((entry) => (
               <button
@@ -361,26 +361,28 @@ export function TalkView({
         </div>
       )}
 
-      {/* Kill switch — stops in-progress typing on the host and releases any
-          stuck (auto-repeating) key. Kept outside the edit-buffer branch so
-          it's reachable in every screen state. */}
-      {isConnected && (
-        <div className="flex-shrink-0 w-full mb-2 flex justify-center">
-          <button
-            onClick={() => hid.stopTransmission()}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
-              hid.status?.typing
-                ? "bg-red-600 text-white animate-pulse hover:bg-red-500"
-                : "bg-gray-800 text-red-400 hover:bg-gray-700"
-            }`}
-          >
-            ⏹ Stop typing
-          </button>
-        </div>
-      )}
+      {/* Scrollable content area: the toggles and notes. The live words box
+          and the Talk bar sit below it, at the foot of the screen, under the
+          thumb. */}
+      <div className="min-h-0 flex-1 overflow-y-auto flex flex-col items-center px-6 pt-6">
+        {/* Kill switch — stops in-progress typing on the host and releases any
+            stuck (auto-repeating) key. Kept outside the edit-buffer branch so
+            it's reachable in every screen state. */}
+        {isConnected && (
+          <div className="flex-shrink-0 w-full mb-2 flex justify-center">
+            <button
+              onClick={() => hid.stopTransmission()}
+              className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                hid.status?.typing
+                  ? "bg-red-600 text-white animate-pulse hover:bg-red-500"
+                  : "bg-gray-800 text-red-400 hover:bg-gray-700"
+              }`}
+            >
+              ⏹ Stop typing
+            </button>
+          </div>
+        )}
 
-      {/* Scrollable content area */}
-      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center justify-center">
         {/* Edit buffer */}
         {editText !== null ? (
           <EditBuffer
@@ -404,91 +406,6 @@ export function TalkView({
           />
         ) : (
           <>
-            {/* Live words box: what the dictation is doing, then its result */}
-            <div
-              role="status"
-              aria-live="polite"
-              data-testid="live-transcript"
-              ref={liveBoxRef}
-              className="mb-4 flex min-h-[3rem] max-h-40 w-full max-w-xl flex-col items-center justify-end overflow-y-auto text-center text-sm"
-            >
-              {box?.kind === "note" ? (
-                <p className="text-gray-100">{box.text}</p>
-              ) : box?.kind === "words" ? (
-                <p className="text-gray-100">
-                  {box.text}
-                  {box.tail && (
-                    <>
-                      {box.text ? " " : ""}
-                      <span className="text-muted">{box.tail}</span>
-                    </>
-                  )}
-                </p>
-              ) : box?.kind === "listening" ? (
-                <p className="text-gray-100">Listening…</p>
-              ) : (
-                <>
-                  {box?.kind === "final" && (
-                      <p className="text-gray-400">
-                        Last: &quot;
-                        {box.text.length > 140
-                          ? box.text.slice(0, 140) + "..."
-                          : box.text}
-                        &quot;
-                      </p>
-                    )}
-                  {lastStats && !lastError && (
-                    <p className="mt-1 text-gray-600 text-xs">
-                      {lastStats.audioDuration.toFixed(1)}s audio,{" "}
-                      {(lastStats.processingMs / 1000).toFixed(1)}s processing
-                      {" \u2014 "}
-                      <span
-                        className={
-                          lastStats.speedRatio >= 1
-                            ? "text-green-500"
-                            : "text-yellow-500"
-                        }
-                      >
-                        {lastStats.speedRatio.toFixed(1)}x
-                      </span>
-                    </p>
-                  )}
-                  {lastError && <p className="text-red-400">{lastError}</p>}
-                </>
-              )}
-            </div>
-
-            {/* Talk bar: hold to talk, or tap to keep it on */}
-            <button
-              type="button"
-              disabled={whisper.transcribing}
-              onPointerDown={onBarPointerDown}
-              onPointerUp={pressUp}
-              onPointerCancel={pressCancel}
-              onContextMenu={(event) => event.preventDefault()}
-              onKeyDown={onBarKeyDown}
-              onKeyUp={onBarKeyUp}
-              className={`flex h-24 w-full max-w-xl touch-none select-none flex-col items-center justify-center gap-1 rounded-3xl text-base font-semibold transition-colors [-webkit-touch-callout:none] disabled:cursor-not-allowed disabled:opacity-45 ${
-                pressPhase === "idle"
-                  ? "bg-accent text-accent-fg"
-                  : "bg-needs text-canvas animate-pulse"
-              }`}
-            >
-              <svg
-                aria-hidden="true"
-                viewBox="0 0 24 24"
-                width="26"
-                height="26"
-                fill="currentColor"
-              >
-                <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z" />
-              </svg>
-              <span>{bar.label}</span>
-              {bar.sub && (
-                <span className="text-xs font-normal opacity-80">{bar.sub}</span>
-              )}
-            </button>
-
             {/* Connection indicator */}
             <p className="mt-4 text-sm text-gray-500">
               {isConnected
@@ -574,6 +491,100 @@ export function TalkView({
           </>
         )}
       </div>
+
+      {/* Controls at the foot, directly above the tab bar: the live words box,
+          then the Talk bar, last. Hidden while the edit buffer is open. */}
+      {editText === null && (
+        <div
+          data-testid="talk-controls"
+          className="flex shrink-0 flex-col items-center gap-3 border-t border-gray-800 bg-black px-4 pt-3 pb-4"
+        >
+          {/* Live words box: what the dictation is doing, then its result */}
+          <div
+            role="status"
+            aria-live="polite"
+            data-testid="live-transcript"
+            ref={liveBoxRef}
+            className="flex min-h-[3rem] max-h-40 w-full max-w-xl flex-col items-center justify-end overflow-y-auto text-center text-sm"
+          >
+            {box?.kind === "note" ? (
+              <p className="text-gray-100">{box.text}</p>
+            ) : box?.kind === "words" ? (
+              <p className="text-gray-100">
+                {box.text}
+                {box.tail && (
+                  <>
+                    {box.text ? " " : ""}
+                    <span className="text-muted">{box.tail}</span>
+                  </>
+                )}
+              </p>
+            ) : box?.kind === "listening" ? (
+              <p className="text-gray-100">Listening…</p>
+            ) : (
+              <>
+                {box?.kind === "final" && (
+                    <p className="text-gray-400">
+                      Last: &quot;
+                      {box.text.length > 140
+                        ? box.text.slice(0, 140) + "..."
+                        : box.text}
+                      &quot;
+                    </p>
+                  )}
+                {lastStats && !lastError && (
+                  <p className="mt-1 text-gray-600 text-xs">
+                    {lastStats.audioDuration.toFixed(1)}s audio,{" "}
+                    {(lastStats.processingMs / 1000).toFixed(1)}s processing
+                    {" \u2014 "}
+                    <span
+                      className={
+                        lastStats.speedRatio >= 1
+                          ? "text-green-500"
+                          : "text-yellow-500"
+                      }
+                    >
+                      {lastStats.speedRatio.toFixed(1)}x
+                    </span>
+                  </p>
+                )}
+                {lastError && <p className="text-red-400">{lastError}</p>}
+              </>
+            )}
+          </div>
+
+          {/* Talk bar: hold to talk, or tap to keep it on */}
+          <button
+            type="button"
+            disabled={whisper.transcribing}
+            onPointerDown={onBarPointerDown}
+            onPointerUp={pressUp}
+            onPointerCancel={pressCancel}
+            onContextMenu={(event) => event.preventDefault()}
+            onKeyDown={onBarKeyDown}
+            onKeyUp={onBarKeyUp}
+            className={`flex h-24 w-full max-w-xl touch-none select-none flex-col items-center justify-center gap-1 rounded-3xl text-base font-semibold transition-colors [-webkit-touch-callout:none] disabled:cursor-not-allowed disabled:opacity-45 ${
+              pressPhase === "idle"
+                ? "bg-accent text-accent-fg"
+                : "bg-needs text-canvas animate-pulse"
+            }`}
+          >
+            <svg
+              aria-hidden="true"
+              viewBox="0 0 24 24"
+              width="26"
+              height="26"
+              fill="currentColor"
+            >
+              <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z" />
+            </svg>
+            <span>{bar.label}</span>
+            {bar.sub && (
+              <span className="text-xs font-normal opacity-80">{bar.sub}</span>
+            )}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
