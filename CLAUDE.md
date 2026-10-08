@@ -765,16 +765,33 @@ ramble far below the standard 0.35 floor — don't share one window). The PWA
 exposes a style `<select>` next to the `CleanupToggle` pill on the Talk
 screen. Styles are still skipped in symbol mode.
 
-### Cleanup models (1.7B vs 4B)
+### Cleanup models (1.7B, 4B, Qwen3.5 2B and 0.8B)
 `CLEANUP_MODEL_CATALOG` in whisper-server.py knows `qwen3-1.7b` (default,
-~1.1 GB file) and `qwen3-4b` (~2.4 GB file, needs ~3 GB free RAM, roughly 2x
-slower, noticeably smarter rewrites/edits). `PUT /cleanup {"model": name}`
+~1.1 GB file), `qwen3-4b` (~2.4 GB file, needs ~3 GB free RAM, roughly 2x
+slower, noticeably smarter rewrites/edits), `qwen3.5-2b` (1221 MB) and
+`qwen3.5-0.8b` (508 MB). The Qwen3.5 pair were added so cleanup can get closer
+to Parakeet's speed; they need a llama.cpp new enough for the `qwen35`
+architecture (re-run setup-termux.sh if one will not load). **The default
+changes only on the user's word, after he has seen the bench numbers.** `PUT /cleanup {"model": name}`
 persists the selection and restarts the llama-server with that GGUF;
 `"available"` stays false until the new model finishes loading (the PWA
 `CleanupSettings` section in Settings polls until it comes back). A missing
-file returns 404 with the `./update-model.sh cleanup-4b` hint. `CLEANUP_MODEL`
+file returns 404 with the `./update-model.sh cleanup-4b` hint
+(`cleanup-2b` and `cleanup-0.8b` fetch the Qwen3.5 files). `CLEANUP_MODEL`
 (env) still overrides the *default* file; a persisted runtime selection wins
 when its file is on disk (`active_cleanup_model_file()`).
+
+**Timing the models on the phone**: `scripts/bench-cleanup.sh` (run it in Termux
+from `~/whisper-hid/scripts/`) takes every `*.gguf` in `~/whisper-stt/models`,
+starts each on its own llama-server port (`BENCH_PORT`, 9889 — the Whisper
+server's resident llama-server is never touched, nor restarted), runs the same
+three standard-style cleanups (a short, a ~20-second and a ~60-second
+dictation, fixed in the script; one untimed warm-up, `BENCH_RUNS` timed runs
+of each) and prints a table: model, MB on disk, load seconds, median seconds
+per prompt and overall. `--dry-run` prints the plan and starts nothing. A
+model that fails to load gets a FAILED row and the rest still run. The system
+prompt in the script copies `CLEANUP_SYSTEM_PROMPT` — keep them in step.
+Test: `pytest scripts/tests/test_bench_cleanup.py` (fake llama-server).
 
 ### Voice editing (`POST /edit`)
 Body `{"text", "command"}` — the LLM applies a spoken instruction ("replace
