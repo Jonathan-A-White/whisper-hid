@@ -7,6 +7,7 @@ lives and point WHISPER_INSTALL_DIR at a temp dir of fake GGUF files.
 
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -64,12 +65,19 @@ def install(tmp_path):
     return tmp_path
 
 
+def _free_port():
+    """A port nobody holds right now (another session may hold the script's default)."""
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
 def _run(install, *args, **env):
     full_env = {
         **os.environ,
         "WHISPER_INSTALL_DIR": str(install),
         "FAKE_LLAMA_LOG": str(install / "llama.log"),
-        "BENCH_PORT": "9889",
+        "BENCH_PORT": str(_free_port()),
         "BENCH_RUNS": "1",
         **env,
     }
@@ -145,7 +153,8 @@ def test_a_model_that_will_not_load_is_reported_and_the_rest_still_run(install):
 
 
 def test_leaves_nothing_running_on_the_bench_port(install):
-    _run(install)
+    port = _free_port()
+    _run(install, BENCH_PORT=str(port))
     if shutil.which("ss"):
         out = subprocess.run(["ss", "-ltn"], capture_output=True, text=True).stdout
-        assert ":9889 " not in out
+        assert f":{port} " not in out
