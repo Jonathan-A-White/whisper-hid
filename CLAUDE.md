@@ -560,6 +560,13 @@ instead of ~duration/10 with Parakeet).
   transcribed raw (`run_transcription(..., postprocess=False)`) so word
   corrections and symbol phrases spanning a chunk boundary still match.
   Don't "fix" this by post-processing per chunk.
+- **Sentence shape is restored at the join** (`_restore_sentence_shape()`):
+  Parakeet can return a short chunk lowercase and unpunctuated, so after
+  corrections/symbols each chunk gets a capital start, capital sentence
+  starts, a capital lone "i" and a closing full stop (`_sentence_case_chunk()`;
+  engine punctuation and capitals are kept). If a correction or symbol matched
+  across a chunk boundary only the whole text is shaped, and with LLM cleanup
+  on it is left to the LLM.
 - **Failure = fallback, never breakage**: any poller error, a probe failure,
   or an unjoinable thread degrades to the plain stop-time transcription of
   the full file. The committed prefix is still used when valid.

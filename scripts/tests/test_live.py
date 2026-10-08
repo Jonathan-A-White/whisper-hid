@@ -235,7 +235,7 @@ class TestStopUnaffected:
         live, _, _ = _stop_scenario(
             server, tmp_path / "b", FakeEngine(["first phrase", "second phrase"]), True
         )
-        assert b"first phrase second phrase final tail" in plain
+        assert b"First phrase. Second phrase. Final tail." in plain
         assert live == plain
 
     def test_stop_does_not_wait_for_a_running_tail_job(self, server, tmp_path):
@@ -245,7 +245,7 @@ class TestStopUnaffected:
             body, secs, session = _stop_scenario(server, tmp_path, engine, True)
             assert engine.live_calls == 1  # the tail job really was in flight
             assert secs < 1.0, f"Stop took {secs:.1f}s with a tail job running"
-            assert b"first phrase second phrase final tail" in body
+            assert b"First phrase. Second phrase. Final tail." in body
             assert b"tentative" not in body
         finally:
             gate.set()

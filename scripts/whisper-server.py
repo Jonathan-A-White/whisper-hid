@@ -41,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.12.0"
+SERVER_VERSION = "1.12.1"
 
 # --- Configuration ---
 
@@ -1676,17 +1676,49 @@ def _postprocess_text(text: str, source: str) -> str:
     if text:
         text = apply_cleanup(text)
 
+    return _corrections_and_symbols(text, log=True)
+
+
+def _corrections_and_symbols(text: str, log: bool = False) -> str:
+    """The deterministic tail of post-processing: word corrections, then
+    symbol phrases (only while symbol mode is on)."""
     if text and word_corrections:
         corrected = apply_corrections(text)
-        if corrected != text:
+        if log and corrected != text:
             add_log("info", f"Corrections applied: {repr(text)} -> {repr(corrected)}")
-            text = corrected
+        text = corrected
 
     if text and symbol_settings.get("enabled"):
         replaced = apply_symbols(text)
-        if replaced != text:
+        if log and replaced != text:
             add_log("info", f"Symbols applied: {repr(text)} -> {repr(replaced)}")
-            text = replaced
+        text = replaced
+    return text
+
+
+_SENTENCE_START_RE = re.compile(r"([.!?]['\")\]]*\s+)([a-z])")
+_LONE_I_RE = re.compile(r"\bi\b(?!\.e\b)(?=$|[\s,.!?;:]|'(?:m|d|ll|ve|s)\b)")
+_SENTENCE_END_RE = re.compile(r"[.!?:;,\-/\\]['\")\]]*$")
+
+
+def _sentence_case_chunk(text: str) -> str:
+    """Give one chunk's text a capital start, capital sentence starts, a
+    capital lone "i", and a closing full stop, keeping whatever punctuation
+    and capitals the engine already produced.
+
+    Each chunk is a silence-delimited utterance (a pause of CHUNK_SILENCE_SEC
+    or more), but Parakeet can hand a short chunk back lowercase and without
+    punctuation, so a long dictation came out as one unpunctuated run while a
+    short one kept its punctuation (mw-qccc7b.7)."""
+    text = text.strip()
+    if not text:
+        return text
+    text = _LONE_I_RE.sub("I", text)
+    text = _SENTENCE_START_RE.sub(lambda m: m.group(1) + m.group(2).upper(), text)
+    text = text[0].upper() + text[1:]
+    if text[-1].isalnum() or text[-1] in "'\")]":
+        if not _SENTENCE_END_RE.search(text):
+            text += "."
     return text
 
 
@@ -2013,6 +2045,26 @@ class ChunkedSession:
                 self.seq += 1
 
 
+def _restore_sentence_shape(parts: list[str], text: str) -> str:
+    """Give the joined chunks the capitals and full stops of a whole
+    dictation. `text` is the post-processed join of `parts`.
+
+    When the LLM cleanup is in charge it already punctuates, so `text` is
+    returned as is. Otherwise each chunk is shaped on its own, after word
+    corrections and symbols — unless one of those matched across a chunk
+    boundary (the per-chunk result no longer joins up to `text`), where only
+    the whole text is shaped, because a full stop at the seam would have
+    split the phrase."""
+    if not text:
+        return text
+    if cleanup_settings.get("enabled") and not symbol_settings.get("enabled"):
+        return text
+    per_chunk = [_corrections_and_symbols(_clean_raw_text(p)) for p in parts]
+    if " ".join(" ".join(per_chunk).split()) == text:
+        return " ".join(s for s in map(_sentence_case_chunk, per_chunk) if s)
+    return _sentence_case_chunk(text)
+
+
 def _finish_chunked_transcription(session: "ChunkedSession", wav_path: str) -> tuple[str, int]:
     """Transcribe the uncommitted tail of a chunked session and assemble the
     final text. Must be called with transcribe_lock held and the session's
@@ -2032,6 +2084,7 @@ def _finish_chunked_transcription(session: "ChunkedSession", wav_path: str) -> t
 
     parts = [t for t in [*session.texts, tail_text] if t]
     text = _postprocess_text(" ".join(parts), "Chunked")
+    text = _restore_sentence_shape(parts, text)
     add_log(
         "info",
         f"Chunked: {session.chunks} chunk(s) pre-transcribed "
