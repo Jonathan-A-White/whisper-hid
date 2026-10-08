@@ -15,15 +15,19 @@ import {
   startLivePoller,
   type LiveView,
 } from "../lib/livePoller";
+import { deliver, deliveryFor } from "../lib/delivery";
 import {
-  copyToClipboard,
-  deliver,
-  deliveryFor,
-  shareText,
-} from "../lib/delivery";
+  copyEntry,
+  deleteEntry,
+  editEntry,
+  sendDisabledFor,
+  sendEntry,
+} from "../lib/historyActions";
+import { frontEntry } from "../lib/frontMessage";
 import { EditBuffer, type VoiceEditState } from "./EditBuffer";
+import { EntryEditor } from "./EntryEditor";
+import { HistoryActions } from "./HistoryActions";
 import { PhoneModeToggle } from "./PhoneModeToggle";
-import { PhoneResult } from "./PhoneResult";
 import {
   IDLE,
   cancel,
@@ -55,7 +59,11 @@ interface TalkViewProps {
   };
   store: {
     pinnedEntries: { id: string; text: string }[];
-    addEntry: (text: string, stats?: { model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number }) => Promise<unknown>;
+    /** Every entry, unfiltered: the front message is one of these. */
+    allEntries: { id: string; text: string }[];
+    addEntry: (text: string, stats?: { model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number }) => Promise<{ id: string } | undefined>;
+    updateEntry: (id: string, text: string) => Promise<void>;
+    deleteEntry: (id: string) => Promise<void>;
   };
   /** Target app mode — see useTargetMode */
   target: {
@@ -82,16 +90,17 @@ export function TalkView({
   settings,
   onUpdateSettings,
 }: TalkViewProps) {
-  const [lastText, setLastText] = useState<string | null>(null);
+  // The id of the entry the last dictation added. The front message renders
+  // that entry from the store, so History and this screen never disagree.
+  const [frontId, setFrontId] = useState<string | null>(null);
+  const [frontEditText, setFrontEditText] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastStats, setLastStats] = useState<TranscriptionStats | null>(null);
   const [editText, setEditText] = useState<string | null>(null);
   const [lastEntryStats, setLastEntryStats] = useState<{ model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number } | null>(null);
   const [voiceEditState, setVoiceEditState] = useState<VoiceEditState>("idle");
   const [voiceEditError, setVoiceEditError] = useState<string | null>(null);
-  const [clipboardError, setClipboardError] = useState<string | null>(null);
-  // "This phone" mode: the dictation kept here, and the brief copy notice
-  const [phoneText, setPhoneText] = useState<string | null>(null);
+  // The brief copy notice under the front message
   const [copyNotice, setCopyNotice] = useState<"copied" | "tap" | null>(null);
   const phoneMode = deliveryFor(settings.sendTo) === "phone";
 
@@ -132,8 +141,6 @@ export function TalkView({
           typeof navigator === "undefined" ? undefined : navigator.clipboard,
       });
       if (result.via === "phone") {
-        setPhoneText(text);
-        setClipboardError(null);
         setCopyNotice(result.copied ? "copied" : "tap");
       } else {
         // Computer mode: typing is the main act, so a refused copy says nothing
@@ -143,16 +150,19 @@ export function TalkView({
     [hid, settings.sendTo, settings.newlineAfterEnd]
   );
 
-  const handleCopyAgain = useCallback(async () => {
-    if (phoneText === null) return;
-    const ok = await copyToClipboard(phoneText, navigator.clipboard);
-    setClipboardError(ok ? null : "Couldn't copy to the clipboard");
-    setCopyNotice(ok ? "copied" : "tap");
-  }, [phoneText]);
+  const front = frontEntry(store.allEntries, frontId);
 
-  const handleShare = useCallback(async () => {
-    if (phoneText !== null) await shareText(phoneText, navigator);
-  }, [phoneText]);
+  const handleFrontCopy = useCallback(async (text: string) => {
+    const { copied } = await copyEntry(text, navigator.clipboard);
+    setCopyNotice(copied ? "copied" : "tap");
+  }, []);
+
+  const saveFrontEdit = useCallback(() => {
+    if (front && frontEditText?.trim()) {
+      void store.updateEntry(front.id, frontEditText);
+    }
+    setFrontEditText(null);
+  }, [front, frontEditText, store]);
 
   // The hold/latch bar. talkPress decides what each press and release means;
   // this runs the answer. The press state lives in a ref (events arrive faster
@@ -169,6 +179,7 @@ export function TalkView({
     if (text) {
       setLastError(null);
       setLastStats(stats ?? null);
+      setFrontEditText(null);
       const entryStats = stats
         ? {
             model: whisper.status?.model,
@@ -181,8 +192,8 @@ export function TalkView({
         setEditText(text);
         setLastEntryStats(entryStats ?? null);
       } else {
-        setLastText(text);
-        await store.addEntry(text, entryStats);
+        const added = await store.addEntry(text, entryStats);
+        setFrontId(added?.id ?? null);
         await deliverText(text);
       }
     } else {
@@ -195,7 +206,8 @@ export function TalkView({
     async (action: PressAction) => {
       if (action === "start") {
         setLastError(null);
-        setPhoneText(null);
+        setFrontId(null);
+        setFrontEditText(null);
         setCopyNotice(null);
         const starting = whisper.startRecording();
         startingRef.current = starting;
@@ -252,8 +264,8 @@ export function TalkView({
       setEditText(null);
       setVoiceEditState("idle");
       setVoiceEditError(null);
-      setLastText(text);
-      await store.addEntry(text, lastEntryStats ?? undefined);
+      const added = await store.addEntry(text, lastEntryStats ?? undefined);
+      setFrontId(added?.id ?? null);
       setLastEntryStats(null);
       await deliverText(text);
     },
@@ -299,10 +311,7 @@ export function TalkView({
   const box = liveBoxView({
     recording: whisper.recording,
     preview,
-    finalText:
-      lastText && !lastError && !(phoneMode && phoneText !== null)
-        ? lastText
-        : null,
+    finalText: null,
   });
   const bar = talkLabel({
     phase: pressPhase,
@@ -408,26 +417,48 @@ export function TalkView({
               store={store}
             />
 
-            {/* Phone mode result: the text with Copy again / Share */}
-            {phoneMode && phoneText !== null && !lastError && (
-              <>
-                <PhoneResult
-                  text={phoneText}
-                  notice={copyNotice}
-                  onCopy={handleCopyAgain}
-                  onShare={handleShare}
-                />
-                {clipboardError && (
-                  <p className="mt-1 text-xs text-red-400 text-center">
-                    {clipboardError}
-                  </p>
+            {/* Front message: the newest dictation's History entry, with
+                the same action row. Gone when the entry is deleted. */}
+            {front && !lastError && (
+              <div
+                data-testid="front-message"
+                className="mt-4 w-full max-w-sm rounded border border-gray-700 bg-gray-900 p-3"
+              >
+                {frontEditText !== null ? (
+                  <EntryEditor
+                    text={frontEditText}
+                    onChange={setFrontEditText}
+                    onSave={saveFrontEdit}
+                    onCancel={() => setFrontEditText(null)}
+                  />
+                ) : (
+                  <>
+                    <p className="text-sm text-white whitespace-pre-wrap break-words max-h-40 overflow-y-auto select-text">
+                      {front.text}
+                    </p>
+                    <p
+                      className={`mt-1 h-4 text-xs ${
+                        copyNotice === "copied"
+                          ? "text-green-400"
+                          : "text-yellow-400"
+                      }`}
+                    >
+                      {copyNotice === "copied"
+                        ? "Copied"
+                        : copyNotice === "tap"
+                          ? "Tap Copy"
+                          : ""}
+                    </p>
+                    <HistoryActions
+                      sendDisabled={sendDisabledFor(settings.sendTo)}
+                      onSend={() => sendEntry(front.text, { sendTo: settings.sendTo, hid })}
+                      onCopy={() => handleFrontCopy(front.text)}
+                      onEdit={() => setFrontEditText(editEntry(front).editText)}
+                      onDelete={() => deleteEntry(front.id, store)}
+                    />
+                  </>
                 )}
-              </>
-            )}
-
-            {/* Computer mode: the brief copied notice (the text was also typed) */}
-            {!phoneMode && copyNotice === "copied" && (
-              <p className="mt-2 text-xs text-green-400 text-center">Copied</p>
+              </div>
             )}
 
             {/* Queued items */}
@@ -493,15 +524,6 @@ export function TalkView({
               <p className="text-gray-100">Listening…</p>
             ) : (
               <>
-                {box?.kind === "final" && (
-                    <p className="text-gray-400">
-                      Last: &quot;
-                      {box.text.length > 140
-                        ? box.text.slice(0, 140) + "..."
-                        : box.text}
-                      &quot;
-                    </p>
-                  )}
                 {lastStats && !lastError && (
                   <p className="mt-1 text-gray-600 text-xs">
                     {lastStats.audioDuration.toFixed(1)}s audio,{" "}
