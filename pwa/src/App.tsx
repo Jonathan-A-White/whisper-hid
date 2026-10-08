@@ -113,6 +113,8 @@ export default function App() {
             onUpdate={updateSettings}
             onShowSetup={() => setShowSetup(true)}
             onShowDebug={() => setShowDebug(true)}
+            hid={hid}
+            store={store}
             target={
               target.targets.find((t) => t.name === target.target) ?? null
             }
