@@ -119,7 +119,7 @@ export default function App() {
       </main>
 
       {!showDebug && (
-        <nav className="flex border-t border-gray-800 bg-gray-950">
+        <nav className="flex border-t border-gray-800 bg-gray-950 pb-[var(--bar-inset)]">
           {(["talk", "history", "settings"] as Tab[]).map((t) => (
             <button
               key={t}

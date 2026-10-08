@@ -2,6 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Floor under the bottom inset: Android Chrome does not always report the
+     navigation bar in env(safe-area-inset-bottom). Only the tab bar, the
+     lowest bar, uses it. */
+  --bar-inset: max(env(safe-area-inset-bottom), 24px);
+}
+
 body {
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
