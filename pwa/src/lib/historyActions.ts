@@ -2,15 +2,9 @@ import type { SendTo } from "../types";
 import { copyToClipboard, deliveryFor, type ClipboardLike } from "./delivery";
 
 /**
- * The action row under a tapped History entry (Send, Copy, Edit, Delete).
- * Pure logic, so the Talk screen's front message can reuse it.
+ * What the entry options menu's Send, Copy, Edit and Delete do. Pure logic,
+ * shared by History and the Talk screen's last transcript.
  */
-
-/** One row open at a time: a tap opens that entry's row, closing any other;
- *  a tap on the open entry closes it. */
-export function toggleActionRow(openId: string | null, tappedId: string): string | null {
-  return openId === tappedId ? null : tappedId;
-}
 
 /** Send types over the Bluetooth keyboard, so it has nothing to do while
  *  "This phone" is on. */

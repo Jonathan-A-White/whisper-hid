@@ -5,20 +5,7 @@ import {
   editEntry,
   sendEntry,
   sendDisabledFor,
-  toggleActionRow,
 } from "./historyActions";
-
-describe("toggleActionRow", () => {
-  it("a tap on a closed entry opens its row", () => {
-    expect(toggleActionRow(null, "a")).toBe("a");
-  });
-  it("a tap on another entry closes the first and opens the other (one at a time)", () => {
-    expect(toggleActionRow("a", "b")).toBe("b");
-  });
-  it("a tap on the open entry again closes it", () => {
-    expect(toggleActionRow("a", "a")).toBeNull();
-  });
-});
 
 describe("sendEntry", () => {
   it("computer mode types the entry's text over HID", async () => {

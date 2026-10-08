@@ -7,22 +7,24 @@ interface HistoryActionsProps {
   onDelete: () => void;
   /** Send types over Bluetooth, so it is off while "This phone" is on. */
   sendDisabled?: boolean;
+  /** One button per line, for the bottom sheet. */
+  stacked?: boolean;
 }
 
 const BUTTON =
   "flex-1 flex items-center justify-center min-h-[44px] min-w-[44px] rounded text-sm font-medium disabled:opacity-40";
 
-/** The row of buttons under a tapped entry. Shared by History and the Talk
- *  screen's front message. */
+/** The four action buttons inside the entry options menu (EntryMenu). */
 export function HistoryActions({
   onSend,
   onCopy,
   onEdit,
   onDelete,
   sendDisabled,
+  stacked,
 }: HistoryActionsProps) {
   return (
-    <div className="flex gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+    <div className={stacked ? "flex flex-col gap-2" : "flex gap-2 mt-2"} onClick={(e) => e.stopPropagation()}>
       <button
         onClick={onSend}
         disabled={sendDisabled}
