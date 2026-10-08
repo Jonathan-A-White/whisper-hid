@@ -5,7 +5,8 @@ import {
   type CleanupConfig,
   type CleanupModelInfo,
 } from "../lib/api";
-import { CleanupInfo } from "./CleanupInfo";
+import { CLEANUP_INFO } from "../lib/cleanupInfo";
+import { SettingsRow } from "./SettingsRow";
 
 /**
  * Settings section for the speech cleanup LLM: pick which model the resident
@@ -45,7 +46,15 @@ export function CleanupSettings() {
     }, 3000);
   }, []);
 
-  if (config === null || config.models.length === 0) return null;
+  if (config === null || config.models.length === 0) {
+    return (
+      <SettingsRow
+        label="Speech cleanup model"
+        hint="Not available: the Whisper server is down or no cleanup model is installed."
+        info={CLEANUP_INFO}
+      />
+    );
+  }
 
   const downloaded = config.models.filter((m) => m.downloaded);
   const missing = config.models.filter((m) => !m.downloaded);
@@ -66,17 +75,17 @@ export function CleanupSettings() {
   };
 
   return (
-    <div>
-      <div className="flex flex-wrap items-center gap-2 mb-1">
-        <label className="text-sm text-gray-300">Speech cleanup model</label>
-        <CleanupInfo />
-      </div>
+    <SettingsRow
+      label="Speech cleanup model"
+      hint="Which model the cleanup AI runs on."
+      info={CLEANUP_INFO}
+    >
       {downloaded.length > 0 ? (
         <select
           value={active?.name ?? ""}
           disabled={switching}
           onChange={(e) => switchModel(e.target.value)}
-          className="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm disabled:opacity-50"
+          className="w-full bg-gray-800 text-white border border-gray-700 rounded px-3 py-2 text-sm disabled:opacity-50"
         >
           {downloaded.map((m) => (
             <option key={m.name} value={m.name}>
@@ -85,7 +94,7 @@ export function CleanupSettings() {
           ))}
         </select>
       ) : (
-        <p className="text-sm text-gray-500 bg-gray-900 rounded px-3 py-2">
+        <p className="text-sm text-gray-500 bg-gray-800 rounded px-3 py-2">
           No cleanup model installed
         </p>
       )}
@@ -104,7 +113,7 @@ export function CleanupSettings() {
             {missing.map((m: CleanupModelInfo) => (
               <div
                 key={m.name}
-                className="flex items-center justify-between bg-gray-900 rounded px-3 py-1.5"
+                className="flex items-center justify-between bg-gray-800 rounded px-3 py-1.5"
               >
                 <div>
                   <span className="text-sm text-gray-400">{m.name}</span>
@@ -125,6 +134,6 @@ export function CleanupSettings() {
           </p>
         </div>
       )}
-    </div>
+    </SettingsRow>
   );
 }

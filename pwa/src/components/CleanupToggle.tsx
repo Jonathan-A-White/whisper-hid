@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { getCleanup, putCleanup, type CleanupStyleInfo } from "../lib/api";
 import type { TargetMode } from "../types";
-import { CleanupInfo } from "./CleanupInfo";
+import { CLEANUP_INFO } from "../lib/cleanupInfo";
+import { SettingsSwitchRow } from "./SettingsRow";
 
 interface CleanupToggleProps {
   /** Active target app — the "prompt" style is named after it, so its label
@@ -10,12 +11,11 @@ interface CleanupToggleProps {
 }
 
 /**
- * Quick on/off pill for speech cleanup (a local LLM rewrites the final
+ * On/off switch row for speech cleanup (a local LLM rewrites the final
  * transcript) plus a style picker for the rewrite flavor: plain cleanup,
  * coding-assistant prompt, commit message, chat message, email, or bug
- * report. Cleanup adds a few seconds after Stop, so it lives on the Talk
- * screen for easy flipping. Hidden while the Whisper server is unreachable
- * or the cleanup model/binary isn't installed.
+ * report. Cleanup adds a few seconds after Stop. Hidden while the Whisper
+ * server is unreachable or the cleanup model/binary isn't installed.
  */
 export function CleanupToggle({ target }: CleanupToggleProps) {
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -34,7 +34,7 @@ export function CleanupToggle({ target }: CleanupToggleProps) {
       .catch(() => setEnabled(null));
   }, [target]);
 
-  // Keep showing the pill while enabled-but-unavailable (e.g. the model is
+  // Keep showing the row while enabled-but-unavailable (e.g. the model is
   // still loading after a server restart) so it can be turned off.
   if (enabled === null || (!available && !enabled)) return null;
 
@@ -62,24 +62,20 @@ export function CleanupToggle({ target }: CleanupToggleProps) {
   };
 
   return (
-    <div className="mt-2 w-full flex flex-wrap items-center gap-2">
-      <button
-        onClick={toggle}
-        className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
-          enabled
-            ? "bg-emerald-600 text-white"
-            : "bg-gray-800 text-gray-500 hover:bg-gray-700"
-        }`}
-      >
-        ✨ Cleanup {enabled ? "on" : "off"}
-      </button>
+    <SettingsSwitchRow
+      label="Cleanup"
+      hint="A small AI tidies the text after Stop."
+      info={CLEANUP_INFO}
+      checked={enabled}
+      onChange={toggle}
+    >
       {/* Style picker — only meaningful while cleanup is on */}
       {enabled && styles.length > 1 && (
         <select
           value={style}
           onChange={(e) => changeStyle(e.target.value)}
           aria-label="Cleanup style"
-          className="bg-gray-800 text-gray-300 rounded-full px-2 py-1.5 text-sm border-none"
+          className="w-full bg-gray-800 text-white border border-gray-700 rounded px-3 py-2 text-sm"
         >
           {styles.map((s) => (
             <option key={s.name} value={s.name}>
@@ -88,7 +84,6 @@ export function CleanupToggle({ target }: CleanupToggleProps) {
           ))}
         </select>
       )}
-      <CleanupInfo />
-    </div>
+    </SettingsSwitchRow>
   );
 }

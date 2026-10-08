@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { getSymbols, putSymbols } from "../lib/api";
+import { SettingsSwitchRow } from "./SettingsRow";
 
 /**
- * Quick on/off pill for symbol mode (spoken words -> symbols), shown on the
- * Talk screen so it can be flipped between prose and code dictation without
- * digging into Settings. Hidden while the Whisper server is unreachable.
+ * On/off switch row for symbol mode (spoken words -> symbols), at the top of
+ * Settings so it can be flipped between prose and code dictation. Hidden
+ * while the Whisper server is unreachable.
  */
 export function SymbolModeToggle() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -29,15 +30,11 @@ export function SymbolModeToggle() {
   };
 
   return (
-    <button
-      onClick={toggle}
-      className={`mt-4 px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
-        enabled
-          ? "bg-sky-600 text-white"
-          : "bg-gray-800 text-gray-500 hover:bg-gray-700"
-      }`}
-    >
-      {"</>"} Symbols {enabled ? "on" : "off"}
-    </button>
+    <SettingsSwitchRow
+      label="Symbols"
+      hint='Say "dash", type "-"; verbatim, so Cleanup is skipped.'
+      checked={enabled}
+      onChange={toggle}
+    />
   );
 }

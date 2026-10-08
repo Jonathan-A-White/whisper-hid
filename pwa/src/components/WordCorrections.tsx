@@ -120,7 +120,7 @@ export function WordCorrections() {
               {entries.map(([from, to]) => (
                 <div
                   key={from}
-                  className="flex items-center gap-2 bg-gray-900 rounded px-3 py-1.5"
+                  className="flex items-center gap-2 bg-gray-800 rounded px-3 py-1.5"
                 >
                   <span className="text-sm text-red-300 flex-1 truncate">
                     {from}
@@ -151,7 +151,7 @@ export function WordCorrections() {
               value={newFrom}
               onChange={(e) => setNewFrom(e.target.value)}
               placeholder="Wrong word"
-              className="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600"
+              className="w-full bg-gray-800 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600"
             />
             <input
               type="text"
@@ -159,7 +159,7 @@ export function WordCorrections() {
               onChange={(e) => setNewTo(e.target.value)}
               placeholder="Correct word"
               onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-              className="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600"
+              className="w-full bg-gray-800 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600"
             />
             <button
               onClick={handleAdd}
@@ -187,7 +187,7 @@ export function WordCorrections() {
                 {suggestions.map((s) => (
                   <div
                     key={s.wrong}
-                    className="flex items-center gap-2 bg-gray-900 rounded px-3 py-1.5"
+                    className="flex items-center gap-2 bg-gray-800 rounded px-3 py-1.5"
                   >
                     <span className="text-sm text-red-300 flex-1 truncate">
                       {s.wrong}

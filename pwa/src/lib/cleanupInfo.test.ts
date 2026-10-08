@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { CLEANUP_INFO } from "./cleanupInfo";
 import toggle from "../components/CleanupToggle.tsx?raw";
 import settings from "../components/CleanupSettings.tsx?raw";
-import infoButton from "../components/CleanupInfo.tsx?raw";
+import row from "../components/SettingsRow.tsx?raw";
 
 describe("CLEANUP_INFO", () => {
   it("names the transcript rewrite", () => {
@@ -28,19 +28,17 @@ describe("CLEANUP_INFO", () => {
 });
 
 describe("info button placement", () => {
-  it("CleanupToggle renders the info button", () => {
-    expect(toggle).toContain("<CleanupInfo");
+  it("CleanupToggle gives the shared text to its row's info button", () => {
+    expect(toggle).toContain("info={CLEANUP_INFO}");
   });
 
-  it("CleanupSettings renders the info button beside its heading", () => {
-    expect(settings).toContain("<CleanupInfo");
-    expect(settings.indexOf("Speech cleanup model")).toBeLessThan(
-      settings.indexOf("<CleanupInfo"),
-    );
+  it("CleanupSettings gives the shared text to the row headed Speech cleanup model", () => {
+    expect(settings).toContain("info={CLEANUP_INFO}");
+    expect(settings).toContain('label="Speech cleanup model"');
   });
 
-  it("the button toggles the shared text", () => {
-    expect(infoButton).toContain("CLEANUP_INFO");
-    expect(infoButton).toContain("aria-expanded");
+  it("the row's 'i' button toggles the text", () => {
+    expect(row).toContain("aria-expanded");
+    expect(row).toContain("setOpen");
   });
 });

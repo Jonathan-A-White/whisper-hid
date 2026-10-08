@@ -7,6 +7,7 @@ import {
   type SymbolEntry,
   type SymbolSpacing,
 } from "../lib/api";
+import { SettingsSwitchRow } from "./SettingsRow";
 
 const SPACING_OPTIONS: Array<{ value: SymbolSpacing; label: string }> = [
   { value: "both", label: "join both" },
@@ -94,15 +95,13 @@ export function SymbolReplacements() {
       ) : config !== null ? (
         <>
           {/* Symbol mode toggle */}
-          <label className="flex items-center justify-between">
-            <span className="text-sm text-gray-300">Symbol mode</span>
-            <input
-              type="checkbox"
+          <div className="-mx-4 -my-2">
+            <SettingsSwitchRow
+              label="Symbol mode"
               checked={config.enabled}
-              onChange={(e) => save({ enabled: e.target.checked })}
-              className="w-5 h-5 accent-sky-500"
+              onChange={(enabled) => save({ enabled })}
             />
-          </label>
+          </div>
 
           {/* Existing entries */}
           {config.entries.length > 0 ? (
@@ -110,7 +109,7 @@ export function SymbolReplacements() {
               {config.entries.map((entry) => (
                 <div
                   key={entry.phrase}
-                  className="flex items-center gap-2 bg-gray-900 rounded px-3 py-1.5"
+                  className="flex items-center gap-2 bg-gray-800 rounded px-3 py-1.5"
                 >
                   <span className="text-sm text-red-300 flex-1 truncate">
                     {entry.phrase}
@@ -157,7 +156,7 @@ export function SymbolReplacements() {
               value={newPhrase}
               onChange={(e) => setNewPhrase(e.target.value)}
               placeholder="Spoken phrase (e.g. forward slash)"
-              className="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600"
+              className="w-full bg-gray-800 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600"
             />
             <input
               type="text"
@@ -165,12 +164,12 @@ export function SymbolReplacements() {
               onChange={(e) => setNewSymbol(e.target.value)}
               placeholder="Symbol (e.g. /)"
               onKeyDown={(e) => e.key === "Enter" && handleAdd()}
-              className="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600 font-mono"
+              className="w-full bg-gray-800 text-white border border-gray-700 rounded px-2 py-1.5 text-sm placeholder-gray-600 font-mono"
             />
             <select
               value={newSpacing}
               onChange={(e) => setNewSpacing(e.target.value as SymbolSpacing)}
-              className="w-full bg-gray-900 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
+              className="w-full bg-gray-800 text-white border border-gray-700 rounded px-2 py-1.5 text-sm"
             >
               <option value="both">Join both sides (foo-bar)</option>
               <option value="left">Join left only (key: value)</option>

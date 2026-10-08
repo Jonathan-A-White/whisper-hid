@@ -1,9 +1,15 @@
 import { describe, expect, it } from "vitest";
 import source from "./SettingsView.tsx?raw";
+import settingsSection from "./SettingsSection.tsx?raw";
+import settingsRow from "./SettingsRow.tsx?raw";
+import symbolModeToggle from "./SymbolModeToggle.tsx?raw";
+import cleanupToggle from "./CleanupToggle.tsx?raw";
+import cleanupSettings from "./CleanupSettings.tsx?raw";
+import symbolReplacements from "./SymbolReplacements.tsx?raw";
 
-// There are no render tests for screens, so this checks the order the
-// elements are written in: the 'Talk options' section sits at the top of
-// Settings, under the heading, ahead of 'Edit before send'.
+// There are no render tests for screens, so this checks the source: the six
+// section headings in order, one shared switch row for every on/off, and that
+// each existing setting is still wired to its handler.
 
 const lines = source.split("\n");
 
@@ -13,24 +19,120 @@ function lineOf(needle: string): number {
   return at + 1;
 }
 
-describe("SettingsView Talk options", () => {
-  it("opens with the heading, then Talk options, then Edit before send", () => {
+const SECTIONS = [
+  "Talk",
+  "Typing",
+  "Speech",
+  "Cleanup",
+  "Corrections and symbols",
+  "About",
+];
+
+describe("SettingsView sections", () => {
+  it("opens with the heading, then the six section headings in order", () => {
     const heading = lineOf(">Settings</h2>");
-    const section = lineOf("Talk options");
-    const edit = lineOf("Edit before send");
-    expect(heading).toBeLessThan(section);
-    expect(section).toBeLessThan(edit);
+    const at = SECTIONS.map((name) => lineOf(`<SettingsSection title="${name}"`));
+    expect(heading).toBeLessThan(at[0]);
+    for (let i = 1; i < at.length; i++) expect(at[i - 1]).toBeLessThan(at[i]);
   });
 
-  it("holds Symbols and Cleanup under Talk options, and no Type clipboard", () => {
-    const section = lineOf("Talk options");
-    const edit = lineOf("Edit before send");
+  it("has exactly six sections", () => {
+    expect(source.match(/<SettingsSection\b/g)).toHaveLength(SECTIONS.length);
+  });
+
+  it("holds Symbols and Cleanup in Talk, and no Type clipboard", () => {
+    const talk = lineOf('<SettingsSection title="Talk"');
+    const typing = lineOf('<SettingsSection title="Typing"');
     for (const control of ["<SymbolModeToggle", "<CleanupToggle"]) {
       const at = lineOf(control);
-      expect(at, control).toBeGreaterThan(section);
-      expect(at, control).toBeLessThan(edit);
+      expect(at, control).toBeGreaterThan(talk);
+      expect(at, control).toBeLessThan(typing);
     }
     expect(source).not.toContain("TypeClipboardButton");
     expect(source).not.toContain("Type clipboard");
+  });
+
+  it("puts the version lines in About, at the foot", () => {
+    const about = lineOf('<SettingsSection title="About"');
+    expect(lineOf("__APP_VERSION__")).toBeGreaterThan(about);
+    expect(lineOf("HID service")).toBeGreaterThan(about);
+  });
+});
+
+describe("SettingsView switches", () => {
+  it("has no raw checkbox inputs", () => {
+    expect(source).not.toContain('type="checkbox"');
+    for (const other of [symbolModeToggle, cleanupToggle, symbolReplacements]) {
+      expect(other).not.toContain('type="checkbox"');
+    }
+  });
+
+  it("uses the shared switch row for every on/off", () => {
+    expect(source.match(/<SettingsSwitchRow\b/g)!.length).toBeGreaterThanOrEqual(6);
+    expect(settingsRow).toContain('role="switch"');
+    expect(symbolModeToggle).toContain("SettingsSwitchRow");
+    expect(cleanupToggle).toContain("SettingsSwitchRow");
+    expect(symbolReplacements).toContain("SettingsSwitchRow");
+  });
+
+  it("keeps every touch target at least 44px", () => {
+    expect(settingsRow).toContain("min-h-[44px]");
+    expect(settingsRow).toContain("min-w-[44px]");
+  });
+});
+
+describe("SettingsView settings are still wired", () => {
+  it("reads and writes each stored setting", () => {
+    for (const key of [
+      "settings.editBeforeSend",
+      "editBeforeSend:",
+      "settings.appendNewline",
+      "appendNewline:",
+      "settings.appendSpace",
+      "appendSpace:",
+      "settings.newlineAfterEnd",
+      "newlineAfterEnd:",
+      "settings.keystrokeDelay",
+      "keystrokeDelay:",
+      "settings.language",
+      "language:",
+    ]) {
+      expect(source, key).toContain(key);
+    }
+  });
+
+  it("keeps the server-side handlers", () => {
+    for (const call of [
+      "hidKeepLinkWarm(",
+      "putWhisperSettings({ noise_reduction",
+      "mic_audio_source: source",
+      "<CleanupSettings",
+      "<WordCorrections",
+      "<SymbolReplacements",
+    ]) {
+      expect(source, call).toContain(call);
+    }
+    expect(symbolModeToggle).toContain("putSymbols({ enabled");
+    expect(cleanupToggle).toContain("putCleanup({ enabled");
+    expect(cleanupToggle).toContain("putCleanup({ style");
+    expect(cleanupSettings).toContain("putCleanup({ model");
+  });
+
+  it("keeps the two mutually exclusive newline/space switches exclusive", () => {
+    expect(source).toContain("appendSpace: e ? false : settings.appendSpace");
+    expect(source).toContain("appendNewline: e ? false : settings.appendNewline");
+  });
+});
+
+describe("SettingsSection and SettingsRow", () => {
+  it("section is a small uppercase heading above a rounded card", () => {
+    expect(settingsSection).toContain("uppercase");
+    expect(settingsSection).toContain("rounded-xl");
+  });
+
+  it("row shows a grey hint under the label and an 'i' for longer text", () => {
+    expect(settingsRow).toContain("hint");
+    expect(settingsRow).toContain("info");
+    expect(settingsRow).toContain("aria-expanded");
   });
 });

@@ -6,6 +6,8 @@ import { SymbolReplacements } from "./SymbolReplacements";
 import { CleanupSettings } from "./CleanupSettings";
 import { CleanupToggle } from "./CleanupToggle";
 import { SymbolModeToggle } from "./SymbolModeToggle";
+import { SettingsSection } from "./SettingsSection";
+import { SettingsRow, SettingsSwitchRow } from "./SettingsRow";
 
 /**
  * What the delay has to clear is the receiving *application*, and they
@@ -83,164 +85,112 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
     <div className="p-4 space-y-6">
       <h2 className="text-lg font-semibold text-white">Settings</h2>
 
-      {/* Talk options: the switches used less often than the ones on Talk */}
-      <section className="space-y-3">
-        <h3 className="text-sm font-semibold text-gray-300">Talk options</h3>
-        <div className="flex flex-col items-start gap-1">
-          <SymbolModeToggle />
-          <CleanupToggle target={target?.name ?? null} />
-        </div>
-      </section>
-
-      {/* Toggle: Edit before send */}
-      <label className="flex items-center justify-between">
-        <span className="text-sm text-gray-300">Edit before send</span>
-        <input
-          type="checkbox"
+      <SettingsSection title="Talk">
+        <SymbolModeToggle />
+        <CleanupToggle target={target?.name ?? null} />
+        <SettingsSwitchRow
+          label="Edit before send"
+          hint="Review and fix the text before it is typed."
           checked={settings.editBeforeSend}
-          onChange={(e) => onUpdate({ editBeforeSend: e.target.checked })}
-          className="w-5 h-5 accent-sky-500"
+          onChange={(e) => onUpdate({ editBeforeSend: e })}
         />
-      </label>
+      </SettingsSection>
 
-      {/* Toggle: Append newline */}
-      <label className="flex items-center justify-between">
-        <span className="text-sm text-gray-300">
-          Add newline after each segment
-        </span>
-        <input
-          type="checkbox"
+      <SettingsSection title="Typing">
+        {/* Target app: set from the Talk screen, shown here for reference
+            since it used to be the "Claude Code newlines" checkbox. */}
+        {target && (
+          <SettingsRow
+            label={`Typing to: ${target.label}`}
+            hint='Change it with the "Typing to" pill on the Talk screen.'
+            info={`${target.description}. It also picks which assistant the "prompt" cleanup style writes for.`}
+          />
+        )}
+        <SettingsSwitchRow
+          label="Add newline after each segment"
+          hint="A line break after every piece you dictate."
           checked={settings.appendNewline}
           onChange={(e) =>
             onUpdate({
-              appendNewline: e.target.checked,
-              appendSpace: e.target.checked ? false : settings.appendSpace,
+              appendNewline: e,
+              appendSpace: e ? false : settings.appendSpace,
             })
           }
-          className="w-5 h-5 accent-sky-500"
         />
-      </label>
-
-      {/* Toggle: Append space */}
-      <label className="flex items-center justify-between">
-        <span className="text-sm text-gray-300">
-          Add space between segments
-        </span>
-        <input
-          type="checkbox"
+        <SettingsSwitchRow
+          label="Add space between segments"
+          hint="A space after every piece you dictate."
           checked={settings.appendSpace}
           onChange={(e) =>
             onUpdate({
-              appendSpace: e.target.checked,
-              appendNewline: e.target.checked ? false : settings.appendNewline,
+              appendSpace: e,
+              appendNewline: e ? false : settings.appendNewline,
             })
           }
-          className="w-5 h-5 accent-sky-500"
         />
-      </label>
-
-      {/* Toggle: Newline after end of recording */}
-      <label className="flex items-center justify-between">
-        <span className="text-sm text-gray-300">
-          Newline after end of recording
-        </span>
-        <input
-          type="checkbox"
+        <SettingsSwitchRow
+          label="Newline after end of recording"
+          hint="Press Enter when you stop, to send the line."
           checked={settings.newlineAfterEnd}
-          onChange={(e) => onUpdate({ newlineAfterEnd: e.target.checked })}
-          className="w-5 h-5 accent-sky-500"
+          onChange={(e) => onUpdate({ newlineAfterEnd: e })}
         />
-      </label>
+        <SettingsRow
+          label={`Keystroke delay: ${settings.keystrokeDelay}ms`}
+          hint={`About ${typingCharsPerSec(settings.keystrokeDelay)} characters/sec.`}
+          info="Pause between keystrokes. How low you can go depends on the app you're typing into, not the computer: a terminal is good down to 5ms, a heavier editor may need 40ms or more. Below that a terminal starts dropping whole clauses silently."
+        >
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={settings.keystrokeDelay}
+            aria-label="Keystroke delay"
+            onChange={(e) =>
+              onUpdate({ keystrokeDelay: parseInt(e.target.value) })
+            }
+            className="w-full min-h-[44px] accent-sky-500"
+          />
+          {settings.keystrokeDelay < HEAVY_EDITOR_HINT_BELOW_MS && (
+            <p className="text-xs text-amber-500 mt-1">
+              If a long paste loses characters part-way through, raise this.
+              Measured: vim in a terminal was perfect at 10ms, while Windows
+              Notepad needed {HEAVY_EDITOR_HINT_BELOW_MS}ms and dropped ~7% of
+              a paste at 20ms.
+            </p>
+          )}
+        </SettingsRow>
+      </SettingsSection>
 
-      {/* Target app — set from the Talk screen, shown here for reference
-          since it used to be the "Claude Code newlines" checkbox. */}
-      {target && (
-        <div>
-          <span className="text-sm text-gray-300">Typing to: {target.label}</span>
-          <p className="text-xs text-gray-500 mt-1">
-            {target.description}. Change it with the &quot;Typing to&quot; pill
-            on the Talk screen — it also picks which assistant the
-            &quot;prompt&quot; cleanup style writes for.
-          </p>
-        </div>
-      )}
-
-      {/* Keystroke delay */}
-      <div>
-        <label className="text-sm text-gray-300 block mb-1">
-          Keystroke delay: {settings.keystrokeDelay}ms
-          <span className="text-gray-500">
-            {" — about "}
-            {typingCharsPerSec(settings.keystrokeDelay)} characters/sec
-          </span>
-        </label>
-        <input
-          type="range"
-          min={0}
-          max={100}
-          value={settings.keystrokeDelay}
-          onChange={(e) =>
-            onUpdate({ keystrokeDelay: parseInt(e.target.value) })
-          }
-          className="w-full accent-sky-500"
-        />
-        <p className="text-xs text-gray-500 mt-1">
-          Pause between keystrokes. How low you can go depends on the app
-          you're typing into, not the computer — a terminal is good down to
-          5ms, a heavier editor may need 40ms or more. Below that a
-          terminal starts dropping whole clauses silently.
-        </p>
-        {settings.keystrokeDelay < HEAVY_EDITOR_HINT_BELOW_MS && (
-          <p className="text-xs text-amber-500 mt-1">
-            If a long paste loses characters part-way through, raise this.
-            Measured: vim in a terminal was perfect at 10ms, while Windows
-            Notepad needed {HEAVY_EDITOR_HINT_BELOW_MS}ms and dropped ~7% of
-            a paste at 20ms.
-          </p>
-        )}
-      </div>
-
-      {/* Toggle: Keep the headset link warm */}
-      {keepLinkWarm !== null && (
-        <div>
-          <label className="flex items-center justify-between">
-            <span className="text-sm text-gray-300">
-              Keep the headset link warm
-            </span>
-            <input
-              type="checkbox"
-              checked={keepLinkWarm}
-              onChange={async (e) => {
-                const on = e.target.checked;
-                setKeepLinkWarm(on);
-                try {
-                  const updated = await hidKeepLinkWarm(on);
-                  setKeepLinkWarm(updated.keep_warm);
-                } catch {
-                  setKeepLinkWarm(!on);
-                }
-              }}
-              className="w-5 h-5 accent-sky-500"
-            />
-          </label>
-          <p className="text-xs text-gray-500 mt-1">
-            Off: the headset's call link opens only while you dictate, so music,
-            video and voice from other apps play normally on the headset the
-            rest of the time. On: the link is held whenever the headset is
-            connected, which starts the first word a moment sooner but silences
-            other audio on a headset with a mic.
-          </p>
-        </div>
-      )}
-
-      {/* Toggle: Noise reduction */}
-      <label className="flex items-center justify-between">
-        <span className="text-sm text-gray-300">Noise reduction</span>
-        <input
-          type="checkbox"
+      <SettingsSection title="Speech">
+        {/* Speech model: Parakeet is the only engine, so there is nothing to pick */}
+        <SettingsRow
+          label="Speech model"
+          hint={`Parakeet TDT 0.6B v2${
+            speechModel?.downloaded ? ` (${speechModel.size_mb} MB)` : ""
+          }. The only engine; it runs on this phone.`}
+        >
+          {speechModel && !speechModel.downloaded && (
+            <p className="text-xs text-red-400">
+              Not installed. In Termux run: ./update-model.sh parakeet
+            </p>
+          )}
+        </SettingsRow>
+        <SettingsRow label="Language">
+          <select
+            value={settings.language}
+            aria-label="Language"
+            onChange={(e) => onUpdate({ language: e.target.value })}
+            className="w-full min-h-[44px] bg-gray-800 text-white border border-gray-700 rounded px-3 py-2 text-sm"
+          >
+            <option value="en">English</option>
+            <option value="auto">Auto-detect</option>
+          </select>
+        </SettingsRow>
+        <SettingsSwitchRow
+          label="Noise reduction"
+          hint="Filter background noise out of the recording."
           checked={noiseReduction}
-          onChange={async (e) => {
-            const enabled = e.target.checked;
+          onChange={async (enabled) => {
             setNoiseReduction(enabled);
             try {
               const updated = await putWhisperSettings({ noise_reduction: enabled });
@@ -249,144 +199,118 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
               setNoiseReduction(!enabled);
             }
           }}
-          className="w-5 h-5 accent-sky-500"
         />
-      </label>
-
-      {/* Mic audio source */}
-      {micSourceSelectable && (
-        <div>
-          <label className="text-sm text-gray-300 block mb-1">
-            Mic audio source
-          </label>
-          <select
-            value={micSource}
-            onChange={async (e) => {
-              const source = e.target.value;
-              const previous = micSource;
-              setMicSource(source);
-              setMicSourceError(null);
+        {keepLinkWarm !== null && (
+          <SettingsSwitchRow
+            label="Keep the headset link warm"
+            hint="Starts the first word sooner, but silences other audio."
+            info="Off: the headset's call link opens only while you dictate, so music, video and voice from other apps play normally on the headset the rest of the time. On: the link is held whenever the headset is connected, which starts the first word a moment sooner but silences other audio on a headset with a mic."
+            checked={keepLinkWarm}
+            onChange={async (on) => {
+              setKeepLinkWarm(on);
               try {
-                const updated = await putWhisperSettings({
-                  mic_audio_source: source,
-                });
-                setMicSource(updated.mic_audio_source);
-              } catch (err) {
-                setMicSource(previous);
-                setMicSourceError(
-                  err instanceof Error ? err.message : "Failed to switch source"
-                );
+                const updated = await hidKeepLinkWarm(on);
+                setKeepLinkWarm(updated.keep_warm);
+              } catch {
+                setKeepLinkWarm(!on);
               }
             }}
-            className="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm"
-          >
-            <option value="mic">Default (built-in mic)</option>
-            <option value="voice_communication">
-              Voice communication (Bluetooth headset)
-            </option>
-            <option value="voice_recognition">Voice recognition (no AGC)</option>
-            <option value="camcorder">Camcorder (rear mic)</option>
-          </select>
-          <p className="text-xs text-gray-500 mt-1">
-            Only change this if the headset dot is green but dictation still
-            picks up the phone's own mic. Run the mic test in the setup guide
-            after switching.
-          </p>
-          {micSourceError && (
-            <p className="text-xs text-red-400 mt-1">{micSourceError}</p>
-          )}
-        </div>
-      )}
-
-      {/* Speech model: Parakeet is the only engine, so there is nothing to pick */}
-      <div>
-        <label className="text-sm text-gray-300 block mb-1">
-          Speech model
-        </label>
-        <p className="text-sm text-gray-300 bg-gray-900 rounded px-3 py-2">
-          Parakeet TDT 0.6B v2
-          {speechModel?.downloaded && (
-            <span className="text-xs text-gray-500 ml-2">
-              ({speechModel.size_mb} MB)
-            </span>
-          )}
-        </p>
-        {speechModel && !speechModel.downloaded && (
-          <p className="text-xs text-red-400 mt-1">
-            Not installed. In Termux run: ./update-model.sh parakeet
-          </p>
+          />
         )}
-      </div>
+        {micSourceSelectable && (
+          <SettingsRow
+            label="Mic audio source"
+            hint="Only for a headset that shows green but records the phone mic."
+            info="Only change this if the headset dot is green but dictation still picks up the phone's own mic. Run the mic test in the setup guide after switching."
+          >
+            <select
+              value={micSource}
+              aria-label="Mic audio source"
+              onChange={async (e) => {
+                const source = e.target.value;
+                const previous = micSource;
+                setMicSource(source);
+                setMicSourceError(null);
+                try {
+                  const updated = await putWhisperSettings({
+                    mic_audio_source: source,
+                  });
+                  setMicSource(updated.mic_audio_source);
+                } catch (err) {
+                  setMicSource(previous);
+                  setMicSourceError(
+                    err instanceof Error ? err.message : "Failed to switch source"
+                  );
+                }
+              }}
+              className="w-full min-h-[44px] bg-gray-800 text-white border border-gray-700 rounded px-3 py-2 text-sm"
+            >
+              <option value="mic">Default (built-in mic)</option>
+              <option value="voice_communication">
+                Voice communication (Bluetooth headset)
+              </option>
+              <option value="voice_recognition">Voice recognition (no AGC)</option>
+              <option value="camcorder">Camcorder (rear mic)</option>
+            </select>
+            {micSourceError && (
+              <p className="text-xs text-red-400 mt-1">{micSourceError}</p>
+            )}
+          </SettingsRow>
+        )}
+      </SettingsSection>
 
-      {/* Speech cleanup model selector */}
-      <CleanupSettings />
+      <SettingsSection title="Cleanup">
+        <CleanupSettings />
+      </SettingsSection>
 
-      {/* Language */}
-      <div>
-        <label className="text-sm text-gray-300 block mb-1">Language</label>
-        <select
-          value={settings.language}
-          onChange={(e) => onUpdate({ language: e.target.value })}
-          className="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm"
-        >
-          <option value="en">English</option>
-          <option value="auto">Auto-detect</option>
-        </select>
-      </div>
+      <SettingsSection title="Corrections and symbols">
+        <div className="px-4 py-3">
+          <WordCorrections />
+        </div>
+        <div className="px-4 py-3">
+          <SymbolReplacements />
+        </div>
+      </SettingsSection>
 
-      {/* Word corrections */}
-      <div className="pt-4 border-t border-gray-800">
-        <WordCorrections />
-      </div>
-
-      {/* Symbol replacements */}
-      <div className="pt-4 border-t border-gray-800">
-        <SymbolReplacements />
-      </div>
-
-      {/* Setup guide */}
-      <div className="pt-4 border-t border-gray-800">
-        <button
-          onClick={onShowSetup}
-          className="w-full py-2 rounded bg-gray-800 text-sky-400 text-sm font-medium"
-        >
-          Setup guide
-        </button>
-        <p className="text-xs text-gray-600 mt-1.5">
-          Step-by-step checklist for setting up a new phone or fixing a
-          broken component.
-        </p>
-      </div>
-
-      {/* Debug log */}
-      <div className="pt-4 border-t border-gray-800">
-        <button
-          onClick={onShowDebug}
-          className="w-full py-2 rounded bg-gray-800 text-sky-400 text-sm font-medium"
-        >
-          Debug log
-        </button>
-        <p className="text-xs text-gray-600 mt-1.5">
-          Recent events from the HID service and Whisper server. After a
-          paste, look for the "Typed N chars as M reports" line — it says
-          how long the send took and whether the Bluetooth link kept up.
-        </p>
-      </div>
-
-      <div className="pt-4 border-t border-gray-800 space-y-1">
-        <p className="text-xs text-gray-600">
-          PWA v{__APP_VERSION__}
-        </p>
-        <p className="text-xs text-gray-600">
-          Whisper server {whisperVersion ? `v${whisperVersion}` : "(not connected)"}
-        </p>
-        <p className="text-xs text-gray-600">
-          HID service {hidVersion ? `v${hidVersion}` : "(not connected)"}
-        </p>
-        <p className="text-xs text-gray-700 mt-2">
-          Settings are stored locally in your browser.
-        </p>
-      </div>
+      <SettingsSection title="About">
+        <SettingsRow
+          label="Setup guide"
+          hint="Checklist for a new phone or a broken component."
+          control={
+            <button
+              onClick={onShowSetup}
+              className="min-h-[44px] px-4 rounded-lg bg-gray-800 text-sky-400 text-sm font-medium"
+            >
+              Open
+            </button>
+          }
+        />
+        <SettingsRow
+          label="Debug log"
+          hint="Recent events from the HID service and Whisper server."
+          info='After a paste, look for the "Typed N chars as M reports" line: it says how long the send took and whether the Bluetooth link kept up.'
+          control={
+            <button
+              onClick={onShowDebug}
+              className="min-h-[44px] px-4 rounded-lg bg-gray-800 text-sky-400 text-sm font-medium"
+            >
+              Open
+            </button>
+          }
+        />
+        <div className="px-4 py-3 space-y-1">
+          <p className="text-xs text-gray-500">PWA v{__APP_VERSION__}</p>
+          <p className="text-xs text-gray-500">
+            Whisper server {whisperVersion ? `v${whisperVersion}` : "(not connected)"}
+          </p>
+          <p className="text-xs text-gray-500">
+            HID service {hidVersion ? `v${hidVersion}` : "(not connected)"}
+          </p>
+          <p className="text-xs text-gray-600 pt-1">
+            Settings are stored locally in your browser.
+          </p>
+        </div>
+      </SettingsSection>
     </div>
   );
 }
