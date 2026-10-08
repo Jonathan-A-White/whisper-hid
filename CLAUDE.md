@@ -431,6 +431,20 @@ gets no headset mic. "Zoom mode" releases the link without stopping anything:
 - PWA: `ZoomModeToggle` pill on the Talk screen (`hid.setHeadsetMic` in
   `useHidService`); the StatusBar 🎧 dot turns gray while released.
 
+## HID service crashes
+A crash anywhere in the app's process is written to the app's storage (time,
+thread, app version, stack trace; the newest 5 kept) by `CrashRecorder`,
+installed first thing by `WhisperApp`. Read it from Termux with
+`curl http://127.0.0.1:9877/crash` (unauthenticated, plain text, 404 when
+none); `/crash?all=1` gives every kept record, newest first.
+- The service's entry points (keystroke/HID-callback tasks, receivers, handler
+  runnables) run through `Guards.kt`, so a bug in one is an error line in
+  `/logs` ("... failed: ...") instead of a dead process.
+- A foreground start Android refuses (a START_STICKY restart in the
+  background on Android 12+, or no BLUETOOTH_CONNECT) stops the service and
+  leaves a "Not a crash" record; opening the app starts it again.
+- Tests: `GuardsTest`, `OneShotTimerTest`, `CrashRecorderTest`
+
 ## Build
 - Android app: `./gradlew assembleDebug` (output: app/build/outputs/apk/debug/)
 - Debug APKs are signed with the checked-in `app/debug.keystore` (standard

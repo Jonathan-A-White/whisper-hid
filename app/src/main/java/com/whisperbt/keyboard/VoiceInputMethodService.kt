@@ -7,6 +7,7 @@ import android.inputmethodservice.InputMethodService
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.InputMethodManager
@@ -57,9 +58,15 @@ class VoiceInputMethodService : InputMethodService() {
         override fun close() { hidService?.endDictationLink() }
     }
 
+    // Guarded: this runs in the HID service's process, and an exception
+    // escaping the worker thread would end the service with it.
+    private val guardedWorker = GuardedExecutor(worker, "Voice keyboard call") { what, e ->
+        Log.e("WhisperVoiceIme", "$what failed", e)
+    }
+
     private val controller = VoiceKeyboardController(
         DictationLinkTranscriber(HttpVoiceTranscriber(), headsetLink), ui
-    ) { work -> worker.execute(work) }
+    ) { work -> guardedWorker.execute(work) }
 
     override fun onCreate() {
         super.onCreate()

@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 
 class BootReceiver : BroadcastReceiver() {
@@ -27,8 +28,12 @@ class BootReceiver : BroadcastReceiver() {
                 return
             }
 
+            // Termux:Boot's broadcast is not one of the boot exemptions:
+            // Android 12+ refuses a foreground start from the background, and
+            // that exception would end the process. Skip instead.
             val hidIntent = Intent(context, BluetoothHidService::class.java)
-            ContextCompat.startForegroundService(context, hidIntent)
+            attemptForegroundStart { ContextCompat.startForegroundService(context, hidIntent) }
+                ?.let { Log.w("BootReceiver", "Could not start the HID service at boot", it) }
         }
     }
 }

@@ -251,7 +251,7 @@ class BluetoothHidService : Service() {
     // on a phone that is also running Parakeet and a llama-server, so don't
     // leave this thread at default priority. URGENT_DISPLAY is the input
     // pipeline's band; audio priority would be overreach for typing.
-    private val executor = Executors.newSingleThreadExecutor { r ->
+    private val keystrokeThread = Executors.newSingleThreadExecutor { r ->
         Thread({
             android.os.Process.setThreadPriority(
                 android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY
@@ -259,6 +259,9 @@ class BluetoothHidService : Service() {
             r.run()
         }, "hid-keystrokes")
     }
+    // Sends and the HID profile callbacks both run here. Guarded: an
+    // exception escaping this thread would end the process (see Guards.kt).
+    private val executor = GuardedExecutor(keystrokeThread, "Keystroke/HID callback task", ::logCaught)
     private val handler = Handler(Looper.getMainLooper())
     private var serverSocket: ServerSocket? = null
     private var httpThread: Thread? = null
@@ -271,7 +274,11 @@ class BluetoothHidService : Service() {
     // Reconnect state. The schedule itself lives in ReconnectPolicy.
     private var reconnectAttempt = 0
     private var reconnectStartTime = 0L
-    private var reconnectRunnable: Runnable? = null
+    // Armed from the main thread and cancelled from the HID callback and HTTP
+    // threads too; OneShotTimer has no nullable field for them to race on.
+    private val reconnectTimer = OneShotTimer(
+        { r, delay -> handler.postDelayed(r, delay) }, handler::removeCallbacks
+    ) { guard("Reconnect attempt") { attemptReconnect() } }
     // Why we are in FAILED (Bluetooth off / no host known); only those two
     // conditions ever put us there, never elapsed time.
     @Volatile private var failureReason = ""
@@ -285,7 +292,17 @@ class BluetoothHidService : Service() {
     private var audioManager: AudioManager? = null
     private var scoReceiver: BroadcastReceiver? = null
     private var audioDeviceCallback: AudioDeviceCallback? = null
-    private var scoRetryRunnable: Runnable? = null
+    private val scoRetryTimer = OneShotTimer(
+        { r, delay -> handler.postDelayed(r, delay) }, handler::removeCallbacks
+    ) {
+        guard("Headset mic SCO retry") {
+            if (scoRequested && !scoConnected && hasBluetoothMic()) {
+                scoRetryCount++
+                addLog("info", "Retrying headset mic SCO (attempt $scoRetryCount)")
+                audioManager?.let { startSco(it) }
+            }
+        }
+    }
     private var scoRetryCount = 0
     private var scoRequested = false
     @Volatile private var scoConnected = false
@@ -296,8 +313,10 @@ class BluetoothHidService : Service() {
     // user chose "Keep the headset link warm". Null only if onCreate bailed out.
     @Volatile private var linkController: HeadsetLinkController? = null
     private val dictationExpiry = Runnable {
-        if (linkController?.expireIfStale(DICTATION_MAX_HOLD_MS) == true) {
-            addLog("warn", "Dictation never ended — headset link released")
+        guard("Dictation expiry") {
+            if (linkController?.expireIfStale(DICTATION_MAX_HOLD_MS) == true) {
+                addLog("warn", "Dictation never ended — headset link released")
+            }
         }
     }
     private var audioFocusRequest: AudioFocusRequest? = null
@@ -322,13 +341,26 @@ class BluetoothHidService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        try {
+        val refused = attemptForegroundStart {
             startForeground(NOTIFICATION_ID, buildNotification("Initializing..."))
-        } catch (e: SecurityException) {
+        }
+        if (refused != null) {
             // Android 14+ rejects a connectedDevice foreground service until
             // BLUETOOTH_CONNECT is granted (e.g. first launch before the
-            // permission dialog is answered). Bail out instead of crashing.
-            Log.e(TAG, "Cannot start foreground service, missing Bluetooth permission?", e)
+            // permission dialog is answered), and Android 12+ rejects any
+            // foreground start from the background, which is what the system's
+            // START_STICKY restart after the process died is. Only the first
+            // was caught: the second threw on every restart, so the service
+            // crashed, was restarted, crashed again ("keeps stopping"). Stop
+            // instead; opening the app starts it again. Recorded for GET /crash.
+            Log.e(TAG, "Cannot start the foreground service", refused)
+            try {
+                WhisperApp.crashRecorder(this).record(
+                    Thread.currentThread(), refused,
+                    "Not a crash: the service could not start in the foreground and stopped itself " +
+                        "(open the app to start it again)"
+                )
+            } catch (_: Exception) {}
             stopSelf()
             return
         }
@@ -368,7 +400,10 @@ class BluetoothHidService : Service() {
         stopHttpServer()
         teardownHeadsetMicRouting()
         unregisterHidDevice()
-        executor.shutdown()
+        keystrokeThread.shutdown()
+        // Nothing posted by this service may run against a torn-down one
+        // (the dictation expiry is 15 minutes out).
+        handler.removeCallbacksAndMessages(null)
         super.onDestroy()
     }
 
@@ -403,7 +438,7 @@ class BluetoothHidService : Service() {
         audioManager = am
 
         scoReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
+            override fun onReceive(context: Context?, intent: Intent?) = guard("SCO state broadcast") {
                 val state = intent?.getIntExtra(
                     AudioManager.EXTRA_SCO_AUDIO_STATE, AudioManager.SCO_AUDIO_STATE_ERROR
                 )
@@ -428,14 +463,14 @@ class BluetoothHidService : Service() {
         }
 
         audioDeviceCallback = object : AudioDeviceCallback() {
-            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) = guard("Audio device added") {
                 if (addedDevices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO && it.isSource }) {
                     addLog("info", "Bluetooth headset mic detected: ${bluetoothMicName() ?: "unknown"}")
                     linkController?.onHeadsetPresent()
                 }
             }
 
-            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) {
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>) = guard("Audio device removed") {
                 if (removedDevices.any { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO } &&
                     !hasBluetoothMic()
                 ) {
@@ -501,12 +536,14 @@ class BluetoothHidService : Service() {
             .putBoolean(KEY_HEADSET_MIC_ENABLED, enabled)
             .apply()
         handler.post {
-            if (enabled) {
-                addLog("info", "Headset mic re-enabled")
-                linkController?.onHeadsetPresent()
-            } else {
-                addLog("info", "Headset mic released for other devices (Zoom mode)")
-                disableSco()
+            guard("Headset mic switch") {
+                if (enabled) {
+                    addLog("info", "Headset mic re-enabled")
+                    linkController?.onHeadsetPresent()
+                } else {
+                    addLog("info", "Headset mic released for other devices (Zoom mode)")
+                    disableSco()
+                }
             }
         }
     }
@@ -553,7 +590,11 @@ class BluetoothHidService : Service() {
     }
 
     private fun onMain(work: () -> Unit) {
-        if (Looper.myLooper() == Looper.getMainLooper()) work() else handler.post(work)
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            guard("Headset link change") { work() }
+        } else {
+            handler.post { guard("Headset link change") { work() } }
+        }
     }
 
     private fun enableSco() {
@@ -692,20 +733,10 @@ class BluetoothHidService : Service() {
             addLog("error", "Headset mic SCO failed after $SCO_MAX_RETRIES attempts — using phone mic")
             return
         }
-        scoRetryRunnable = Runnable {
-            if (scoRequested && !scoConnected && hasBluetoothMic()) {
-                scoRetryCount++
-                addLog("info", "Retrying headset mic SCO (attempt $scoRetryCount)")
-                audioManager?.let { startSco(it) }
-            }
-        }
-        handler.postDelayed(scoRetryRunnable!!, SCO_RETRY_DELAY_MS)
+        scoRetryTimer.schedule(SCO_RETRY_DELAY_MS)
     }
 
-    private fun cancelScoRetry() {
-        scoRetryRunnable?.let { handler.removeCallbacks(it) }
-        scoRetryRunnable = null
-    }
+    private fun cancelScoRetry() = scoRetryTimer.cancel()
 
     @Suppress("DEPRECATION")
     private fun disableSco() {
@@ -927,8 +958,7 @@ class BluetoothHidService : Service() {
         updateNotification(
             "Reconnecting… (attempt ${reconnectAttempt + 1}, next try in ${delay / 1000} s)"
         )
-        reconnectRunnable = Runnable { attemptReconnect() }
-        handler.postDelayed(reconnectRunnable!!, delay)
+        reconnectTimer.schedule(delay)
     }
 
     private fun attemptReconnect() {
@@ -947,10 +977,7 @@ class BluetoothHidService : Service() {
         }
     }
 
-    private fun cancelReconnect() {
-        reconnectRunnable?.let { handler.removeCallbacks(it) }
-        reconnectRunnable = null
-    }
+    private fun cancelReconnect() = reconnectTimer.cancel()
 
     private fun getNextRetrySeconds(): Int {
         if (btState != BtState.RECONNECTING) return 0
@@ -964,7 +991,7 @@ class BluetoothHidService : Service() {
     // "no host known" condition is over.
     private fun registerBluetoothReceiver() {
         val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
+            override fun onReceive(context: Context?, intent: Intent?) = guard("Bluetooth broadcast") {
                 when (intent?.action) {
                     BluetoothAdapter.ACTION_STATE_CHANGED -> {
                         when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
@@ -1291,6 +1318,15 @@ class BluetoothHidService : Service() {
 
     // --- Logging ---
 
+    // A guarded entry point threw (see Guards.kt): log it where /logs shows
+    // it, with the place it threw, instead of losing the process.
+    private fun logCaught(what: String, e: Exception) {
+        Log.e(TAG, "$what failed", e)
+        addLog("error", "$what failed: $e at ${e.stackTrace.firstOrNull() ?: "?"}")
+    }
+
+    private inline fun guard(what: String, block: () -> Unit) = runGuarded(what, ::logCaught, block)
+
     private fun addLog(level: String, msg: String) {
         Log.i(TAG, "[$level] $msg")
         while (logBuffer.size >= MAX_LOG_ENTRIES) logBuffer.pollFirst()
@@ -1347,6 +1383,7 @@ class BluetoothHidService : Service() {
                 "/connect" -> handleConnect(request, output)
                 "/headset-mic" -> handleHeadsetMic(request, output)
                 "/dictation" -> handleDictation(request, output)
+                "/crash", "/crash?all=1" -> handleCrash(request, output)
                 else -> sendResponse(output, 404, JSONObject().put("error", "not_found"))
             }
         } catch (e: Exception) {
@@ -1363,11 +1400,13 @@ class BluetoothHidService : Service() {
         else -> "OK"
     }
 
-    private fun sendResponse(output: OutputStream, code: Int, json: JSONObject) {
-        val body = json.toString().toByteArray()
+    private fun sendResponse(output: OutputStream, code: Int, json: JSONObject) =
+        sendBody(output, code, "application/json", json.toString().toByteArray())
+
+    private fun sendBody(output: OutputStream, code: Int, contentType: String, body: ByteArray) {
         val sb = StringBuilder()
         sb.append("HTTP/1.1 $code ${statusText(code)}\r\n")
-        sb.append("Content-Type: application/json\r\n")
+        sb.append("Content-Type: $contentType\r\n")
         sb.append("Content-Length: ${body.size}\r\n")
         sb.append("Access-Control-Allow-Origin: $ALLOWED_ORIGIN\r\n")
         sb.append("Access-Control-Allow-Methods: GET, POST, PUT, OPTIONS\r\n")
@@ -1643,6 +1682,20 @@ class BluetoothHidService : Service() {
         }
 
         sendResponse(output, 200, JSONObject().put("logs", logsArray))
+    }
+
+    // GET /crash (no auth, like /logs): the newest crash record as plain text,
+    // so it reads straight off `curl http://127.0.0.1:9877/crash` in Termux;
+    // /crash?all=1 gives all five kept. 404 when none has been recorded. See
+    // CrashRecorder.
+    private fun handleCrash(request: HttpRequest, output: OutputStream) {
+        if (request.method == "OPTIONS") { sendPreflight(output); return }
+        if (request.method != "GET") {
+            sendResponse(output, 405, JSONObject().put("error", "method_not_allowed"))
+            return
+        }
+        val reply = WhisperApp.crashRecorder(this).reply(all = request.path.endsWith("?all=1"))
+        sendBody(output, reply.code, "text/plain; charset=utf-8", reply.body.toByteArray(Charsets.UTF_8))
     }
 
     private fun handleRestart(request: HttpRequest, output: OutputStream) {
