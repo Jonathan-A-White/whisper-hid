@@ -321,7 +321,7 @@ class TestFinishChunked:
         # correction (ford->forward) then symbol (forward slash -> /) applied
         # across the chunk boundary — only possible because postprocess runs
         # once over the joined text.
-        assert text == "please run /help"
+        assert text == "Please run /help."
         assert ms == 50
 
     def test_empty_tail(self, server, tmp_path):
@@ -341,5 +341,55 @@ class TestFinishChunked:
         session.engine_ms = 30
 
         text, ms = server._finish_chunked_transcription(session, full)
-        assert text == "all committed"
+        assert text == "All committed."
         assert ms == 30
+
+
+class TestChunkedKeepsSentenceShape:
+    """A long dictation joins independently transcribed chunks. Parakeet can
+    hand back a short chunk lowercase and unpunctuated, so the joined text
+    must restore each chunk's capital and full stop (mw-qccc7b.7)."""
+
+    def _session(self, server, tmp_path, texts, tail):
+        full = str(tmp_path / "full.wav")
+        write_wav(full, (3000, 3.0))
+        server.run_transcription = lambda wav_path, postprocess=True: (tail, 10)
+        server.word_corrections = {}
+        server.symbol_settings = {"enabled": False, "entries": []}
+        server.cleanup_settings["enabled"] = False
+        session = server.ChunkedSession(str(tmp_path / "r.aac"))
+        session.texts = list(texts)
+        session.committed_sec = 1.0
+        session.chunks = len(texts)
+        return session, full
+
+    def test_unpunctuated_chunks_get_capitals_and_full_stops(self, server, tmp_path):
+        session, full = self._session(
+            server, tmp_path,
+            ["on the review and can you give me context again",
+             "i guess we have several things going on"],
+            "so let's get back to the highest priority",
+        )
+        text, _ = server._finish_chunked_transcription(session, full)
+        assert text == (
+            "On the review and can you give me context again. "
+            "I guess we have several things going on. "
+            "So let's get back to the highest priority."
+        )
+
+    def test_engine_punctuation_and_capitals_are_kept(self, server, tmp_path):
+        session, full = self._session(
+            server, tmp_path,
+            ["Yes, go with your recommendation for waiting on others.",
+             "Is that okay?"],
+            "Great! Thanks, Bob.",
+        )
+        text, _ = server._finish_chunked_transcription(session, full)
+        assert text == (
+            "Yes, go with your recommendation for waiting on others. "
+            "Is that okay? Great! Thanks, Bob."
+        )
+
+    def test_lowercase_sentence_start_inside_a_chunk(self, server):
+        assert server._sentence_case_chunk("it works. now try i'd say so") == \
+            "It works. Now try I'd say so."
