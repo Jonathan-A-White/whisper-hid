@@ -41,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.12.1"
+SERVER_VERSION = "1.12.2"
 
 # --- Configuration ---
 
@@ -100,6 +100,21 @@ CLEANUP_MODEL_CATALOG = [
         "file": "Qwen3-4B-Q4_K_M.gguf",
         "size_mb": 2400,
         "description": "Smarter rewrites/edits — ~3 GB RAM, roughly 2x slower",
+    },
+    # Qwen3.5 models: not yet measured on the phone — run scripts/bench-cleanup.sh
+    # and pick with its numbers. They need a llama.cpp new enough for the qwen35
+    # architecture (re-run setup-termux.sh if one will not load).
+    {
+        "name": "qwen3.5-2b",
+        "file": "Qwen3.5-2B-Q4_K_M.gguf",
+        "size_mb": 1221,
+        "description": "Qwen3.5 2B — not yet timed on this phone (scripts/bench-cleanup.sh)",
+    },
+    {
+        "name": "qwen3.5-0.8b",
+        "file": "Qwen3.5-0.8B-Q4_K_M.gguf",
+        "size_mb": 508,
+        "description": "Qwen3.5 0.8B — smallest, expected fastest; not yet timed (scripts/bench-cleanup.sh)",
     },
 ]
 CLEANUP_MODEL_FILE = os.environ.get("CLEANUP_MODEL", CLEANUP_MODEL_CATALOG[0]["file"])

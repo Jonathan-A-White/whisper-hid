@@ -17,6 +17,10 @@ CLEANUP_MODEL_FILE="Qwen3-1.7B-Q4_K_M.gguf"
 CLEANUP_MODEL_URL="https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/${CLEANUP_MODEL_FILE}"
 CLEANUP_4B_MODEL_FILE="Qwen3-4B-Q4_K_M.gguf"
 CLEANUP_4B_MODEL_URL="https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/main/${CLEANUP_4B_MODEL_FILE}"
+CLEANUP_2B_MODEL_FILE="Qwen3.5-2B-Q4_K_M.gguf"
+CLEANUP_2B_MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/${CLEANUP_2B_MODEL_FILE}"
+CLEANUP_08B_MODEL_FILE="Qwen3.5-0.8B-Q4_K_M.gguf"
+CLEANUP_08B_MODEL_URL="https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/${CLEANUP_08B_MODEL_FILE}"
 
 usage() {
     echo "Usage: $0 <model-name>"
@@ -25,6 +29,8 @@ usage() {
     echo "  parakeet              ~640 MB   ~10x real-time   Speech-to-text engine (required)"
     echo "  cleanup              ~1.1 GB                     Qwen3-1.7B speech cleanup LLM (default)"
     echo "  cleanup-4b           ~2.4 GB                     Qwen3-4B cleanup LLM (smarter, needs ~3 GB RAM)"
+    echo "  cleanup-2b           ~1.3 GB                     Qwen3.5-2B cleanup LLM (time it: scripts/bench-cleanup.sh)"
+    echo "  cleanup-0.8b         ~0.5 GB                     Qwen3.5-0.8B cleanup LLM (smallest, fastest)"
     echo ""
     echo "Examples:"
     echo "  $0 parakeet"
@@ -41,11 +47,20 @@ fi
 MODEL_NAME="$1"
 
 # Speech cleanup LLMs (GGUF for llama.cpp)
-if [ "$MODEL_NAME" = "cleanup" ] || [ "$MODEL_NAME" = "cleanup-4b" ]; then
+if [ "$MODEL_NAME" = "cleanup" ] || [ "$MODEL_NAME" = "cleanup-4b" ] \
+    || [ "$MODEL_NAME" = "cleanup-2b" ] || [ "$MODEL_NAME" = "cleanup-0.8b" ]; then
     if [ "$MODEL_NAME" = "cleanup-4b" ]; then
         DL_FILE="$CLEANUP_4B_MODEL_FILE"
         DL_URL="$CLEANUP_4B_MODEL_URL"
         DL_DESC="Qwen3-4B Q4_K_M speech cleanup model (~2.4 GB)"
+    elif [ "$MODEL_NAME" = "cleanup-2b" ]; then
+        DL_FILE="$CLEANUP_2B_MODEL_FILE"
+        DL_URL="$CLEANUP_2B_MODEL_URL"
+        DL_DESC="Qwen3.5-2B Q4_K_M speech cleanup model (~1.3 GB)"
+    elif [ "$MODEL_NAME" = "cleanup-0.8b" ]; then
+        DL_FILE="$CLEANUP_08B_MODEL_FILE"
+        DL_URL="$CLEANUP_08B_MODEL_URL"
+        DL_DESC="Qwen3.5-0.8B Q4_K_M speech cleanup model (~0.5 GB)"
     else
         DL_FILE="$CLEANUP_MODEL_FILE"
         DL_URL="$CLEANUP_MODEL_URL"
@@ -78,7 +93,7 @@ if [ "$MODEL_NAME" = "cleanup" ] || [ "$MODEL_NAME" = "cleanup-4b" ]; then
         echo "NOTE: llama-server is not built yet — re-run setup-termux.sh to build it."
     fi
     echo ""
-    if [ "$MODEL_NAME" = "cleanup-4b" ]; then
+    if [ "$MODEL_NAME" != "cleanup" ]; then
         echo "Pick the model in PWA Settings > Speech cleanup (no server restart needed),"
         echo "or restart the Whisper server to apply a CLEANUP_MODEL env var:"
     else

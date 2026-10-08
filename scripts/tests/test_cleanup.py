@@ -178,7 +178,9 @@ class TestCleanupAPI:
         assert data["model"] == server.CLEANUP_MODEL_FILE
         assert data["style"] == "standard"
         assert {s["name"] for s in data["styles"]} == set(server.CLEANUP_STYLES)
-        assert [m["name"] for m in data["models"]] == ["qwen3-1.7b", "qwen3-4b"]
+        assert [m["name"] for m in data["models"]] == [
+            "qwen3-1.7b", "qwen3-4b", "qwen3.5-2b", "qwen3.5-0.8b",
+        ]
 
     def test_get_cleanup_unavailable(self, client):
         c, server = client
@@ -357,3 +359,31 @@ class TestModelSelection:
         assert by_name["qwen3-1.7b"]["active"] is True
         assert by_name["qwen3-4b"]["downloaded"] is False
         assert by_name["qwen3-4b"]["active"] is False
+
+
+class TestModelCatalog:
+    """The picker's catalog: new small models join, the default stays put."""
+
+    def test_default_is_unchanged(self, server):
+        assert server.CLEANUP_MODEL_CATALOG[0]["name"] == "qwen3-1.7b"
+        assert server.CLEANUP_MODEL_CATALOG[0]["file"] == "Qwen3-1.7B-Q4_K_M.gguf"
+        assert server.CLEANUP_MODEL_FILE == "Qwen3-1.7B-Q4_K_M.gguf"
+
+    def test_lists_qwen35_models_with_files_and_sizes(self, server):
+        by_name = {m["name"]: m for m in server.CLEANUP_MODEL_CATALOG}
+        assert by_name["qwen3.5-2b"]["file"] == "Qwen3.5-2B-Q4_K_M.gguf"
+        assert by_name["qwen3.5-2b"]["size_mb"] == 1221
+        assert by_name["qwen3.5-0.8b"]["file"] == "Qwen3.5-0.8B-Q4_K_M.gguf"
+        assert by_name["qwen3.5-0.8b"]["size_mb"] == 508
+
+    def test_names_and_files_are_unique(self, server):
+        names = [m["name"] for m in server.CLEANUP_MODEL_CATALOG]
+        files = [m["file"] for m in server.CLEANUP_MODEL_CATALOG]
+        assert len(set(names)) == len(names)
+        assert len(set(files)) == len(files)
+
+    def test_update_model_script_downloads_every_catalog_file(self, server):
+        path = os.path.join(os.path.dirname(__file__), "..", "update-model.sh")
+        text = open(path).read()
+        for entry in server.CLEANUP_MODEL_CATALOG:
+            assert entry["file"] in text, entry["file"]

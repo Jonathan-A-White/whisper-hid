@@ -222,7 +222,7 @@ echo "To update after code changes:"
 echo "  cd $(dirname $INSTALL_DIR)/whisper-hid"
 echo "  scripts/stop-whisper-server.sh && git pull && scripts/start-whisper-server.sh"
 echo ""
-echo "To download a model: ./update-model.sh <parakeet|cleanup|cleanup-4b>"
+echo "To download a model: ./update-model.sh <parakeet|cleanup|cleanup-4b|cleanup-2b|cleanup-0.8b>"
 echo "  Note: Restart the Whisper server afterwards."
 
 # Parakeet is required: a setup that left it out has not succeeded.
