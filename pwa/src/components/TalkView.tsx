@@ -26,7 +26,8 @@ import {
 import { frontEntry } from "../lib/frontMessage";
 import { EditBuffer, type VoiceEditState } from "./EditBuffer";
 import { EntryEditor } from "./EntryEditor";
-import { HistoryActions } from "./HistoryActions";
+import { EntryMenu } from "./EntryMenu";
+import { EntryWords } from "./EntryWords";
 import { PhoneModeToggle } from "./PhoneModeToggle";
 import {
   IDLE,
@@ -94,6 +95,8 @@ export function TalkView({
   // that entry from the store, so History and this screen never disagree.
   const [frontId, setFrontId] = useState<string | null>(null);
   const [frontEditText, setFrontEditText] = useState<string | null>(null);
+  // The options menu a long press on the front message opens
+  const [frontMenuOpen, setFrontMenuOpen] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastStats, setLastStats] = useState<TranscriptionStats | null>(null);
   const [editText, setEditText] = useState<string | null>(null);
@@ -344,7 +347,7 @@ export function TalkView({
       {/* Scrollable content area: the toggles and notes. The live words box
           and the Talk bar sit below it, at the foot of the screen, under the
           thumb. */}
-      <div className="min-h-0 flex-1 overflow-y-auto flex flex-col items-center px-6 pt-6">
+      <div className="min-h-0 flex-1 overflow-y-auto flex flex-col items-center px-6 pt-6 pb-4">
         {/* Kill switch — stops in-progress typing on the host and releases any
             stuck (auto-repeating) key. Kept outside the edit-buffer branch so
             it's reachable in every screen state. */}
@@ -433,9 +436,12 @@ export function TalkView({
                   />
                 ) : (
                   <>
-                    <p className="text-sm text-white whitespace-pre-wrap break-words max-h-40 overflow-y-auto select-text">
+                    <EntryWords
+                      onLongPress={() => setFrontMenuOpen(true)}
+                      className="text-sm text-white whitespace-pre-wrap break-words max-h-40 overflow-y-auto"
+                    >
                       {front.text}
-                    </p>
+                    </EntryWords>
                     <p
                       className={`mt-1 h-4 text-xs ${
                         copyNotice === "copied"
@@ -449,7 +455,9 @@ export function TalkView({
                           ? "Tap Copy"
                           : ""}
                     </p>
-                    <HistoryActions
+                    <EntryMenu
+                      open={frontMenuOpen}
+                      onClose={() => setFrontMenuOpen(false)}
                       sendDisabled={sendDisabledFor(settings.sendTo)}
                       onSend={() => sendEntry(front.text, { sendTo: settings.sendTo, hid })}
                       onCopy={() => handleFrontCopy(front.text)}

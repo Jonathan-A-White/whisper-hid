@@ -1,14 +1,26 @@
 import { describe, expect, it } from "vitest";
 import source from "./HistoryView.tsx?raw";
+import wordsSource from "./EntryWords.tsx?raw";
 import actionsSource from "./HistoryActions.tsx?raw";
 import { HistoryActions, HISTORY_ACTION_LABELS } from "./HistoryActions";
 
 // There are no render tests for screens, so this checks the source.
 
 describe("HistoryView", () => {
-  it("renders the shared action row", () => {
-    expect(source).toContain('from "./HistoryActions"');
-    expect(source).toContain("<HistoryActions");
+  it("has no inline action row: the actions live in the long-press menu", () => {
+    expect(source).not.toContain("<HistoryActions");
+    expect(source).not.toContain("toggleActionRow");
+    expect(source).toContain('from "./EntryMenu"');
+    expect(source).toContain("<EntryMenu");
+  });
+  it("opens the menu by a long press on the words, and a tap does nothing", () => {
+    expect(source).toContain("<EntryWords");
+    expect(wordsSource).toContain("useLongPress");
+    expect(source).not.toMatch(/onClick=\{\(\) => setOpenId/);
+  });
+  it("shows the one-time hint", () => {
+    expect(source).toContain("HINT_TEXT");
+    expect(source).toContain("shouldShowHint");
   });
   it("no longer carries the long-press or swipe handlers", () => {
     for (const gone of [
@@ -30,7 +42,7 @@ describe("HistoryView", () => {
   });
 });
 
-describe("HistoryActions", () => {
+describe("HistoryActions (inside the menu)", () => {
   it("is one exported component with the four labels in order", () => {
     expect(typeof HistoryActions).toBe("function");
     expect(HISTORY_ACTION_LABELS).toEqual(["Send", "Copy", "Edit", "Delete"]);

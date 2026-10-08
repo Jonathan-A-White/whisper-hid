@@ -6,9 +6,10 @@ import {
   editEntry,
   sendDisabledFor,
   sendEntry,
-  toggleActionRow,
 } from "../lib/historyActions";
-import { HistoryActions } from "./HistoryActions";
+import { markHintSeen, shouldShowHint, HINT_TEXT } from "../lib/entryMenu";
+import { EntryMenu } from "./EntryMenu";
+import { EntryWords } from "./EntryWords";
 import { EntryEditor } from "./EntryEditor";
 
 interface HistoryViewProps {
@@ -27,12 +28,28 @@ interface HistoryViewProps {
   sendTo?: SendTo;
 }
 
+function safeStorage(): Storage | undefined {
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
 export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
   const [confirmClear, setConfirmClear] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  // The one-time "Hold an entry for options" hint, shown the first time
+  // History opens with something to hold.
+  const [showHint] = useState(() => shouldShowHint(safeStorage()));
+  const hintVisible = showHint && store.entries.length > 0;
+  useEffect(() => {
+    if (hintVisible) markHintSeen(safeStorage());
+  }, [hintVisible]);
+  const menuEntry = store.entries.find((e) => e.id === openId) ?? null;
 
   // The brief "Copied" notice on the tapped entry
   useEffect(() => {
@@ -111,6 +128,12 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
         className="w-full bg-gray-900 text-white border border-gray-700 rounded px-3 py-2 text-sm mb-4 placeholder-gray-500"
       />
 
+      {hintVisible && (
+        <p className="text-xs text-gray-400 mb-3" data-testid="menu-hint">
+          {HINT_TEXT}
+        </p>
+      )}
+
       {store.entries.length === 0 ? (
         <p className="text-gray-500 text-sm text-center py-8">
           {store.searchQuery ? "No matches" : "No transcriptions yet"}
@@ -131,12 +154,12 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
                   /* Normal display */
                   <>
                     <div className="flex items-start justify-between gap-2">
-                      <button
-                        onClick={() => setOpenId(toggleActionRow(openId, entry.id))}
-                        className="text-left text-sm text-gray-200 flex-1 hover:text-white"
+                      <EntryWords
+                        onLongPress={() => setOpenId(entry.id)}
+                        className="text-left text-sm text-gray-200 flex-1 whitespace-pre-wrap break-words"
                       >
                         {entry.text}
-                      </button>
+                      </EntryWords>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -162,15 +185,6 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
                         <span className={entry.speedRatio >= 1 ? "text-green-600" : "text-yellow-600"}> · {entry.speedRatio.toFixed(1)}x</span>
                       )}
                     </p>
-                    {openId === entry.id && (
-                      <HistoryActions
-                        sendDisabled={sendDisabledFor(sendTo)}
-                        onSend={() => sendEntry(entry.text, { sendTo, hid })}
-                        onCopy={() => handleCopy(entry.id, entry.text)}
-                        onEdit={() => startEditing(entry)}
-                        onDelete={() => handleDelete(entry.id)}
-                      />
-                    )}
                   </>
                 )}
               </div>
@@ -178,6 +192,16 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
           ))}
         </div>
       )}
+
+      <EntryMenu
+        open={menuEntry !== null}
+        onClose={() => setOpenId(null)}
+        sendDisabled={sendDisabledFor(sendTo)}
+        onSend={() => menuEntry && sendEntry(menuEntry.text, { sendTo, hid })}
+        onCopy={() => menuEntry && handleCopy(menuEntry.id, menuEntry.text)}
+        onEdit={() => menuEntry && startEditing(menuEntry)}
+        onDelete={() => menuEntry && handleDelete(menuEntry.id)}
+      />
     </div>
   );
 }

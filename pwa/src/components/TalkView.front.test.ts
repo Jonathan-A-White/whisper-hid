@@ -4,15 +4,19 @@ import history from "./HistoryView.tsx?raw";
 import { HISTORY_ACTION_LABELS } from "./HistoryActions";
 
 // There are no render tests for screens, so this checks the source: the Talk
-// screen's front message is the store's entry, and its action row is the
-// History component.
+// screen's front message is the store's entry, and its actions are the
+// long-press menu History uses.
 
 describe("TalkView front message", () => {
-  it("uses the same action row component as History", () => {
-    expect(talk).toContain('from "./HistoryActions"');
-    expect(talk).toContain("<HistoryActions");
-    expect(history).toContain('from "./HistoryActions"');
-    expect(history).toContain("<HistoryActions");
+  it("uses the same options menu as History, and no inline row", () => {
+    expect(talk).toContain('from "./EntryMenu"');
+    expect(talk).toContain("<EntryMenu");
+    expect(talk).not.toContain("<HistoryActions");
+    expect(history).toContain('from "./EntryMenu"');
+    expect(history).toContain("<EntryMenu");
+    expect(history).not.toContain("<HistoryActions");
+    expect(talk).toContain("<EntryWords");
+    expect(history).toContain("<EntryWords");
     expect(HISTORY_ACTION_LABELS).toEqual(["Send", "Copy", "Edit", "Delete"]);
   });
   it("wires all four actions through the shared logic", () => {
