@@ -9,6 +9,7 @@ Endpoints:
   POST /transcribe        — One-shot: accept audio bytes, return transcription
   POST /transcribe/start  — PTT: start mic recording
   POST /transcribe/stop   — PTT: stop recording, transcribe, return text
+  GET  /transcribe/live   — PTT: words so far while recording (committed chunks + tentative tail)
   GET  /status            — Server health, active engine and loaded model
   GET  /logs              — Recent log entries (circular buffer, 200 max)
   GET  /models            — The speech model (Parakeet) and whether it is downloaded
@@ -40,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.11.0"
+SERVER_VERSION = "1.12.0"
 
 # --- Configuration ---
 
@@ -1735,6 +1736,7 @@ CHUNK_FRAME_SEC = 0.03      # analysis frame size for level detection
 CHUNK_LEVEL_FLOOR = 120.0   # absolute mean-abs level below which is silence
 CHUNK_MIN_SPEECH_SEC = 0.25  # accumulated speech-level time needed to call the engine
 CHUNK_LOUD_FACTOR = 3.0     # frames this far above threshold count as speech alone
+CHUNK_LIVE_MIN_SEC = 1.0    # uncommitted audio needed before a tentative tail is transcribed
 
 
 def _read_wav_pcm(wav_path: str) -> tuple[bytes, int]:
@@ -1860,9 +1862,12 @@ class ChunkedSession:
     """Background transcriber for an in-progress PTT recording.
 
     Snapshots the growing recording file on a timer, decodes it, and
-    transcribes up to the last silence boundary. State (texts, committed_sec,
-    engine_ms) is only mutated by the poller thread; readers must call
-    finish() first.
+    transcribes up to the last silence boundary. The poller thread is the only
+    writer of texts/committed_sec/engine_ms (final-result readers must call
+    finish() first). For GET /transcribe/live, committed text and a tentative
+    tail transcription are published under _lock, with seq bumped on every
+    change; the tail job runs in its own thread WITHOUT transcribe_lock, so
+    Stop never waits for it and its result is dropped once Stop has begun.
     """
 
     def __init__(self, audio_file: str):
@@ -1871,6 +1876,10 @@ class ChunkedSession:
         self.texts: list[str] = []
         self.engine_ms = 0
         self.chunks = 0
+        self.tail = ""   # tentative transcription of the uncommitted audio
+        self.seq = 0     # bumped whenever the live text or tail changes
+        self._lock = threading.Lock()
+        self._tail_thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._thread = threading.Thread(
             target=self._run, daemon=True, name="chunked-transcriber"
@@ -1880,13 +1889,32 @@ class ChunkedSession:
         self._thread.start()
 
     def finish(self, timeout: float = 30.0) -> bool:
-        """Stop the poller and wait for it. Returns True if it exited cleanly."""
+        """Stop the poller and wait for it. Returns True if it exited cleanly.
+
+        A running tentative-tail job is not waited for: it is discarded."""
         self._stop.set()
         self._thread.join(timeout=timeout)
         return not self._thread.is_alive()
 
     def has_results(self) -> bool:
         return bool(self.texts) or self.committed_sec > 0.5
+
+    def live_snapshot(self) -> tuple[str, str, int]:
+        """(committed text, tentative tail, seq) for GET /transcribe/live."""
+        with self._lock:
+            return " ".join(self.texts), self.tail, self.seq
+
+    def _advance(self, boundary: float, text: str = ""):
+        """Move the committed pointer (and append the chunk's text), dropping
+        the now-stale tentative tail."""
+        with self._lock:
+            changed = bool(text) or bool(self.tail)
+            self.committed_sec = boundary
+            if text:
+                self.texts.append(text)
+            self.tail = ""
+            if changed:
+                self.seq += 1
 
     def _run(self):
         while not self._stop.wait(CHUNK_POLL_SEC):
@@ -1908,11 +1936,13 @@ class ChunkedSession:
             if not transcode_to_wav(snap, wav, quiet=True):
                 return  # header not flushed yet — retry next poll
             pcm, rate = _read_wav_pcm(wav)
+            total_sec = len(pcm) / 2 / rate
             levels = _frame_levels(pcm, rate)
             found = find_commit_boundary(
-                levels, CHUNK_FRAME_SEC, self.committed_sec, len(pcm) / 2 / rate
+                levels, CHUNK_FRAME_SEC, self.committed_sec, total_sec
             )
             if found is None:
+                self._start_tail_job(wav, total_sec)
                 return
             boundary, has_speech = found
             if has_speech:
@@ -1923,22 +1953,64 @@ class ChunkedSession:
                     text, ms = run_transcription(chunk_wav, postprocess=False)
                 self.engine_ms += ms
                 self.chunks += 1
-                if text:
-                    self.texts.append(text)
                 add_log(
                     "info",
                     f"Chunked: committed {self.committed_sec:.1f}-{boundary:.1f}s "
                     f"({ms}ms) -> {text[:60]!r}",
                 )
+                self._advance(boundary, text)
             else:
                 add_log("info", f"Chunked: skipped silence {self.committed_sec:.1f}-{boundary:.1f}s")
-            self.committed_sec = boundary
+                self._advance(boundary)
+                self._start_tail_job(wav, total_sec)
         finally:
             for p in (snap, wav, chunk_wav):
                 try:
                     os.unlink(p)
                 except OSError:
                     pass
+
+    def _start_tail_job(self, wav: str, total_sec: float):
+        """Start a tentative transcription of the uncommitted audio, at most
+        one at a time, only while the engine is idle and at least
+        CHUNK_LIVE_MIN_SEC of new audio exists. Never blocks the poller."""
+        if self._stop.is_set() or transcribe_lock.locked():
+            return
+        if self._tail_thread is not None and self._tail_thread.is_alive():
+            return
+        if total_sec - self.committed_sec < CHUNK_LIVE_MIN_SEC:
+            return
+        tail_wav = self.audio_file + ".live.wav"
+        _write_wav_slice(wav, tail_wav, self.committed_sec, None)
+        self._tail_thread = threading.Thread(
+            target=self._tail_job,
+            args=(tail_wav, self.committed_sec, len(self.texts)),
+            daemon=True,
+            name="live-tail",
+        )
+        self._tail_thread.start()
+
+    def _tail_job(self, tail_wav: str, committed_at: float, n_texts: int):
+        try:
+            text, _ms = run_transcription(tail_wav, postprocess=False)
+        except Exception as e:
+            add_log("warn", f"Live tail failed: {e}")
+            return
+        finally:
+            try:
+                os.unlink(tail_wav)
+            except OSError:
+                pass
+        with self._lock:
+            if (
+                self._stop.is_set()
+                or self.committed_sec != committed_at
+                or len(self.texts) != n_texts
+            ):
+                return  # Stop began or a chunk committed meanwhile: stale
+            if text != self.tail:
+                self.tail = text
+                self.seq += 1
 
 
 def _finish_chunked_transcription(session: "ChunkedSession", wav_path: str) -> tuple[str, int]:
@@ -2236,6 +2308,25 @@ def transcribe_stop():
                     os.unlink(p)
                 except OSError:
                     pass
+
+
+@app.route("/transcribe/live", methods=["GET"])
+def transcribe_live():
+    """Words so far while recording: the committed chunks' raw text plus a
+    tentative transcription of the not-yet-committed tail. Both are '' when
+    not recording or when chunked mode is unsupported on this device."""
+    recording = recording_process is not None
+    session = chunk_session
+    text, tail, seq = "", "", 0
+    if recording and chunked_supported and session is not None:
+        text, tail, seq = session.live_snapshot()
+    return jsonify({
+        "recording": recording,
+        "chunked": bool(chunked_supported),
+        "text": text,
+        "tail": tail,
+        "seq": seq,
+    })
 
 
 @app.route("/status", methods=["GET"])
