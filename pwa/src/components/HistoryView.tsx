@@ -1,6 +1,14 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { SendTo } from "../types";
-import { tapHistoryEntry } from "../lib/historyTap";
+import {
+  copyEntry,
+  deleteEntry,
+  editEntry,
+  sendDisabledFor,
+  sendEntry,
+  toggleActionRow,
+} from "../lib/historyActions";
+import { HistoryActions } from "./HistoryActions";
 
 interface HistoryViewProps {
   store: {
@@ -18,26 +26,12 @@ interface HistoryViewProps {
   sendTo?: SendTo;
 }
 
-const DELETE_WIDTH = 80;
-const SWIPE_THRESHOLD = 40;
-const LONG_PRESS_MS = 500;
-
 export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
   const [confirmClear, setConfirmClear] = useState(false);
-  const [swipedId, setSwipedId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editText, setEditText] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const touchRef = useRef<{
-    startX: number;
-    startY: number;
-    id: string;
-    startOffset: number;
-    direction: "horizontal" | "vertical" | null;
-  } | null>(null);
-  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressFired = useRef(false);
   const editTextareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   // The brief "Copied" notice on the tapped entry
@@ -47,22 +41,10 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
     return () => clearTimeout(t);
   }, [copiedId]);
 
-  const handleTap = async (id: string, text: string) => {
-    const { copied } = await tapHistoryEntry(text, {
-      sendTo,
-      hid,
-      clipboard: navigator.clipboard,
-    });
+  const handleCopy = async (id: string, text: string) => {
+    const { copied } = await copyEntry(text, navigator.clipboard);
     if (copied) setCopiedId(id);
   };
-
-  const setCardRef = useCallback(
-    (id: string) => (el: HTMLDivElement | null) => {
-      if (el) cardRefs.current.set(id, el);
-      else cardRefs.current.delete(id);
-    },
-    [],
-  );
 
   // Auto-focus textarea when editing starts
   useEffect(() => {
@@ -73,28 +55,11 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
     }
   }, [editingId]);
 
-  const cancelLongPress = () => {
-    if (longPressTimer.current) {
-      clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  };
-
-  const closeSwipe = useCallback(() => {
-    if (swipedId) {
-      const el = cardRefs.current.get(swipedId);
-      if (el) {
-        el.style.transition = "transform 0.2s ease";
-        el.style.transform = "translateX(0)";
-      }
-      setSwipedId(null);
-    }
-  }, [swipedId]);
-
-  const startEditing = (id: string, text: string) => {
-    closeSwipe();
-    setEditingId(id);
-    setEditText(text);
+  const startEditing = (entry: { id: string; text: string }) => {
+    const next = editEntry(entry);
+    setOpenId(null);
+    setEditingId(next.editingId);
+    setEditText(next.editText);
   };
 
   const saveEdit = () => {
@@ -110,93 +75,9 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
     setEditText("");
   };
 
-  const handleTouchStart = (e: React.TouchEvent, id: string) => {
-    if (editingId) return;
-    if (swipedId && swipedId !== id) {
-      closeSwipe();
-    }
-    touchRef.current = {
-      startX: e.touches[0].clientX,
-      startY: e.touches[0].clientY,
-      id,
-      startOffset: swipedId === id ? -DELETE_WIDTH : 0,
-      direction: null,
-    };
-
-    // Start long press timer (only if not already swiped open)
-    longPressFired.current = false;
-    if (swipedId !== id) {
-      cancelLongPress();
-      longPressTimer.current = setTimeout(() => {
-        longPressFired.current = true;
-        touchRef.current = null;
-        const entry = store.entries.find((e) => e.id === id);
-        if (entry) startEditing(id, entry.text);
-      }, LONG_PRESS_MS);
-    }
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    const t = touchRef.current;
-    if (!t) {
-      cancelLongPress();
-      return;
-    }
-    const dx = e.touches[0].clientX - t.startX;
-    const dy = e.touches[0].clientY - t.startY;
-
-    // Any movement cancels long press
-    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
-      cancelLongPress();
-    }
-
-    if (!t.direction) {
-      if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) {
-        t.direction = "vertical";
-        return;
-      }
-      if (Math.abs(dx) > 8) {
-        t.direction = "horizontal";
-      } else {
-        return;
-      }
-    }
-
-    if (t.direction === "vertical") return;
-
-    const el = cardRefs.current.get(t.id);
-    if (el) {
-      const offset = Math.min(0, Math.max(-DELETE_WIDTH, t.startOffset + dx));
-      el.style.transition = "none";
-      el.style.transform = `translateX(${offset}px)`;
-    }
-  };
-
-  const handleTouchEnd = () => {
-    cancelLongPress();
-    const t = touchRef.current;
-    if (!t) return;
-    touchRef.current = null;
-
-    const el = cardRefs.current.get(t.id);
-    if (!el) return;
-
-    const match = el.style.transform.match(/translateX\((-?[\d.]+)/);
-    const currentOffset = match ? parseFloat(match[1]) : t.startOffset;
-
-    el.style.transition = "transform 0.2s ease";
-    if (currentOffset < -SWIPE_THRESHOLD) {
-      el.style.transform = `translateX(-${DELETE_WIDTH}px)`;
-      setSwipedId(t.id);
-    } else {
-      el.style.transform = "translateX(0)";
-      if (swipedId === t.id) setSwipedId(null);
-    }
-  };
-
-  const handleDelete = (id: string) => {
-    store.deleteEntry(id);
-    setSwipedId(null);
+  const handleDelete = async (id: string) => {
+    setOpenId(null);
+    await deleteEntry(id, store);
   };
 
   const formatTime = (ts: number) => {
@@ -209,7 +90,7 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
   };
 
   return (
-    <div className="p-4" onClick={() => swipedId && closeSwipe()}>
+    <div className="p-4">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold text-white">History</h2>
         {store.entries.length > 0 && (
@@ -246,27 +127,8 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
       ) : (
         <div className="space-y-2">
           {store.entries.map((entry) => (
-            <div key={entry.id} className="relative overflow-hidden rounded">
-              {/* Delete action revealed on swipe */}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDelete(entry.id);
-                }}
-                className="absolute right-0 top-0 bottom-0 flex items-center justify-center bg-red-600 text-white text-sm font-medium"
-                style={{ width: DELETE_WIDTH }}
-              >
-                Delete
-              </button>
-              {/* Sliding card */}
-              <div
-                ref={setCardRef(entry.id)}
-                onTouchStart={(e) => handleTouchStart(e, entry.id)}
-                onTouchMove={handleTouchMove}
-                onTouchEnd={handleTouchEnd}
-                className="relative bg-gray-900 p-3 border border-gray-800"
-                style={{ willChange: "transform" }}
-              >
+            <div key={entry.id} className="rounded">
+              <div className="bg-gray-900 p-3 border border-gray-800 rounded">
                 {editingId === entry.id ? (
                   /* Inline editor */
                   <div onClick={(e) => e.stopPropagation()}>
@@ -298,15 +160,7 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
                   <>
                     <div className="flex items-start justify-between gap-2">
                       <button
-                        onClick={(e) => {
-                          if (longPressFired.current) return;
-                          if (swipedId === entry.id) {
-                            e.stopPropagation();
-                            closeSwipe();
-                            return;
-                          }
-                          handleTap(entry.id, entry.text);
-                        }}
+                        onClick={() => setOpenId(toggleActionRow(openId, entry.id))}
                         className="text-left text-sm text-gray-200 flex-1 hover:text-white"
                       >
                         {entry.text}
@@ -336,6 +190,15 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
                         <span className={entry.speedRatio >= 1 ? "text-green-600" : "text-yellow-600"}> · {entry.speedRatio.toFixed(1)}x</span>
                       )}
                     </p>
+                    {openId === entry.id && (
+                      <HistoryActions
+                        sendDisabled={sendDisabledFor(sendTo)}
+                        onSend={() => sendEntry(entry.text, { sendTo, hid })}
+                        onCopy={() => handleCopy(entry.id, entry.text)}
+                        onEdit={() => startEditing(entry)}
+                        onDelete={() => handleDelete(entry.id)}
+                      />
+                    )}
                   </>
                 )}
               </div>
