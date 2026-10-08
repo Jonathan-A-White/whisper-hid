@@ -48,7 +48,7 @@ export function useWhisper() {
     return () => clearInterval(pollRef.current);
   }, []);
 
-  const startRecording = useCallback(async () => {
+  const startRecording = useCallback(async (): Promise<boolean> => {
     try {
       setRecording(true);
       setError(null);
@@ -56,10 +56,12 @@ export function useWhisper() {
       // starts on the headset mic; it is closed again when the text is back.
       await hidDictation(true);
       await transcribeStart();
+      return true;
     } catch {
       setRecording(false);
       setError("Failed to start recording");
       void hidDictation(false);
+      return false;
     }
   }, []);
 

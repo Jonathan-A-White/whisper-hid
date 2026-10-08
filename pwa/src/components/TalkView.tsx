@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { KeyboardEvent, PointerEvent } from "react";
 import type {
   HidStatus,
   NewlineMode,
@@ -21,6 +22,15 @@ import { PhoneModeToggle } from "./PhoneModeToggle";
 import { PhoneResult } from "./PhoneResult";
 import { SymbolModeToggle } from "./SymbolModeToggle";
 import { clipboardTextToType } from "../lib/clipboard";
+import {
+  IDLE,
+  cancel,
+  press,
+  release,
+  talkLabel,
+  type PressAction,
+  type PressStep,
+} from "../lib/talkPress";
 import { TargetModeToggle } from "./TargetModeToggle";
 import { ZoomModeToggle } from "./ZoomModeToggle";
 
@@ -29,7 +39,7 @@ interface TalkViewProps {
     recording: boolean;
     transcribing: boolean;
     status: WhisperStatus | null;
-    startRecording: () => Promise<void>;
+    startRecording: () => Promise<boolean>;
     stopRecording: () => Promise<TranscriptionResult>;
   };
   hid: {
@@ -119,39 +129,98 @@ export function TalkView({
     if (phoneText !== null) await shareText(phoneText, navigator);
   }, [phoneText]);
 
-  const handlePtt = useCallback(async () => {
-    if (whisper.recording) {
-      const { text, error, stats } = await whisper.stopRecording();
-      if (text) {
-        setLastError(null);
-        setLastStats(stats ?? null);
-        const entryStats = stats
-          ? {
-              model: whisper.status?.model,
-              speedRatio: stats.speedRatio,
-              audioDuration: stats.audioDuration,
-              processingMs: stats.processingMs,
-            }
-          : undefined;
-        if (settings.editBeforeSend) {
-          setEditText(text);
-          setLastEntryStats(entryStats ?? null);
-        } else {
-          setLastText(text);
-          await store.addEntry(text, entryStats);
-          await deliverText(text);
-        }
+  // The hold/latch bar. talkPress decides what each press and release means;
+  // this runs the answer. The press state lives in a ref (events arrive faster
+  // than renders) and is mirrored in state for the label.
+  const pressRef = useRef(IDLE);
+  const [pressPhase, setPressPhase] = useState(pressRef.current.phase);
+  const [micOpen, setMicOpen] = useState(false);
+  // The /transcribe/start request in flight, so a stop that comes before it
+  // answers waits for it instead of racing it.
+  const startingRef = useRef<Promise<boolean> | null>(null);
+
+  const finishDictation = useCallback(async () => {
+    const { text, error, stats } = await whisper.stopRecording();
+    if (text) {
+      setLastError(null);
+      setLastStats(stats ?? null);
+      const entryStats = stats
+        ? {
+            model: whisper.status?.model,
+            speedRatio: stats.speedRatio,
+            audioDuration: stats.audioDuration,
+            processingMs: stats.processingMs,
+          }
+        : undefined;
+      if (settings.editBeforeSend) {
+        setEditText(text);
+        setLastEntryStats(entryStats ?? null);
       } else {
-        setLastError(error);
-        setLastStats(null);
+        setLastText(text);
+        await store.addEntry(text, entryStats);
+        await deliverText(text);
       }
     } else {
-      setLastError(null);
-      setPhoneText(null);
-      setCopyNotice(null);
-      await whisper.startRecording();
+      setLastError(error);
+      setLastStats(null);
     }
   }, [whisper, store, deliverText, settings.editBeforeSend]);
+
+  const runAction = useCallback(
+    async (action: PressAction) => {
+      if (action === "start") {
+        setLastError(null);
+        setPhoneText(null);
+        setCopyNotice(null);
+        const starting = whisper.startRecording();
+        startingRef.current = starting;
+        const ok = await starting;
+        startingRef.current = null;
+        if (ok) {
+          setMicOpen(true);
+        } else {
+          pressRef.current = IDLE;
+          setPressPhase(IDLE.phase);
+        }
+      } else if (action === "stop") {
+        const starting = startingRef.current;
+        if (starting && !(await starting)) return; // never started: nothing to stop
+        setMicOpen(false);
+        await finishDictation();
+      }
+    },
+    [whisper, finishDictation]
+  );
+
+  const apply = useCallback(
+    (step: PressStep) => {
+      pressRef.current = step.state;
+      setPressPhase(step.state.phase);
+      if (step.action !== "none") void runAction(step.action);
+    },
+    [runAction]
+  );
+
+  const pressDown = () => apply(press(pressRef.current, performance.now()));
+  const pressUp = () => apply(release(pressRef.current, performance.now()));
+  const pressCancel = () => apply(cancel(pressRef.current));
+
+  const onBarPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
+    try {
+      event.currentTarget.setPointerCapture?.(event.pointerId);
+    } catch {
+      // a pointer that is already gone: the press still counts
+    }
+    pressDown();
+  };
+  const onBarKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== " " && event.key !== "Enter") return;
+    event.preventDefault();
+    if (!event.repeat) pressDown();
+  };
+  const onBarKeyUp = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === " " || event.key === "Enter") pressUp();
+  };
 
   const handleSendEdit = useCallback(
     async (text: string) => {
@@ -232,6 +301,12 @@ export function TalkView({
   );
 
   const isConnected = hid.status?.bluetooth === "connected";
+  const bar = talkLabel({
+    phase: pressPhase,
+    micOpen,
+    transcribing: whisper.transcribing,
+    phoneMode,
+  });
 
   return (
     <div className="flex flex-col h-full p-6 overflow-hidden">
@@ -297,23 +372,78 @@ export function TalkView({
           />
         ) : (
           <>
-            {/* PTT Button */}
+            {/* Live words box: what the dictation is doing, then its result */}
+            <div
+              role="status"
+              aria-live="polite"
+              data-testid="live-transcript"
+              className="mb-4 flex min-h-[3rem] w-full max-w-xl flex-col items-center justify-end text-center text-sm"
+            >
+              {whisper.recording ? (
+                <p className="text-gray-100">Listening…</p>
+              ) : (
+                <>
+                  {lastText &&
+                    !lastError &&
+                    !(phoneMode && phoneText !== null) && (
+                      <p className="text-gray-400">
+                        Last: &quot;
+                        {lastText.length > 140
+                          ? lastText.slice(0, 140) + "..."
+                          : lastText}
+                        &quot;
+                      </p>
+                    )}
+                  {lastStats && !lastError && (
+                    <p className="mt-1 text-gray-600 text-xs">
+                      {lastStats.audioDuration.toFixed(1)}s audio,{" "}
+                      {(lastStats.processingMs / 1000).toFixed(1)}s processing
+                      {" \u2014 "}
+                      <span
+                        className={
+                          lastStats.speedRatio >= 1
+                            ? "text-green-500"
+                            : "text-yellow-500"
+                        }
+                      >
+                        {lastStats.speedRatio.toFixed(1)}x
+                      </span>
+                    </p>
+                  )}
+                  {lastError && <p className="text-red-400">{lastError}</p>}
+                </>
+              )}
+            </div>
+
+            {/* Talk bar: hold to talk, or tap to keep it on */}
             <button
-              onClick={handlePtt}
+              type="button"
               disabled={whisper.transcribing}
-              className={`w-40 h-40 rounded-full font-bold text-lg transition-all ${
-                whisper.transcribing
-                  ? "bg-gray-700 text-gray-400 scale-100"
-                  : whisper.recording
-                    ? "bg-orange-500 text-white scale-105 animate-pulse"
-                    : "bg-sky-600 text-white hover:bg-sky-500 active:scale-95"
+              onPointerDown={onBarPointerDown}
+              onPointerUp={pressUp}
+              onPointerCancel={pressCancel}
+              onContextMenu={(event) => event.preventDefault()}
+              onKeyDown={onBarKeyDown}
+              onKeyUp={onBarKeyUp}
+              className={`flex h-24 w-full max-w-xl touch-none select-none flex-col items-center justify-center gap-1 rounded-3xl text-base font-semibold transition-colors [-webkit-touch-callout:none] disabled:cursor-not-allowed disabled:opacity-45 ${
+                pressPhase === "idle"
+                  ? "bg-accent text-accent-fg"
+                  : "bg-needs text-canvas animate-pulse"
               }`}
             >
-              {whisper.transcribing
-                ? "Processing..."
-                : whisper.recording
-                  ? "Stop"
-                  : "Talk"}
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                width="26"
+                height="26"
+                fill="currentColor"
+              >
+                <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z" />
+              </svg>
+              <span>{bar.label}</span>
+              {bar.sub && (
+                <span className="text-xs font-normal opacity-80">{bar.sub}</span>
+              )}
             </button>
 
             {/* Connection indicator */}
@@ -368,42 +498,6 @@ export function TalkView({
                 onCopy={handleCopyAgain}
                 onShare={handleShare}
               />
-            )}
-
-            {/* Last transcription */}
-            {lastText && !lastError && !(phoneMode && phoneText !== null) && (
-              <p className="mt-4 text-gray-400 text-sm max-w-xs text-center">
-                Last: &quot;
-                {lastText.length > 140
-                  ? lastText.slice(0, 140) + "..."
-                  : lastText}
-                &quot;
-              </p>
-            )}
-
-            {/* Last transcription stats */}
-            {lastStats && !lastError && (
-              <p className="mt-1 text-gray-600 text-xs text-center">
-                {lastStats.audioDuration.toFixed(1)}s audio,{" "}
-                {(lastStats.processingMs / 1000).toFixed(1)}s processing
-                {" \u2014 "}
-                <span
-                  className={
-                    lastStats.speedRatio >= 1
-                      ? "text-green-500"
-                      : "text-yellow-500"
-                  }
-                >
-                  {lastStats.speedRatio.toFixed(1)}x
-                </span>
-              </p>
-            )}
-
-            {/* Transcription error */}
-            {lastError && (
-              <p className="mt-4 text-red-400 text-sm max-w-xs text-center">
-                {lastError}
-              </p>
             )}
 
             {/* Queued items */}
