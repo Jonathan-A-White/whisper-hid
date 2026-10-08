@@ -1,3 +1,4 @@
+import { CHIP_NOTE_CLASS, chipClass } from "../lib/chip";
 import type { HidStatus } from "../types";
 
 interface ZoomModeToggleProps {
@@ -23,30 +24,28 @@ export function ZoomModeToggle({ status, onToggle }: ZoomModeToggleProps) {
   const noHeadset = !mic.available && !zoomMode;
 
   return (
-    <div className="mt-2 flex flex-col items-center">
+    <>
       <button
         onClick={() => onToggle(zoomMode)}
         disabled={noHeadset}
-        className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
+        className={
           zoomMode
-            ? "bg-violet-600 text-white"
-            : noHeadset
-              ? "bg-gray-800 text-gray-600 opacity-50 cursor-not-allowed"
-              : "bg-gray-800 text-gray-500 hover:bg-gray-700"
-        }`}
+            ? chipClass("violet")
+            : `${chipClass()}${noHeadset ? " opacity-50 cursor-not-allowed" : ""}`
+        }
       >
         🎧 Zoom mode {zoomMode ? "on" : "off"}
       </button>
       {noHeadset && (
-        <p className="mt-1 text-xs text-gray-500 max-w-xs text-center">
+        <p className={CHIP_NOTE_CLASS}>
           No headset on the phone
         </p>
       )}
       {zoomMode && (
-        <p className="mt-1 text-xs text-gray-500 max-w-xs text-center">
+        <p className={CHIP_NOTE_CLASS}>
           Headset mic released for your laptop — dictation uses the phone mic
         </p>
       )}
-    </div>
+    </>
   );
 }

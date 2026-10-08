@@ -1,3 +1,4 @@
+import { chipClass } from "../lib/chip";
 import type { TargetInfo, TargetMode } from "../types";
 
 interface TargetModeToggleProps {
@@ -40,11 +41,7 @@ export function TargetModeToggle({
     <button
       onClick={() => onSelect(next.name)}
       title={active.description}
-      className={`mt-2 px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${
-        target === "plain"
-          ? "bg-gray-800 text-gray-500 hover:bg-gray-700"
-          : "bg-sky-600 text-white"
-      }`}
+      className={chipClass(target === "plain" ? undefined : "blue")}
     >
       {ICONS[active.name] ?? "⌨️"} Typing to {active.label}
     </button>

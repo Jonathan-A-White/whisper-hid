@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import type { Settings, TargetMode } from "../types";
+import { CHIP_NOTE_CLASS, chipClass } from "../lib/chip";
 import { typeClipboard } from "../lib/typeClipboard";
 
 interface TypeClipboardButtonProps {
@@ -37,14 +38,11 @@ export function TypeClipboardButton({
   }, [target, settings, hid, store]);
 
   return (
-    <div className="flex flex-col items-start">
-      <button
-        onClick={handleClick}
-        className="px-4 py-1.5 rounded-full text-sm font-medium bg-gray-800 text-sky-400 hover:bg-gray-700 transition-colors"
-      >
+    <>
+      <button onClick={handleClick} className={chipClass()}>
         ⌨️ Type clipboard
       </button>
-      {error && <p className="mt-1 text-xs text-red-400">{error}</p>}
-    </div>
+      {error && <p className={CHIP_NOTE_CLASS}>{error}</p>}
+    </>
   );
 }

@@ -399,29 +399,34 @@ export function TalkView({
                 : "Not connected"}
             </p>
 
-            {/* Target app — decides how line breaks are typed */}
-            <TargetModeToggle
-              target={target.target}
-              targets={target.targets}
-              onSelect={target.setTarget}
-            />
+            {/* The four controls: one even two-column group of chips. Their
+                helper lines sort to the end of the grid (order-last). */}
+            <div className="mt-3 grid w-full max-w-sm grid-cols-2 gap-2">
+              {/* Target app — decides how line breaks are typed */}
+              <TargetModeToggle
+                target={target.target}
+                targets={target.targets}
+                onSelect={target.setTarget}
+              />
 
-            {/* This phone: keep the dictation here (copy/share), not Bluetooth */}
-            <PhoneModeToggle
-              sendTo={settings.sendTo}
-              onChange={(sendTo) => onUpdateSettings({ sendTo })}
-            />
+              {/* This phone: keep the dictation here (copy/share), not Bluetooth */}
+              <PhoneModeToggle
+                sendTo={settings.sendTo}
+                onChange={(sendTo) => onUpdateSettings({ sendTo })}
+              />
 
-            {/* Zoom mode quick toggle — release headset mic to the laptop */}
-            <ZoomModeToggle status={hid.status} onToggle={hid.setHeadsetMic} />
+              {/* Zoom mode quick toggle — release headset mic to the laptop */}
+              <ZoomModeToggle status={hid.status} onToggle={hid.setHeadsetMic} />
 
-            {/* Type clipboard: types what is on the phone clipboard on the host */}
-            <TypeClipboardButton
-              target={target.target}
-              settings={settings}
-              hid={hid}
-              store={store}
-            />
+              {/* Type clipboard: types what is on the phone clipboard on the host */}
+              <TypeClipboardButton
+                target={target.target}
+                settings={settings}
+                hid={hid}
+                store={store}
+              />
+            </div>
+            {/* end of chip grid */}
 
             {/* Front message: the newest dictation's History entry, with
                 the same action row. Gone when the entry is deleted. */}

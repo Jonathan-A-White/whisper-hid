@@ -30,6 +30,22 @@ describe("TalkView layout", () => {
     }
   });
 
+  it("holds the four controls in one two-column grid, Stop typing above it", () => {
+    const grid = lineOf("grid-cols-2");
+    const end = lineOf("end of chip grid");
+    expect(lineOf("Stop typing")).toBeLessThan(grid);
+    for (const chip of [
+      "<TargetModeToggle",
+      "<PhoneModeToggle",
+      "<ZoomModeToggle",
+      "<TypeClipboardButton",
+    ]) {
+      expect(lineOf(chip), chip).toBeGreaterThan(grid);
+      expect(lineOf(chip), chip).toBeLessThan(end);
+    }
+    expect(lines[grid - 1].match(/className="([^"]*)"/)![1]).toContain("grid ");
+  });
+
   it("keeps the cooler switches off the Talk screen (they live in Settings)", () => {
     expect(source).not.toContain("<SymbolModeToggle");
     expect(source).not.toContain("<CleanupToggle");
