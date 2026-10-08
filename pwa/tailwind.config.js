@@ -11,6 +11,7 @@ export default {
         accent: "#f2b544",
         "accent-fg": "#1a1204",
         needs: "#f2b544",
+        muted: "#7d8599",
       },
     },
   },

@@ -1,4 +1,5 @@
 import type { NewlineMode, TargetMode, TargetState } from "../types";
+import type { LiveReply } from "./livePoller";
 
 const WHISPER_BASE = "http://localhost:9876";
 const HID_BASE = "http://localhost:9877";
@@ -73,6 +74,17 @@ export async function transcribeStart() {
 
 export async function transcribeStop() {
   const res = await whisperFetch("/transcribe/stop", { method: "POST" });
+  return res.json();
+}
+
+/**
+ * The words so far while recording. null means the server has no
+ * /transcribe/live (an older server, 404); any other failure throws.
+ */
+export async function transcribeLive(): Promise<LiveReply | null> {
+  const res = await whisperFetch("/transcribe/live");
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`/transcribe/live answered ${res.status}`);
   return res.json();
 }
 

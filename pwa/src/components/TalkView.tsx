@@ -9,7 +9,12 @@ import type {
   WhisperStatus,
 } from "../types";
 import type { TranscriptionResult } from "../hooks/useWhisper";
-import { applyVoiceEdit } from "../lib/api";
+import { applyVoiceEdit, transcribeLive } from "../lib/api";
+import {
+  liveBoxView,
+  startLivePoller,
+  type LiveView,
+} from "../lib/livePoller";
 import {
   copyToClipboard,
   deliver,
@@ -91,6 +96,25 @@ export function TalkView({
   const [phoneText, setPhoneText] = useState<string | null>(null);
   const [copyNotice, setCopyNotice] = useState<"copied" | "tap" | null>(null);
   const phoneMode = deliveryFor(settings.sendTo) === "phone";
+
+  // The live words box: poll the server while a dictation records, and
+  // scroll the box to its end as the words arrive.
+  const [preview, setPreview] = useState<LiveView | null>(null);
+  const liveBoxRef = useRef<HTMLDivElement>(null);
+  const polling = whisper.recording && editText === null;
+  useEffect(() => {
+    if (!polling) return;
+    setPreview(null);
+    const poller = startLivePoller({
+      fetchLive: transcribeLive,
+      onView: setPreview,
+    });
+    return () => poller.stop();
+  }, [polling]);
+  useEffect(() => {
+    const box = liveBoxRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
+  }, [preview]);
 
   useEffect(() => {
     if (copyNotice !== "copied") return;
@@ -301,6 +325,14 @@ export function TalkView({
   );
 
   const isConnected = hid.status?.bluetooth === "connected";
+  const box = liveBoxView({
+    recording: whisper.recording,
+    preview,
+    finalText:
+      lastText && !lastError && !(phoneMode && phoneText !== null)
+        ? lastText
+        : null,
+  });
   const bar = talkLabel({
     phase: pressPhase,
     micOpen,
@@ -377,20 +409,31 @@ export function TalkView({
               role="status"
               aria-live="polite"
               data-testid="live-transcript"
-              className="mb-4 flex min-h-[3rem] w-full max-w-xl flex-col items-center justify-end text-center text-sm"
+              ref={liveBoxRef}
+              className="mb-4 flex min-h-[3rem] max-h-40 w-full max-w-xl flex-col items-center justify-end overflow-y-auto text-center text-sm"
             >
-              {whisper.recording ? (
+              {box?.kind === "note" ? (
+                <p className="text-gray-100">{box.text}</p>
+              ) : box?.kind === "words" ? (
+                <p className="text-gray-100">
+                  {box.text}
+                  {box.tail && (
+                    <>
+                      {box.text ? " " : ""}
+                      <span className="text-muted">{box.tail}</span>
+                    </>
+                  )}
+                </p>
+              ) : box?.kind === "listening" ? (
                 <p className="text-gray-100">Listening…</p>
               ) : (
                 <>
-                  {lastText &&
-                    !lastError &&
-                    !(phoneMode && phoneText !== null) && (
+                  {box?.kind === "final" && (
                       <p className="text-gray-400">
                         Last: &quot;
-                        {lastText.length > 140
-                          ? lastText.slice(0, 140) + "..."
-                          : lastText}
+                        {box.text.length > 140
+                          ? box.text.slice(0, 140) + "..."
+                          : box.text}
                         &quot;
                       </p>
                     )}
