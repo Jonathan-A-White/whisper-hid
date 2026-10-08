@@ -6,6 +6,8 @@ import {
   type CleanupModelInfo,
 } from "../lib/api";
 import { CLEANUP_INFO } from "../lib/cleanupInfo";
+import { averageTimings, formatAverages } from "../lib/cleanupTiming";
+import type { CleanupTiming } from "../types";
 import { SettingsRow } from "./SettingsRow";
 
 /**
@@ -14,7 +16,7 @@ import { SettingsRow } from "./SettingsRow";
  * Switching restarts the llama-server; "available" stays false while the new
  * model loads, so we poll until it comes back.
  */
-export function CleanupSettings() {
+export function CleanupSettings({ entries = [] }: { entries?: { timing?: CleanupTiming }[] }) {
   const [config, setConfig] = useState<CleanupConfig | null>(null);
   const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +61,7 @@ export function CleanupSettings() {
   const downloaded = config.models.filter((m) => m.downloaded);
   const missing = config.models.filter((m) => !m.downloaded);
   const active = downloaded.find((m) => m.active);
+  const averages = averageTimings(entries);
 
   const switchModel = async (name: string) => {
     setError(null);
@@ -104,6 +107,9 @@ export function CleanupSettings() {
         </p>
       )}
       {error && <p className="text-xs text-red-400 mt-1">{error}</p>}
+      {averages && (
+        <p className="text-xs text-gray-500 mt-1">{formatAverages(averages)}</p>
+      )}
       {missing.length > 0 && (
         <div className="mt-3">
           <p className="text-xs text-gray-500 mb-1">

@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
-import type { SendTo } from "../types";
+import type { CleanupTiming, SendTo } from "../types";
+import { timingLine } from "../lib/cleanupTiming";
 import {
   copyEntry,
   deleteEntry,
@@ -14,7 +15,7 @@ import { EntryEditor } from "./EntryEditor";
 
 interface HistoryViewProps {
   store: {
-    entries: { id: string; text: string; timestamp: number; pinned: boolean; model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number }[];
+    entries: { id: string; text: string; timestamp: number; pinned: boolean; model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number; timing?: CleanupTiming }[];
     searchQuery: string;
     setSearchQuery: (q: string) => void;
     deleteEntry: (id: string) => Promise<void>;
@@ -185,6 +186,9 @@ export function HistoryView({ store, hid, sendTo }: HistoryViewProps) {
                         <span className={entry.speedRatio >= 1 ? "text-green-600" : "text-yellow-600"}> · {entry.speedRatio.toFixed(1)}x</span>
                       )}
                     </p>
+                    {timingLine(entry.timing) && (
+                      <p className="text-xs text-gray-500">{timingLine(entry.timing)}</p>
+                    )}
                   </>
                 )}
               </div>

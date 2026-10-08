@@ -1,3 +1,10 @@
+/** How long a dictation that went through Cleanup took, in ms. */
+export interface CleanupTiming {
+  whisperMs: number;
+  cleanupMs: number;
+  totalMs: number;
+}
+
 export interface TranscriptEntry {
   id: string;
   text: string;
@@ -7,6 +14,8 @@ export interface TranscriptEntry {
   speedRatio?: number;
   audioDuration?: number;
   processingMs?: number;
+  /** only on dictations made with Cleanup on */
+  timing?: CleanupTiming;
 }
 
 export interface HidStatus {

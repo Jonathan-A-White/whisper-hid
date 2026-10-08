@@ -5,12 +5,15 @@ import {
   transcribeStop,
   whisperStatus,
 } from "../lib/api";
-import type { WhisperStatus } from "../types";
+import type { CleanupTiming, WhisperStatus } from "../types";
+import { buildTiming } from "../lib/cleanupTiming";
 
 export interface TranscriptionStats {
   audioDuration: number; // seconds
   processingMs: number;
   speedRatio: number;
+  /** only when this dictation went through Cleanup */
+  timing?: CleanupTiming;
 }
 
 export interface TranscriptionResult {
@@ -86,6 +89,7 @@ export function useWhisper() {
                     audioDuration: result.audio_duration_sec,
                     processingMs: result.duration_ms,
                     speedRatio: result.speed_ratio ?? 0,
+                    timing: buildTiming(result.duration_ms, result.cleanup_ms),
                   }
                 : undefined;
             return { text, error: null, stats };

@@ -116,6 +116,7 @@ export default function App() {
             target={
               target.targets.find((t) => t.name === target.target) ?? null
             }
+            entries={store.allEntries}
           />
         )}
       </main>

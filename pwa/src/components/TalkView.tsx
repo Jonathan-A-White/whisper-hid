@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent, PointerEvent } from "react";
 import type {
+  CleanupTiming,
   HidStatus,
   NewlineMode,
   Settings,
@@ -62,7 +63,7 @@ interface TalkViewProps {
     pinnedEntries: { id: string; text: string }[];
     /** Every entry, unfiltered: the front message is one of these. */
     allEntries: { id: string; text: string }[];
-    addEntry: (text: string, stats?: { model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number }) => Promise<{ id: string } | undefined>;
+    addEntry: (text: string, stats?: { model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number; timing?: CleanupTiming }) => Promise<{ id: string } | undefined>;
     updateEntry: (id: string, text: string) => Promise<void>;
     deleteEntry: (id: string) => Promise<void>;
   };
@@ -81,6 +82,7 @@ interface TranscriptionStats {
   audioDuration: number; // seconds
   processingMs: number;
   speedRatio: number;
+  timing?: CleanupTiming;
 }
 
 export function TalkView({
@@ -100,7 +102,7 @@ export function TalkView({
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastStats, setLastStats] = useState<TranscriptionStats | null>(null);
   const [editText, setEditText] = useState<string | null>(null);
-  const [lastEntryStats, setLastEntryStats] = useState<{ model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number } | null>(null);
+  const [lastEntryStats, setLastEntryStats] = useState<{ model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number; timing?: CleanupTiming } | null>(null);
   const [voiceEditState, setVoiceEditState] = useState<VoiceEditState>("idle");
   const [voiceEditError, setVoiceEditError] = useState<string | null>(null);
   // The brief copy notice under the front message
@@ -189,6 +191,7 @@ export function TalkView({
             speedRatio: stats.speedRatio,
             audioDuration: stats.audioDuration,
             processingMs: stats.processingMs,
+            timing: stats.timing,
           }
         : undefined;
       if (settings.editBeforeSend) {

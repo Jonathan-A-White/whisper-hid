@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { ModelInfo, Settings, TargetInfo } from "../types";
+import type { CleanupTiming, ModelInfo, Settings, TargetInfo } from "../types";
 import { whisperStatus, hidStatus, hidKeepLinkWarm, getModels, getWhisperSettings, putWhisperSettings } from "../lib/api";
 import { WordCorrections } from "./WordCorrections";
 import { SymbolReplacements } from "./SymbolReplacements";
@@ -44,9 +44,11 @@ interface SettingsViewProps {
   onShowDebug: () => void;
   /** Active target app, or null on a server without /target */
   target: TargetInfo | null;
+  /** Every History entry; the cleanup timing averages come from these */
+  entries: { timing?: CleanupTiming }[];
 }
 
-export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, target }: SettingsViewProps) {
+export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, target, entries }: SettingsViewProps) {
   const [whisperVersion, setWhisperVersion] = useState<string | null>(null);
   const [hidVersion, setHidVersion] = useState<string | null>(null);
   const [speechModel, setSpeechModel] = useState<ModelInfo | null>(null);
@@ -260,7 +262,7 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
       </SettingsSection>
 
       <SettingsSection title="Cleanup">
-        <CleanupSettings />
+        <CleanupSettings entries={entries} />
       </SettingsSection>
 
       <SettingsSection title="Corrections and symbols">

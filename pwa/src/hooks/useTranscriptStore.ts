@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { TranscriptEntry } from "../types";
+import type { CleanupTiming, TranscriptEntry } from "../types";
 
 const DB_NAME = "whisper-keyboard";
 const STORE_NAME = "transcripts";
@@ -59,7 +59,7 @@ export function useTranscriptStore() {
   }, [refresh]);
 
   const addEntry = useCallback(
-    async (text: string, stats?: { model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number }) => {
+    async (text: string, stats?: { model?: string; speedRatio?: number; audioDuration?: number; processingMs?: number; timing?: CleanupTiming }) => {
       if (!text.trim()) return;
       const entry: TranscriptEntry = {
         id: crypto.randomUUID(),
@@ -70,6 +70,7 @@ export function useTranscriptStore() {
         ...(stats?.speedRatio != null && { speedRatio: stats.speedRatio }),
         ...(stats?.audioDuration != null && { audioDuration: stats.audioDuration }),
         ...(stats?.processingMs != null && { processingMs: stats.processingMs }),
+        ...(stats?.timing != null && { timing: stats.timing }),
       };
       try {
         const db = await openDB();
