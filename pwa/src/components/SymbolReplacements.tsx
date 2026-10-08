@@ -7,7 +7,6 @@ import {
   type SymbolEntry,
   type SymbolSpacing,
 } from "../lib/api";
-import { SettingsSwitchRow } from "./SettingsRow";
 
 const SPACING_OPTIONS: Array<{ value: SymbolSpacing; label: string }> = [
   { value: "both", label: "join both" },
@@ -83,9 +82,9 @@ export function SymbolReplacements() {
         Spoken symbols (say a word, type a symbol)
       </label>
       <p className="text-xs text-gray-600">
-        When symbol mode is on, spoken phrases are replaced by symbols, e.g.
-        &quot;forward slash help&quot; &rarr; &quot;/help&quot;. Toggle symbol
-        mode from the Talk screen.
+        When Symbols is on, spoken phrases are replaced by symbols, e.g.
+        &quot;forward slash help&quot; &rarr; &quot;/help&quot;. Switch Symbols
+        on or off in the Talk card above.
       </p>
 
       {error && <p className="text-xs text-red-400">{error}</p>}
@@ -94,15 +93,6 @@ export function SymbolReplacements() {
         <p className="text-xs text-gray-500">Loading...</p>
       ) : config !== null ? (
         <>
-          {/* Symbol mode toggle */}
-          <div className="-mx-4 -my-2">
-            <SettingsSwitchRow
-              label="Symbol mode"
-              checked={config.enabled}
-              onChange={(enabled) => save({ enabled })}
-            />
-          </div>
-
           {/* Existing entries */}
           {config.entries.length > 0 ? (
             <div className="space-y-1">
@@ -136,7 +126,7 @@ export function SymbolReplacements() {
                   </select>
                   <button
                     onClick={() => handleRemove(entry)}
-                    className="text-gray-600 hover:text-red-400 text-sm ml-1"
+                    className="min-h-[44px] min-w-[44px] -my-2 -mr-2 flex items-center justify-center text-gray-600 hover:text-red-400 text-sm"
                   >
                     &times;
                   </button>

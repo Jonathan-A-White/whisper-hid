@@ -131,7 +131,7 @@ export function WordCorrections() {
                   </span>
                   <button
                     onClick={() => handleRemove(from)}
-                    className="text-gray-600 hover:text-red-400 text-sm ml-1"
+                    className="min-h-[44px] min-w-[44px] -my-2 -mr-2 flex items-center justify-center text-gray-600 hover:text-red-400 text-sm"
                   >
                     &times;
                   </button>
