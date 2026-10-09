@@ -251,6 +251,72 @@ build is available from the Actions tab artifacts. Pushes touching `pwa/`
 deploy the PWA to GitHub Pages. Python and Kotlin tests run on every push and
 pull request.
 
+## Credits
+
+> "If I have seen further it is by standing on the shoulders of Giants."
+> — Isaac Newton, in a letter to Robert Hooke, 1675
+
+Whisper Keyboard only works because of the people and projects below, so each one is named here with what we use it for, its licence and anything we changed. The same list is on the **About** screen (Settings > Credits), from `pwa/src/lib/credits.ts`; a test fails when a dependency is missing from it.
+
+### Ideas and tools we build with
+
+- [Beads](https://github.com/steveyegge/beads): Steve Yegge's issue tracker for AI agents. This project is built through a software factory that tracks every story as a bead. Licence: [MIT](https://github.com/steveyegge/beads/blob/main/LICENSE). Changes: None. We use the tool and its idea as published.
+- [Gas Town](https://github.com/steveyegge/gastown): Steve Yegge's multi-agent workspace manager. The factory's roles (a mayor who plans, builders who work one story each) borrow its ideas. Licence: [MIT](https://github.com/steveyegge/gastown/blob/main/LICENSE). Changes: Ideas only; none of its code is included here.
+- [Claude Code](https://www.anthropic.com/claude-code): Anthropic's coding agent. Much of this code was written with it, and the keyboard is built to dictate into it. Licence: [Anthropic Commercial Terms](https://www.anthropic.com/legal/commercial-terms). Changes: None.
+
+### This screen (the PWA)
+
+- [React and React DOM](https://react.dev): The user interface library this app is written in. Licence: [MIT](https://github.com/facebook/react/blob/main/LICENSE). Changes: None.
+- [Vite](https://vite.dev): Builds and bundles the PWA. Licence: [MIT](https://github.com/vitejs/vite/blob/main/LICENSE). Changes: None.
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react): Lets Vite compile the React code. Licence: [MIT](https://github.com/vitejs/vite-plugin-react/blob/main/LICENSE). Changes: None.
+- [vite-plugin-pwa and Workbox](https://github.com/vite-pwa/vite-plugin-pwa): Makes the PWA installable and offline-capable, and generates its service worker with Google's Workbox. Licence: [MIT (vite-plugin-pwa), Apache-2.0 (Workbox)](https://github.com/vite-pwa/vite-plugin-pwa/blob/main/LICENSE). Changes: None.
+- [Tailwind CSS](https://tailwindcss.com): The styling of every screen. Licence: [MIT](https://github.com/tailwindlabs/tailwindcss/blob/main/LICENSE). Changes: None.
+- [PostCSS](https://postcss.org): Runs Tailwind when the PWA is built. Licence: [MIT](https://github.com/postcss/postcss/blob/main/LICENSE). Changes: None.
+- [Autoprefixer](https://github.com/postcss/autoprefixer): Adds browser prefixes to the CSS at build time. Licence: [MIT](https://github.com/postcss/autoprefixer/blob/main/LICENSE). Changes: None.
+- [TypeScript](https://www.typescriptlang.org): The language the PWA is written in. Licence: [Apache-2.0](https://github.com/microsoft/TypeScript/blob/main/LICENSE.txt). Changes: None.
+- [DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped): The type definitions for React (@types/react, @types/react-dom). Licence: [MIT](https://github.com/DefinitelyTyped/DefinitelyTyped/blob/master/LICENSE). Changes: None.
+- [Vitest](https://vitest.dev): Runs the PWA's tests. Licence: [MIT](https://github.com/vitest-dev/vitest/blob/main/LICENSE). Changes: None.
+
+### The Android app
+
+- [Android Open Source Project](https://source.android.com): The Android platform, including the BluetoothHidDevice API that lets the phone act as a Bluetooth keyboard, and the Android Gradle Plugin that builds the app. Licence: [Apache-2.0](https://source.android.com/docs/setup/about/licenses). Changes: None.
+- [AndroidX Core KTX](https://developer.android.com/jetpack/androidx/releases/core): Kotlin extensions for the Android framework, used by the Bluetooth service. Licence: [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0). Changes: None.
+- [AndroidX AppCompat](https://developer.android.com/jetpack/androidx/releases/appcompat): Backwards-compatible activities and themes for the app's launcher screen. Licence: [Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0). Changes: None.
+- [Material Components for Android](https://github.com/material-components/material-components-android): Material Design widgets for the app's launcher screen. Licence: [Apache-2.0](https://github.com/material-components/material-components-android/blob/master/LICENSE). Changes: None.
+- [Kotlin](https://kotlinlang.org): The language the Android app is written in. Licence: [Apache-2.0](https://github.com/JetBrains/kotlin/blob/master/license/LICENSE.txt). Changes: None.
+- [Gradle](https://gradle.org): Builds the Android app and runs its tests. Licence: [Apache-2.0](https://github.com/gradle/gradle/blob/master/LICENSE). Changes: None.
+- [JUnit 4](https://junit.org/junit4/): Tests the Android app (key mapping, link warm-up, crash records). Licence: [EPL-1.0](https://www.eclipse.org/legal/epl-v10.html). Changes: None.
+
+### The Termux server
+
+- [Flask](https://flask.palletsprojects.com): The web framework of the Whisper server on the phone. Licence: [BSD-3-Clause](https://github.com/pallets/flask/blob/main/LICENSE.txt). Changes: None.
+- [NumPy](https://numpy.org): Audio feature extraction and decoding maths for Parakeet. Licence: [BSD-3-Clause](https://github.com/numpy/numpy/blob/main/LICENSE.txt). Changes: None. Installed from Termux's packages, not pip.
+- [ONNX Runtime](https://onnxruntime.ai): Runs the Parakeet model on the phone's processor. Licence: [MIT](https://github.com/microsoft/onnxruntime/blob/main/LICENSE). Changes: None. Installed from Termux's packages, not pip.
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx): Where it can be installed (laptops, CI) it is the speech decoder. On the phone our own port of its Parakeet reference script is used instead, and its release page hosts the model download. Licence: [Apache-2.0](https://github.com/k2-fsa/sherpa-onnx/blob/master/LICENSE). Changes: scripts/parakeet_onnx.py is a port of its Parakeet reference script to plain NumPy and ONNX Runtime, checked to give byte-identical transcripts.
+- [kaldi-native-fbank](https://github.com/csukuangfj/kaldi-native-fbank): The filterbank feature settings the Parakeet model was exported with, which our port reproduces exactly. Licence: [Apache-2.0](https://github.com/csukuangfj/kaldi-native-fbank/blob/master/LICENSE). Changes: Settings matched in Python; none of its code is included.
+- [librosa](https://librosa.org): The mel scale (Slaney) the Parakeet features are built on. Licence: [ISC](https://github.com/librosa/librosa/blob/main/LICENSE.md). Changes: The formula is re-implemented; none of its code is included.
+
+### Speech and language models
+
+- [NVIDIA Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2): The speech-to-text model that turns your voice into text, entirely on the phone. Licence: [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Changes: We use the int8-quantised ONNX export published by sherpa-onnx, not NVIDIA's original NeMo checkpoint.
+- [OpenAI Whisper](https://github.com/openai/whisper): The speech model this keyboard was first built on, and the source of its name. Parakeet replaced it in October 2026. Licence: [MIT](https://github.com/openai/whisper/blob/main/LICENSE). Changes: None; no longer included.
+- [whisper.cpp](https://github.com/ggml-org/whisper.cpp): Ran Whisper on the phone until Parakeet replaced it in October 2026. Licence: [MIT](https://github.com/ggml-org/whisper.cpp/blob/master/LICENSE). Changes: None; no longer included.
+- [llama.cpp](https://github.com/ggml-org/llama.cpp): Runs the small language model that tidies up what you said (filler words, punctuation, styles, voice edits), on the phone. Licence: [MIT](https://github.com/ggml-org/llama.cpp/blob/master/LICENSE). Changes: Built from source in Termux with -DGGML_NATIVE=OFF; no code changes.
+- [Qwen3](https://huggingface.co/Qwen/Qwen3-1.7B): Alibaba's Qwen3 1.7B (the default) and 4B models do the cleanup rewrite. Licence: [Apache-2.0](https://huggingface.co/Qwen/Qwen3-1.7B/blob/main/LICENSE). Changes: Used as the 4-bit (Q4_K_M) GGUF files converted by Unsloth, with a prompt of our own.
+- [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-2B): Alibaba's Qwen3.5 2B and 0.8B models, offered as faster options for the cleanup rewrite. Licence: [Apache-2.0](https://huggingface.co/Qwen/Qwen3.5-2B/blob/main/LICENSE). Changes: Used as the 4-bit (Q4_K_M) GGUF files converted by Unsloth, with a prompt of our own.
+- [Unsloth](https://huggingface.co/unsloth): Publishes the GGUF conversions of the Qwen models that the phone downloads. Licence: [Apache-2.0 (the model files carry the Qwen licence)](https://huggingface.co/unsloth/Qwen3-1.7B-GGUF). Changes: None.
+
+### On the phone
+
+- [Termux](https://termux.dev): The Linux environment on the phone where the Whisper server and the language model run. Licence: [GPL-3.0](https://github.com/termux/termux-app/blob/master/LICENSE.md). Changes: None.
+- [Termux:API](https://github.com/termux/termux-api): Gives the server access to the microphone. Licence: [GPL-3.0](https://www.gnu.org/licenses/gpl-3.0.html). Changes: None. The server calls its MicRecorder service directly when a non-default audio source is chosen.
+- [FFmpeg](https://ffmpeg.org): Converts and slices the recording before it is transcribed. Licence: [LGPL-2.1+ / GPL-2.0+ (depends on the build)](https://ffmpeg.org/legal.html). Changes: None. Installed from Termux's packages.
+
+### Services
+
+- [GitHub](https://github.com): Hosts the source, builds the Android app and this PWA, and serves both (GitHub Pages and Releases). Licence: [GitHub Terms of Service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service). Changes: None.
+- [Hugging Face](https://huggingface.co): Where the phone downloads the cleanup language models. Licence: [Hugging Face Terms of Service](https://huggingface.co/terms-of-service). Changes: None.
+
 ## License
 
 See [LICENSE](LICENSE).
