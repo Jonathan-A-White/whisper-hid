@@ -465,6 +465,7 @@ none); `/crash?all=1` gives every kept record, newest first.
 ## Testing
 - Kotlin: `./gradlew test` — JUnit tests for HidKeyMapper and state machine
 - Python: `pytest scripts/tests/` — Whisper server API tests
+- PWA: `cd pwa && npm test` (vitest); `npm run build` runs it first, so the gate and CI fail on a PWA test failure (e.g. an uncredited dependency)
 - PWA: Playwright E2E tests (future)
 - Full pipeline: Start Whisper server in Termux, open PWA, speak, verify text on laptop
 
