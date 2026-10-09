@@ -9,6 +9,7 @@ import { TalkView } from "./components/TalkView";
 import { HistoryView } from "./components/HistoryView";
 import { SettingsView } from "./components/SettingsView";
 import { SetupWizard } from "./components/SetupWizard";
+import { AboutView } from "./components/AboutView";
 import { DebugLog } from "./components/DebugLog";
 import { UpdateBanner } from "./components/UpdateBanner";
 import type { Tab, Settings } from "./types";
@@ -29,6 +30,7 @@ export default function App() {
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [showDebug, setShowDebug] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
 
   const updateSettings = (partial: Partial<Settings>) => {
     setSettings((prev) => {
@@ -96,6 +98,8 @@ export default function App() {
       <main className="flex-1 overflow-y-auto">
         {showDebug ? (
           <DebugLog onClose={() => setShowDebug(false)} />
+        ) : showAbout ? (
+          <AboutView onClose={() => setShowAbout(false)} />
         ) : tab === "talk" ? (
           <TalkView
             whisper={whisper}
@@ -113,6 +117,7 @@ export default function App() {
             onUpdate={updateSettings}
             onShowSetup={() => setShowSetup(true)}
             onShowDebug={() => setShowDebug(true)}
+            onShowAbout={() => setShowAbout(true)}
             target={
               target.targets.find((t) => t.name === target.target) ?? null
             }

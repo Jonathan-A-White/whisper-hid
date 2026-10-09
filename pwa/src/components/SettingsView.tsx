@@ -42,13 +42,14 @@ interface SettingsViewProps {
    * them: typing works but the text arrives wrong.
    */
   onShowDebug: () => void;
+  onShowAbout: () => void;
   /** Active target app, or null on a server without /target */
   target: TargetInfo | null;
   /** Every History entry; the cleanup timing averages come from these */
   entries: { timing?: CleanupTiming }[];
 }
 
-export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, target, entries }: SettingsViewProps) {
+export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, onShowAbout, target, entries }: SettingsViewProps) {
   const [whisperVersion, setWhisperVersion] = useState<string | null>(null);
   const [hidVersion, setHidVersion] = useState<string | null>(null);
   const [speechModel, setSpeechModel] = useState<ModelInfo | null>(null);
@@ -281,6 +282,18 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, tar
           control={
             <button
               onClick={onShowSetup}
+              className="min-h-[44px] px-4 rounded-lg bg-gray-800 text-sky-400 text-sm font-medium"
+            >
+              Open
+            </button>
+          }
+        />
+        <SettingsRow
+          label="Credits"
+          hint="The people and projects this keyboard stands on, with licences."
+          control={
+            <button
+              onClick={onShowAbout}
               className="min-h-[44px] px-4 rounded-lg bg-gray-800 text-sky-400 text-sm font-medium"
             >
               Open
