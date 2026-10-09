@@ -258,6 +258,8 @@ pull request.
 
 Whisper Keyboard only works because of the people and projects below, so each one is named here with what we use it for, its licence and anything we changed. The same list is on the **About** screen (Settings > Credits), from `pwa/src/lib/credits.ts`; a test fails when a dependency is missing from it.
 
+A source added or removed changes its credit in the same commit, and the test says so: it fails on a dependency with no credit, on a credit for a package that is no longer a dependency, and on a bundled font or data file no credit names.
+
 ### Ideas and tools we build with
 
 - [Beads](https://github.com/steveyegge/beads): Steve Yegge's issue tracker for AI agents. This project is built through a software factory that tracks every story as a bead. Licence: [MIT](https://github.com/steveyegge/beads/blob/main/LICENSE). Changes: None. We use the tool and its idea as published.

@@ -4,9 +4,12 @@
  * Adding a library, model, service or borrowed idea means adding it here in
  * the same commit: credits.test.ts reads pwa/package.json,
  * app/build.gradle.kts and scripts/requirements.txt and fails when a
- * dependency is not named in `packages`, and checks the README's Credits
- * section lists every entry (the README copy is
- * kept by hand, in the same order).
+ * dependency is not named in `packages`, fails when a `packages` id is no
+ * longer a dependency (removing a library means removing its credit in the
+ * same commit; credits without `packages` are exempt), fails when a bundled
+ * font or data file is not named in `files`, and checks the README's Credits
+ * section lists every entry (the README copy is kept by hand, in the same
+ * order).
  */
 
 export type CreditKind = "idea" | "app" | "pwa" | "server" | "model" | "tool" | "service";
@@ -24,6 +27,11 @@ export interface Credit {
   changes: string;
   /** Dependency ids this entry covers: "npm:x", "gradle:group:artifact", "pip:x". */
   packages?: string[];
+  /**
+   * Bundled font or data files this entry covers, repo-relative: a file path,
+   * or a directory ending in "/". The app ships none today.
+   */
+  files?: string[];
 }
 
 export const NEWTON_QUOTE = {

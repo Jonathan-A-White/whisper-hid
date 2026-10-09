@@ -6,6 +6,17 @@ import readme from "../../../README.md?raw";
 import aboutSource from "../components/AboutView.tsx?raw";
 import settingsSource from "../components/SettingsView.tsx?raw";
 import { CREDITS, NEWTON_QUOTE, WHY_WE_CREDIT, creditedPackages } from "./credits";
+import type { Credit } from "./credits";
+import { staleCreditedPackages, uncreditedFiles } from "./creditsCheck";
+
+// Bundled font and data files, repo-relative. The app ships none today; a
+// file dropped into one of these places must be credited in the same commit.
+const shippedFiles = Object.keys({
+  ...import.meta.glob("../../public/**/*", { query: "?url", import: "default" }),
+  ...import.meta.glob("../../../app/src/main/assets/**/*", { query: "?url", import: "default" }),
+  ...import.meta.glob("../../../app/src/main/res/font/**/*", { query: "?url", import: "default" }),
+  ...import.meta.glob("../../../app/src/main/res/raw/**/*", { query: "?url", import: "default" }),
+}).map((f) => f.replace(/^(\.\.\/)+/, "").replace(/^(?=public\/)/, "pwa/"));
 
 // "A test fails when a runtime dependency is missing from the credits, so
 // adding a library means crediting it in the same commit." The repo has three
@@ -60,6 +71,75 @@ describe("every dependency is credited", () => {
     for (const id of ["pip:numpy", "pip:onnxruntime", "pip:sherpa-onnx"]) {
       expect(credited.has(id), id).toBe(true);
     }
+  });
+});
+
+// Dependencies installed by the phone's package manager, not by a list file.
+const OUTSIDE_THE_LISTS = ["pip:numpy", "pip:onnxruntime", "pip:sherpa-onnx"];
+
+const fake = (over: Partial<Credit>): Credit => ({
+  name: "X",
+  kind: "pwa",
+  url: "https://x.example",
+  use: "u",
+  license: "MIT",
+  licenseUrl: "https://x.example/license",
+  changes: "None.",
+  ...over,
+});
+
+describe("credits follow removals", () => {
+  it("names no package that is not a dependency", () => {
+    const all = [...npmDependencies(), ...gradleDependencies(), ...pipRequirements()];
+    const stale = staleCreditedPackages(CREDITS, all, OUTSIDE_THE_LISTS);
+    expect(stale, `remove these from CREDITS in src/lib/credits.ts: ${stale}`).toEqual([]);
+  });
+
+  it("fails on a credit for a package removed from the list", () => {
+    const credits = [
+      fake({ name: "React", packages: ["npm:react"] }),
+      fake({ name: "Gone", packages: ["npm:left-pad"] }),
+    ];
+    expect(staleCreditedPackages(credits, ["npm:react"])).toEqual(["npm:left-pad"]);
+    expect(staleCreditedPackages(credits, ["npm:react", "npm:left-pad"])).toEqual([]);
+  });
+
+  it("lets a package installed outside the lists stay credited", () => {
+    const credits = [fake({ packages: ["pip:numpy"] })];
+    expect(staleCreditedPackages(credits, [])).toEqual(["pip:numpy"]);
+    expect(staleCreditedPackages(credits, [], ["pip:numpy"])).toEqual([]);
+  });
+
+  it("leaves credits that are not packages alone, by kind", () => {
+    const credits = [
+      fake({ name: "An idea", kind: "idea" }),
+      fake({ name: "A model", kind: "model" }),
+      fake({ name: "A service", kind: "service" }),
+      fake({ name: "A font", kind: "tool", files: ["pwa/public/fonts/a.woff2"] }),
+    ];
+    expect(staleCreditedPackages(credits, [])).toEqual([]);
+    // and the real list has such credits, so the exemption is exercised on main
+    expect(CREDITS.some((c) => c.kind === "idea" && !c.packages)).toBe(true);
+    expect(CREDITS.some((c) => c.kind === "service" && !c.packages)).toBe(true);
+  });
+});
+
+describe("bundled fonts and data files are credited", () => {
+  it("credits every font and data file the app ships", () => {
+    const missing = uncreditedFiles(CREDITS, shippedFiles);
+    expect(missing, `name these in a CREDITS entry's files: ${missing}`).toEqual([]);
+  });
+
+  it("fails on a shipped file no credit names", () => {
+    const credits = [
+      fake({ files: ["pwa/public/fonts/a.woff2", "pwa/public/data/"] }),
+    ];
+    expect(uncreditedFiles(credits, ["pwa/public/fonts/a.woff2"])).toEqual([]);
+    expect(uncreditedFiles(credits, ["pwa/public/data/words.json"])).toEqual([]);
+    expect(uncreditedFiles(credits, ["pwa/public/fonts/b.woff2", "pwa/public/datum.json"])).toEqual([
+      "pwa/public/fonts/b.woff2",
+      "pwa/public/datum.json",
+    ]);
   });
 });
 
