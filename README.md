@@ -249,7 +249,7 @@ Every push to `main` builds a debug APK and republishes it as the rolling
 (e.g. `v1.0`) also create a GitHub Release with the APK attached, and the
 build is available from the Actions tab artifacts. Pushes touching `pwa/`
 deploy the PWA to GitHub Pages. Python and Kotlin tests run on every push and
-pull request.
+pull request. How the PWA measures up against the house best practices, and what to fix first, is in [docs/best-practices-audit.md](docs/best-practices-audit.md).
 
 ## Credits
 
