@@ -278,6 +278,7 @@ A source added or removed changes its credit in the same commit, and the test sa
 - [TypeScript](https://www.typescriptlang.org): The language the PWA is written in. Licence: [Apache-2.0](https://github.com/microsoft/TypeScript/blob/main/LICENSE.txt). Changes: None.
 - [DefinitelyTyped](https://github.com/DefinitelyTyped/DefinitelyTyped): The type definitions for React (@types/react, @types/react-dom). Licence: [MIT](https://github.com/DefinitelyTyped/DefinitelyTyped/blob/master/LICENSE). Changes: None.
 - [Vitest](https://vitest.dev): Runs the PWA's tests. Licence: [MIT](https://github.com/vitest-dev/vitest/blob/main/LICENSE). Changes: None.
+- [Playwright](https://playwright.dev): Renders the screens in a real browser at his split-screen sizes, to check the Hold to talk bar is whole and uncovered. Licence: [Apache-2.0](https://github.com/microsoft/playwright/blob/main/LICENSE). Changes: None.
 
 ### The Android app
 

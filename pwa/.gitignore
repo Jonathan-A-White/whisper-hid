@@ -1,3 +1,9 @@
 node_modules/
 dist/
 *.local
+
+# Playwright layout run (npm run test:layout)
+layout-shots/
+test-results/
+playwright-report/
+tsconfig.tsbuildinfo

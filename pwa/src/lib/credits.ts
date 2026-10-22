@@ -186,6 +186,16 @@ export const CREDITS: Credit[] = [
     changes: "None.",
     packages: ["npm:vitest"],
   },
+  {
+    name: "Playwright",
+    kind: "pwa",
+    url: "https://playwright.dev",
+    use: "Renders the screens in a real browser at his split-screen sizes, to check the Hold to talk bar is whole and uncovered.",
+    license: "Apache-2.0",
+    licenseUrl: "https://github.com/microsoft/playwright/blob/main/LICENSE",
+    changes: "None.",
+    packages: ["npm:@playwright/test"],
+  },
 
   // Android app
   {
