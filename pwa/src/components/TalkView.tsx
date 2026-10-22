@@ -319,6 +319,9 @@ export function TalkView({
     preview,
     finalText: null,
   });
+  // In a short window an empty words box (nothing live, no error) is hidden
+  // so the bar keeps its room; it shows again once there are words.
+  const boxEmpty = !box && !lastError;
   const bar = talkLabel({
     phase: pressPhase,
     micOpen,
@@ -350,7 +353,7 @@ export function TalkView({
       {/* Scrollable content area: the toggles and notes. The live words box
           and the Talk bar sit below it, at the foot of the screen, under the
           thumb. */}
-      <div className="min-h-0 flex-1 overflow-y-auto flex flex-col items-center px-6 pt-6 pb-4">
+      <div className="min-h-0 flex-1 overflow-y-auto flex flex-col items-center px-6 pt-6 pb-4 short:pt-2 short:pb-2">
         {/* Kill switch — stops in-progress typing on the host and releases any
             stuck (auto-repeating) key. Kept outside the edit-buffer branch so
             it's reachable in every screen state. */}
@@ -393,7 +396,7 @@ export function TalkView({
         ) : (
           <>
             {/* Connection indicator */}
-            <p className="mt-4 text-sm text-gray-500">
+            <p className="mt-4 text-sm text-gray-500 short:mt-1">
               {isConnected
                 ? `Connected to ${hid.status?.device}`
                 : "Not connected"}
@@ -401,7 +404,7 @@ export function TalkView({
 
             {/* The four controls: one even two-column group of chips. Their
                 helper lines sort to the end of the grid (order-last). */}
-            <div className="mt-3 grid w-full max-w-sm grid-cols-2 gap-2">
+            <div className="mt-3 grid w-full max-w-sm grid-cols-2 gap-2 short:mt-2">
               {/* Target app — decides how line breaks are typed */}
               <TargetModeToggle
                 target={target.target}
@@ -514,7 +517,7 @@ export function TalkView({
       {editText === null && (
         <div
           data-testid="talk-controls"
-          className="flex shrink-0 flex-col items-center gap-3 border-t border-gray-800 bg-black px-4 pt-3 pb-4"
+          className="flex shrink-0 flex-col items-center gap-3 border-t border-gray-800 bg-black px-4 pt-3 pb-4 short:gap-2 short:pt-2 short:pb-2"
         >
           {/* Live words box: what the dictation is doing, then its result */}
           <div
@@ -522,7 +525,9 @@ export function TalkView({
             aria-live="polite"
             data-testid="live-transcript"
             ref={liveBoxRef}
-            className="flex min-h-[3rem] max-h-40 w-full max-w-xl flex-col items-center justify-end overflow-y-auto text-center text-sm"
+            className={`flex min-h-[3rem] max-h-40 w-full max-w-xl flex-col items-center justify-end overflow-y-auto text-center text-sm ${
+              boxEmpty ? "short:hidden" : ""
+            }`}
           >
             {box?.kind === "note" ? (
               <p className="text-gray-100">{box.text}</p>
@@ -541,7 +546,7 @@ export function TalkView({
             ) : (
               <>
                 {lastStats && !lastError && (
-                  <p className="mt-1 text-gray-600 text-xs">
+                  <p className="mt-1 text-gray-600 text-xs short:hidden">
                     {lastStats.audioDuration.toFixed(1)}s audio,{" "}
                     {(lastStats.processingMs / 1000).toFixed(1)}s processing
                     {" \u2014 "}
@@ -571,7 +576,7 @@ export function TalkView({
             onContextMenu={(event) => event.preventDefault()}
             onKeyDown={onBarKeyDown}
             onKeyUp={onBarKeyUp}
-            className={`flex h-24 w-full max-w-xl touch-none select-none flex-col items-center justify-center gap-1 rounded-3xl text-base font-semibold transition-colors [-webkit-touch-callout:none] disabled:cursor-not-allowed disabled:opacity-45 ${
+            className={`flex h-24 min-h-[72px] shrink-0 short:h-20 w-full max-w-xl touch-none select-none flex-col items-center justify-center gap-1 rounded-3xl text-base font-semibold transition-colors [-webkit-touch-callout:none] disabled:cursor-not-allowed disabled:opacity-45 ${
               pressPhase === "idle"
                 ? "bg-accent text-accent-fg"
                 : "bg-needs text-canvas animate-pulse"

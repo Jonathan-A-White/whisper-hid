@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import source from "./TalkView.tsx?raw";
 import words from "./EntryWords.tsx?raw";
+import statusBar from "./StatusBar.tsx?raw";
+import app from "../App.tsx?raw";
+import tailwindConfig from "../../tailwind.config.js?raw";
 
 // The Talk screen is a full-height column: toggles in a scroll area on top,
 // then a controls block at the foot holding the live words box and the bar,
@@ -99,6 +102,69 @@ describe("TalkView layout", () => {
 
     const scrollClass = lines[scroll - 1].match(/className="([^"]*)"/)![1];
     expect(scrollClass).toMatch(/\bpb-\d+\b/);
+  });
+
+  // A short window (split screen, about 380 CSS px tall): the Hold to talk bar
+  // must stay whole and large, so the stats line, an EMPTY words box, the
+  // header and the padding give way first. The toggles stay reachable in the
+  // scroll area above the controls block. The rule is a Tailwind `short:`
+  // variant, a raw height media query declared in tailwind.config.js.
+  describe("in a short window", () => {
+    const classOf = (needle: string, span = 12): string => {
+      const at = lineOf(needle);
+      const found = lines
+        .slice(at - 1, at - 1 + span)
+        .join("\n")
+        .match(/className=(?:"([^"]*)"|\{`([^`]*)`\})/);
+      if (!found) throw new Error(`no className near ${needle}`);
+      return found[1] ?? found[2];
+    };
+
+    it("defines `short` as a max-height media query of 520px", () => {
+      expect(tailwindConfig).toMatch(
+        /short:\s*\{\s*raw:\s*"\(max-height:\s*520px\)"\s*\}/
+      );
+    });
+
+    it("hides the stats line", () => {
+      const stats = lineOf("lastStats && !lastError");
+      expect(lines[stats]).toContain("short:hidden");
+    });
+
+    it("hides the live words box while it is empty, and shows it with words", () => {
+      expect(source).toMatch(/const boxEmpty = !box && !lastError/);
+      const cls = classOf('data-testid="live-transcript"', 6);
+      expect(cls).toContain("boxEmpty");
+      expect(cls).toContain("short:hidden");
+    });
+
+    it("keeps the bar at least 72px tall and never shrunk", () => {
+      const cls = classOf("rounded-3xl", 5);
+      expect(cls).toMatch(/\bmin-h-\[72px\]/);
+      expect(cls).toMatch(/\bshrink-0\b/);
+      expect(cls).toMatch(/\bshort:h-20\b/);
+    });
+
+    it("tightens the controls block and the scroll area", () => {
+      expect(classOf('data-testid="talk-controls"', 3)).toMatch(/short:p[tb]-/);
+      expect(classOf("min-h-0 flex-1 overflow-y-auto", 1)).toMatch(
+        /short:p[tb]-/
+      );
+    });
+
+    it("keeps the toggles in the scroll area, reachable by scrolling", () => {
+      expect(lineOf("grid-cols-2")).toBeGreaterThan(
+        lineOf("min-h-0 flex-1 overflow-y-auto")
+      );
+      expect(classOf("min-h-0 flex-1 overflow-y-auto", 1)).toContain(
+        "overflow-y-auto"
+      );
+    });
+
+    it("compacts the header and the tab bar", () => {
+      expect(statusBar).toMatch(/short:py-\d/);
+      expect(app).toMatch(/short:py-\d/);
+    });
   });
 
   it("keeps no cut-off action row on the card", () => {

@@ -30,7 +30,7 @@ export function StatusBar({
     hidStatus.headset_mic.dictating !== true;
 
   return (
-    <div className="bg-gray-950 border-b border-gray-800 px-4 py-2">
+    <div className="bg-gray-950 border-b border-gray-800 px-4 py-2 short:py-1">
       <div className="flex items-center justify-between text-sm">
         <span className="font-semibold text-white">Whisper Keyboard</span>
         <div className="flex items-center gap-3">

@@ -132,7 +132,7 @@ export default function App() {
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`flex-1 py-3 text-sm font-medium capitalize ${
+              className={`flex-1 py-3 short:py-2 text-sm font-medium capitalize ${
                 tab === t
                   ? "text-sky-400 border-t-2 border-sky-400"
                   : "text-gray-500"

@@ -3,6 +3,11 @@ export default {
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
   theme: {
     extend: {
+      screens: {
+        // A short window (split screen, about 380 CSS px tall): the Talk
+        // screen gives up everything but the Hold to talk bar first.
+        short: { raw: "(max-height: 520px)" },
+      },
       colors: {
         surface: "#1E1E2E",
         "surface-variant": "#2A2A3A",
