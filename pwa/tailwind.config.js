@@ -12,6 +12,15 @@ export default {
         // and the padding shrink to a line each so Hold to talk stays whole.
         // Declared after `short` so its classes win where both apply.
         tiny: { raw: "(max-height: 300px)" },
+        // A bare window (under about 200px: his split-screen half with the
+        // address bar, and smaller): only Hold to talk remains. The header
+        // and the tab bar are hidden, the button fills the window, a handle
+        // beside it opens the menu. 175px, his size, sits below the line;
+        // 240px, which keeps its header and tabs, sits above it.
+        bare: { raw: "(max-height: 200px)" },
+        // A tiny bare window (under about 60px): the label gives way to the
+        // mic icon alone; the button stays 40px or more.
+        mic: { raw: "(max-height: 60px)" },
       },
       colors: {
         surface: "#1E1E2E",
