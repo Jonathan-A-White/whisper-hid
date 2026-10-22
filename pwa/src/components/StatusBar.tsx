@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { HidStatus, WhisperStatus } from "../types";
 import { DevicePicker } from "./DevicePicker";
+import type { Chrome } from "../types";
 
 interface StatusBarProps {
   hidStatus: HidStatus | null;
@@ -9,6 +10,8 @@ interface StatusBarProps {
   whisperError: string | null;
   onRestart: () => void;
   onShowDebug: () => void;
+  /** which chrome state the app is in: a bare window hides the header unless "menu" */
+  chrome: Chrome;
 }
 
 export function StatusBar({
@@ -18,6 +21,7 @@ export function StatusBar({
   whisperError,
   onRestart,
   onShowDebug,
+  chrome,
 }: StatusBarProps) {
   const [showDevicePicker, setShowDevicePicker] = useState(false);
   const btState = hidStatus?.bluetooth;
@@ -30,7 +34,10 @@ export function StatusBar({
     hidStatus.headset_mic.dictating !== true;
 
   return (
-    <div className="bg-gray-950 border-b border-gray-800 px-4 py-2 short:py-1 tiny:py-0.5">
+    <div
+      data-chrome={chrome}
+      className="bg-gray-950 border-b border-gray-800 px-4 py-2 short:py-1 tiny:py-0.5 bare:data-[chrome=collapsed]:hidden bare:data-[chrome=page]:hidden"
+    >
       <div className="flex items-center justify-between text-sm">
         <span className="font-semibold text-white">Whisper Keyboard</span>
         <div className="flex items-center gap-3">

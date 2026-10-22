@@ -12,7 +12,7 @@ import { SetupWizard } from "./components/SetupWizard";
 import { AboutView } from "./components/AboutView";
 import { DebugLog } from "./components/DebugLog";
 import { UpdateBanner } from "./components/UpdateBanner";
-import type { Tab, Settings } from "./types";
+import type { Chrome, Tab, Settings } from "./types";
 import { DEFAULT_SETTINGS } from "./types";
 
 function loadSettings(): Settings {
@@ -31,6 +31,9 @@ export default function App() {
   const [showDebug, setShowDebug] = useState(false);
   const [showSetup, setShowSetup] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
+  // A bare window (under 200px tall) shows only Hold to talk; this opens the
+  // header and tab bar over it, and the Talk tab closes them again.
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const updateSettings = (partial: Partial<Settings>) => {
     setSettings((prev) => {
@@ -83,6 +86,13 @@ export default function App() {
     );
   }
 
+  const chrome: Chrome =
+    tab !== "talk" || showDebug || showAbout
+      ? "page"
+      : menuOpen
+        ? "menu"
+        : "collapsed";
+
   return (
     <div className="h-[100dvh] bg-black flex flex-col overflow-hidden">
       <UpdateBanner />
@@ -93,9 +103,13 @@ export default function App() {
         whisperError={whisper.error}
         onRestart={hid.restart}
         onShowDebug={() => setShowDebug(true)}
+        chrome={chrome}
       />
 
-      <main className="flex-1 overflow-y-auto">
+      <main
+        data-chrome={chrome}
+        className="flex-1 overflow-y-auto bare:data-[chrome=menu]:hidden"
+      >
         {showDebug ? (
           <DebugLog onClose={() => setShowDebug(false)} />
         ) : showAbout ? (
@@ -108,6 +122,7 @@ export default function App() {
             target={target}
             settings={settings}
             onUpdateSettings={updateSettings}
+            onToggleMenu={() => setMenuOpen((open) => !open)}
           />
         ) : tab === "history" ? (
           <HistoryView store={store} hid={hid} sendTo={settings.sendTo} />
@@ -127,11 +142,18 @@ export default function App() {
       </main>
 
       {!showDebug && (
-        <nav className="flex border-t border-gray-800 bg-gray-950 pb-[var(--bar-inset)]">
+        <nav
+          data-chrome={chrome}
+          className="flex border-t border-gray-800 bg-gray-950 pb-[var(--bar-inset)] bare:data-[chrome=collapsed]:hidden"
+        >
           {(["talk", "history", "settings"] as Tab[]).map((t) => (
             <button
               key={t}
-              onClick={() => setTab(t)}
+              onClick={() => {
+                setTab(t);
+                // Talk is the way back to the bare button
+                if (t === "talk") setMenuOpen(false);
+              }}
               className={`flex-1 py-3 short:py-2 tiny:py-1 text-sm font-medium capitalize ${
                 tab === t
                   ? "text-sky-400 border-t-2 border-sky-400"

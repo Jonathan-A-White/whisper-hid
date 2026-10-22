@@ -202,6 +202,50 @@ describe("TalkView layout", () => {
     });
   });
 
+  // Below about 200px (his split screen without the address bar, and less):
+  // only Hold to talk remains. The header and the tab bar are hidden, the
+  // button fills the window, a side handle opens the menu and shows the status,
+  // and the status line is drawn over the button. Rendered check: e2e/layout.e2e.ts.
+  describe("in a bare window", () => {
+    it("defines `bare` (200px) and `mic` (60px) after `tiny`", () => {
+      expect(tailwindConfig).toMatch(
+        /bare:\s*\{\s*raw:\s*"\(max-height:\s*200px\)"\s*\}/
+      );
+      expect(tailwindConfig).toMatch(
+        /mic:\s*\{\s*raw:\s*"\(max-height:\s*60px\)"\s*\}/
+      );
+      const at = (s: string) => tailwindConfig.indexOf(`${s}: {`);
+      expect(at("tiny")).toBeLessThan(at("bare"));
+      expect(at("bare")).toBeLessThan(at("mic"));
+    });
+
+    it("hides the header and the tab bar while collapsed", () => {
+      expect(statusBar).toMatch(/bare:data-\[chrome=collapsed\]:hidden/);
+      expect(app).toMatch(/data-chrome=/);
+      expect(app).toMatch(/bare:data-\[chrome=collapsed\]:hidden/);
+    });
+
+    it("scales the button with the window and keeps 40px, the label going at 60px", () => {
+      const at = lineOf("rounded-3xl");
+      const cls = lines.slice(at - 1, at + 4).join("\n");
+      expect(cls).toMatch(/\bbare:flex-1\b/);
+      expect(cls).toMatch(/\bbare:min-h-\[40px\]/);
+      expect(source).toMatch(/mic:hidden/);
+    });
+
+    it("draws the status line over the button, not as its own row", () => {
+      const at = lineOf('data-testid="live-transcript"');
+      const cls = lines.slice(at - 1, at + 6).join("\n");
+      expect(cls).toMatch(/\bbare:absolute\b/);
+      expect(cls).toMatch(/\bbare:pointer-events-none\b/);
+    });
+
+    it("has a handle with the status as its title, opening the menu", () => {
+      expect(source).toContain('data-testid="menu-handle"');
+      expect(source).toContain("collapsedStatus(");
+    });
+  });
+
   it("keeps no cut-off action row on the card", () => {
     expect(source).not.toContain("<HistoryActions");
   });

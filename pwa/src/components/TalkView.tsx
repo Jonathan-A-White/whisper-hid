@@ -24,6 +24,7 @@ import {
   sendDisabledFor,
   sendEntry,
 } from "../lib/historyActions";
+import { collapsedStatus } from "../lib/collapsedStatus";
 import { frontEntry } from "../lib/frontMessage";
 import { EditBuffer, type VoiceEditState } from "./EditBuffer";
 import { EntryEditor } from "./EntryEditor";
@@ -48,6 +49,7 @@ interface TalkViewProps {
     recording: boolean;
     transcribing: boolean;
     status: WhisperStatus | null;
+    error?: string | null;
     startRecording: () => Promise<boolean>;
     stopRecording: () => Promise<TranscriptionResult>;
   };
@@ -56,6 +58,7 @@ interface TalkViewProps {
     sendNewline: () => Promise<void>;
     stopTransmission: () => Promise<void>;
     status: HidStatus | null;
+    reachable?: boolean;
     queue: { id: string; text: string; status: string }[];
     setHeadsetMic: (enabled: boolean) => Promise<void>;
   };
@@ -76,6 +79,8 @@ interface TalkViewProps {
   };
   settings: Settings;
   onUpdateSettings: (partial: Partial<Settings>) => void;
+  /** a bare window's handle: opens (or closes) the header and tab bar */
+  onToggleMenu?: () => void;
 }
 
 interface TranscriptionStats {
@@ -92,6 +97,7 @@ export function TalkView({
   target,
   settings,
   onUpdateSettings,
+  onToggleMenu,
 }: TalkViewProps) {
   // The id of the entry the last dictation added. The front message renders
   // that entry from the store, so History and this screen never disagree.
@@ -322,6 +328,13 @@ export function TalkView({
   // In a short window an empty words box (nothing live, no error) is hidden
   // so the bar keeps its room; it shows again once there are words.
   const boxEmpty = !box && !lastError;
+  // A bare window has no header: the handle beside the bar carries its dots.
+  const status = collapsedStatus({
+    whisperStatus: whisper.status,
+    whisperError: whisper.error ?? null,
+    hidStatus: hid.status,
+    hidReachable: hid.reachable ?? true,
+  });
   const bar = talkLabel({
     phase: pressPhase,
     micOpen,
@@ -333,7 +346,7 @@ export function TalkView({
     <div className="flex h-full flex-col overflow-hidden">
       {/* Pinned items — fixed at top, never scrolls away */}
       {store.pinnedEntries.length > 0 && (
-        <div className="flex-shrink-0 w-full px-6 pt-6 mb-4 tiny:pt-1 tiny:mb-1 overflow-x-auto">
+        <div className="flex-shrink-0 w-full px-6 pt-6 mb-4 tiny:pt-1 tiny:mb-1 overflow-x-auto bare:hidden">
           <div className="flex gap-2 pb-1">
             {store.pinnedEntries.map((entry) => (
               <button
@@ -353,7 +366,7 @@ export function TalkView({
       {/* Scrollable content area: the toggles and notes. The live words box
           and the Talk bar sit below it, at the foot of the screen, under the
           thumb. */}
-      <div className="min-h-0 flex-1 overflow-y-auto flex flex-col items-center px-6 pt-6 pb-4 short:pt-2 short:pb-2 tiny:pt-1 tiny:pb-1">
+      <div className="min-h-0 flex-1 overflow-y-auto flex flex-col items-center px-6 pt-6 pb-4 short:pt-2 short:pb-2 tiny:pt-1 tiny:pb-1 bare:data-[editing=false]:hidden" data-editing={editText !== null}>
         {/* Kill switch — stops in-progress typing on the host and releases any
             stuck (auto-repeating) key. Kept outside the edit-buffer branch so
             it's reachable in every screen state. */}
@@ -517,89 +530,131 @@ export function TalkView({
       {editText === null && (
         <div
           data-testid="talk-controls"
-          className="flex shrink-0 flex-col items-center gap-3 border-t border-gray-800 bg-black px-4 pt-3 pb-4 short:gap-2 short:pt-2 short:pb-2 tiny:gap-1 tiny:pt-1 tiny:pb-1"
+          className="flex shrink-0 flex-col items-center gap-3 border-t border-gray-800 bg-black px-4 pt-3 pb-4 short:gap-2 short:pt-2 short:pb-2 tiny:gap-1 tiny:pt-1 tiny:pb-1 bare:min-h-0 bare:flex-1 bare:flex-row bare:items-stretch bare:border-t-0 bare:p-1"
         >
-          {/* Live words box: what the dictation is doing, then its result */}
-          <div
-            role="status"
-            aria-live="polite"
-            data-testid="live-transcript"
-            ref={liveBoxRef}
-            className={`flex min-h-[3rem] max-h-40 tiny:min-h-0 tiny:max-h-10 w-full max-w-xl flex-col items-center justify-end overflow-y-auto text-center text-sm ${
-              boxEmpty ? "short:hidden" : ""
-            }`}
-          >
-            {box?.kind === "note" ? (
-              <p className="text-gray-100">{box.text}</p>
-            ) : box?.kind === "words" ? (
-              <p className="text-gray-100">
-                {box.text}
-                {box.tail && (
-                  <>
-                    {box.text ? " " : ""}
-                    <span className="text-muted">{box.tail}</span>
-                  </>
-                )}
-              </p>
-            ) : box?.kind === "listening" ? (
-              <p className="text-gray-100">Listening…</p>
-            ) : (
-              <>
-                {lastStats && !lastError && (
-                  <p className="mt-1 text-gray-600 text-xs short:hidden">
-                    {lastStats.audioDuration.toFixed(1)}s audio,{" "}
-                    {(lastStats.processingMs / 1000).toFixed(1)}s processing
-                    {" \u2014 "}
-                    <span
-                      className={
-                        lastStats.speedRatio >= 1
-                          ? "text-green-500"
-                          : "text-yellow-500"
-                      }
-                    >
-                      {lastStats.speedRatio.toFixed(1)}x
-                    </span>
-                  </p>
-                )}
-                {lastError && <p className="text-red-400">{lastError}</p>}
-              </>
+          {/* Bare window: the header is gone, so a handle beside the bar shows
+              the status dots and opens the menu (History, Settings). While a
+              send is typing, the kill switch gets a button of its own here. */}
+          <div className="hidden w-9 shrink-0 flex-col gap-1 bare:flex">
+            {isConnected && hid.status?.typing && (
+              <button
+                type="button"
+                aria-label="Stop typing"
+                onClick={() => hid.stopTransmission()}
+                className="flex min-h-0 flex-1 items-center justify-center rounded-lg bg-red-600 text-xs text-white animate-pulse"
+              >
+                ⏹
+              </button>
             )}
+            <button
+              type="button"
+              data-testid="menu-handle"
+              title={status.title}
+              aria-label={status.title}
+              onClick={onToggleMenu}
+              className="flex min-h-0 flex-1 flex-col items-center justify-center gap-1 overflow-hidden rounded-lg bg-gray-800 text-gray-400"
+            >
+              <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[status.model.dot]}`} />
+              <span className={`h-2 w-2 shrink-0 rounded-full ${DOT[status.link.dot]}`} />
+              <span aria-hidden="true" className="text-xs leading-none">☰</span>
+            </button>
           </div>
 
-          {/* Talk bar: hold to talk, or tap to keep it on */}
-          <button
-            type="button"
-            disabled={whisper.transcribing}
-            onPointerDown={onBarPointerDown}
-            onPointerUp={pressUp}
-            onPointerCancel={pressCancel}
-            onContextMenu={(event) => event.preventDefault()}
-            onKeyDown={onBarKeyDown}
-            onKeyUp={onBarKeyUp}
-            className={`flex h-24 min-h-[72px] shrink-0 short:h-20 tiny:h-16 tiny:min-h-[60px] w-full max-w-xl touch-none select-none flex-col items-center justify-center gap-1 rounded-3xl text-base font-semibold transition-colors [-webkit-touch-callout:none] disabled:cursor-not-allowed disabled:opacity-45 ${
-              pressPhase === "idle"
-                ? "bg-accent text-accent-fg"
-                : "bg-needs text-canvas animate-pulse"
-            }`}
-          >
-            <svg
-              aria-hidden="true"
-              viewBox="0 0 24 24"
-              width="26"
-              height="26"
-              fill="currentColor"
+          {/* The words box and the bar: a column, or in a bare window one
+              box the bar fills, the words drawn over it */}
+          <div className="flex w-full max-w-xl flex-col items-center gap-3 short:gap-2 tiny:gap-1 bare:relative bare:min-h-0 bare:min-w-0 bare:max-w-none bare:flex-1">
+            {/* Live words box: what the dictation is doing, then its result */}
+            <div
+              role="status"
+              aria-live="polite"
+              data-testid="live-transcript"
+              ref={liveBoxRef}
+              className={`flex min-h-[3rem] max-h-40 tiny:min-h-0 tiny:max-h-10 w-full max-w-xl flex-col items-center justify-end overflow-y-auto text-center text-sm bare:pointer-events-none bare:absolute bare:inset-0 bare:z-10 bare:max-h-none bare:max-w-none bare:justify-center bare:overflow-hidden bare:rounded-[1.5rem] bare:bg-accent bare:px-3 ${
+                boxEmpty ? "short:hidden" : ""
+              }`}
             >
-              <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z" />
-            </svg>
-            <span>{bar.label}</span>
-            {bar.sub && (
-              <span className="text-xs font-normal opacity-80 tiny:hidden">
-                {bar.sub}
-              </span>
-            )}
-          </button>
+              {box?.kind === "note" ? (
+                <p className="text-gray-100 bare:text-accent-fg">{box.text}</p>
+              ) : box?.kind === "words" ? (
+                <p className="text-gray-100 bare:text-accent-fg">
+                  {box.text}
+                  {box.tail && (
+                    <>
+                      {box.text ? " " : ""}
+                      <span className="text-muted bare:text-accent-fg/70">{box.tail}</span>
+                    </>
+                  )}
+                </p>
+              ) : box?.kind === "listening" ? (
+                <p className="text-gray-100 bare:text-accent-fg">Listening…</p>
+              ) : (
+                <>
+                  {lastStats && !lastError && (
+                    <p className="mt-1 text-gray-600 text-xs short:hidden">
+                      {lastStats.audioDuration.toFixed(1)}s audio,{" "}
+                      {(lastStats.processingMs / 1000).toFixed(1)}s processing
+                      {" \u2014 "}
+                      <span
+                        className={
+                          lastStats.speedRatio >= 1
+                            ? "text-green-500"
+                            : "text-yellow-500"
+                        }
+                      >
+                        {lastStats.speedRatio.toFixed(1)}x
+                      </span>
+                    </p>
+                  )}
+                  {lastError && (
+                    <p className="text-red-400 bare:text-red-950">{lastError}</p>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Talk bar: hold to talk, or tap to keep it on */}
+            <button
+              type="button"
+              data-testid="talk-bar"
+              disabled={whisper.transcribing}
+              onPointerDown={onBarPointerDown}
+              onPointerUp={pressUp}
+              onPointerCancel={pressCancel}
+              onContextMenu={(event) => event.preventDefault()}
+              onKeyDown={onBarKeyDown}
+              onKeyUp={onBarKeyUp}
+              aria-label={bar.sub ? `${bar.label}. ${bar.sub}` : bar.label}
+              className={`flex h-24 min-h-[72px] shrink-0 short:h-20 tiny:h-16 tiny:min-h-[60px] bare:h-auto bare:min-h-[40px] bare:max-w-none bare:flex-1 bare:shrink bare:flex-row bare:gap-2 w-full max-w-xl touch-none select-none flex-col items-center justify-center gap-1 rounded-3xl text-base font-semibold transition-colors [-webkit-touch-callout:none] disabled:cursor-not-allowed disabled:opacity-45 ${
+                pressPhase === "idle"
+                  ? "bg-accent text-accent-fg"
+                  : "bg-needs text-canvas animate-pulse"
+              }`}
+            >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 24 24"
+                width="26"
+                height="26"
+                fill="currentColor"
+              >
+                <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2Z" />
+              </svg>
+              <span className="mic:hidden">{bar.label}</span>
+              {bar.sub && (
+                <span className="text-xs font-normal opacity-80 tiny:hidden">
+                  {bar.sub}
+                </span>
+              )}
+            </button>
+          </div>
         </div>
       )}
     </div>
   );
 }
+
+const DOT = {
+  green: "bg-green-400",
+  yellow: "bg-yellow-400",
+  red: "bg-red-400",
+} as const;
