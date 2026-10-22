@@ -7,6 +7,11 @@ export default {
         // A short window (split screen, about 380 CSS px tall): the Talk
         // screen gives up everything but the Hold to talk bar first.
         short: { raw: "(max-height: 520px)" },
+        // A very short window (his split-screen half, about 175 CSS px once
+        // Chrome's address bar has taken its share): the header, the tab bar
+        // and the padding shrink to a line each so Hold to talk stays whole.
+        // Declared after `short` so its classes win where both apply.
+        tiny: { raw: "(max-height: 300px)" },
       },
       colors: {
         surface: "#1E1E2E",

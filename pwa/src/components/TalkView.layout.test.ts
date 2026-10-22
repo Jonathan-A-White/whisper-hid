@@ -167,6 +167,41 @@ describe("TalkView layout", () => {
     });
   });
 
+  // A very short window (his split-screen half, about 175 CSS px): the header,
+  // the tab bar and the padding shrink to a line each, the bar keeps 60px or
+  // more. The real check is the Playwright render (`npm run test:layout`,
+  // e2e/layout.e2e.ts); this only pins that the classes it relies on exist.
+  describe("in a very short window", () => {
+    it("defines `tiny` as a max-height media query of 300px, after `short`", () => {
+      expect(tailwindConfig).toMatch(
+        /tiny:\s*\{\s*raw:\s*"\(max-height:\s*300px\)"\s*\}/
+      );
+      expect(tailwindConfig.indexOf("short:")).toBeLessThan(
+        tailwindConfig.indexOf("tiny:")
+      );
+    });
+
+    it("shrinks the header (and its status banner) and the tab bar", () => {
+      expect(statusBar).toMatch(/tiny:py-/);
+      expect(statusBar).toMatch(/tiny:hidden/);
+      expect(app).toMatch(/tiny:py-/);
+    });
+
+    it("keeps the bar at 60px or more, never shrunk, and drops its hint line", () => {
+      const at = lineOf("rounded-3xl");
+      const cls = lines.slice(at - 1, at + 4).join("\n");
+      expect(cls).toMatch(/\btiny:h-16\b/);
+      expect(cls).toMatch(/\btiny:min-h-\[60px\]/);
+      expect(source).toMatch(/opacity-80 tiny:hidden/);
+    });
+
+    it("tightens the controls block, the words box and the scroll area", () => {
+      expect(source).toMatch(/short:pb-2 tiny:gap-1 tiny:pt-1 tiny:pb-1/);
+      expect(source).toMatch(/tiny:max-h-10/);
+      expect(source).toMatch(/short:pb-2 tiny:pt-1 tiny:pb-1/);
+    });
+  });
+
   it("keeps no cut-off action row on the card", () => {
     expect(source).not.toContain("<HistoryActions");
   });

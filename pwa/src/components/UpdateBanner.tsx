@@ -11,7 +11,7 @@ export function UpdateBanner() {
       type="button"
       onClick={applyUpdate}
       disabled={updating}
-      className="flex w-full shrink-0 items-center justify-center bg-sky-600 px-3 py-3 text-base font-medium text-white disabled:opacity-70"
+      className="flex w-full shrink-0 items-center justify-center bg-sky-600 px-3 py-3 tiny:py-1 text-base font-medium text-white disabled:opacity-70"
     >
       {updating ? "Updating…" : "Update ready, tap to reload"}
     </button>

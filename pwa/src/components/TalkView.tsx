@@ -333,7 +333,7 @@ export function TalkView({
     <div className="flex h-full flex-col overflow-hidden">
       {/* Pinned items — fixed at top, never scrolls away */}
       {store.pinnedEntries.length > 0 && (
-        <div className="flex-shrink-0 w-full px-6 pt-6 mb-4 overflow-x-auto">
+        <div className="flex-shrink-0 w-full px-6 pt-6 mb-4 tiny:pt-1 tiny:mb-1 overflow-x-auto">
           <div className="flex gap-2 pb-1">
             {store.pinnedEntries.map((entry) => (
               <button
@@ -353,7 +353,7 @@ export function TalkView({
       {/* Scrollable content area: the toggles and notes. The live words box
           and the Talk bar sit below it, at the foot of the screen, under the
           thumb. */}
-      <div className="min-h-0 flex-1 overflow-y-auto flex flex-col items-center px-6 pt-6 pb-4 short:pt-2 short:pb-2">
+      <div className="min-h-0 flex-1 overflow-y-auto flex flex-col items-center px-6 pt-6 pb-4 short:pt-2 short:pb-2 tiny:pt-1 tiny:pb-1">
         {/* Kill switch — stops in-progress typing on the host and releases any
             stuck (auto-repeating) key. Kept outside the edit-buffer branch so
             it's reachable in every screen state. */}
@@ -517,7 +517,7 @@ export function TalkView({
       {editText === null && (
         <div
           data-testid="talk-controls"
-          className="flex shrink-0 flex-col items-center gap-3 border-t border-gray-800 bg-black px-4 pt-3 pb-4 short:gap-2 short:pt-2 short:pb-2"
+          className="flex shrink-0 flex-col items-center gap-3 border-t border-gray-800 bg-black px-4 pt-3 pb-4 short:gap-2 short:pt-2 short:pb-2 tiny:gap-1 tiny:pt-1 tiny:pb-1"
         >
           {/* Live words box: what the dictation is doing, then its result */}
           <div
@@ -525,7 +525,7 @@ export function TalkView({
             aria-live="polite"
             data-testid="live-transcript"
             ref={liveBoxRef}
-            className={`flex min-h-[3rem] max-h-40 w-full max-w-xl flex-col items-center justify-end overflow-y-auto text-center text-sm ${
+            className={`flex min-h-[3rem] max-h-40 tiny:min-h-0 tiny:max-h-10 w-full max-w-xl flex-col items-center justify-end overflow-y-auto text-center text-sm ${
               boxEmpty ? "short:hidden" : ""
             }`}
           >
@@ -576,7 +576,7 @@ export function TalkView({
             onContextMenu={(event) => event.preventDefault()}
             onKeyDown={onBarKeyDown}
             onKeyUp={onBarKeyUp}
-            className={`flex h-24 min-h-[72px] shrink-0 short:h-20 w-full max-w-xl touch-none select-none flex-col items-center justify-center gap-1 rounded-3xl text-base font-semibold transition-colors [-webkit-touch-callout:none] disabled:cursor-not-allowed disabled:opacity-45 ${
+            className={`flex h-24 min-h-[72px] shrink-0 short:h-20 tiny:h-16 tiny:min-h-[60px] w-full max-w-xl touch-none select-none flex-col items-center justify-center gap-1 rounded-3xl text-base font-semibold transition-colors [-webkit-touch-callout:none] disabled:cursor-not-allowed disabled:opacity-45 ${
               pressPhase === "idle"
                 ? "bg-accent text-accent-fg"
                 : "bg-needs text-canvas animate-pulse"
@@ -593,7 +593,9 @@ export function TalkView({
             </svg>
             <span>{bar.label}</span>
             {bar.sub && (
-              <span className="text-xs font-normal opacity-80">{bar.sub}</span>
+              <span className="text-xs font-normal opacity-80 tiny:hidden">
+                {bar.sub}
+              </span>
             )}
           </button>
         </div>
