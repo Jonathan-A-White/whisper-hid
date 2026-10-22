@@ -154,3 +154,10 @@ export interface QueuedText {
   text: string;
   status: "pending" | "sent" | "failed";
 }
+
+/**
+ * Which of the app's chrome (header, tab bar) a bare window shows: the Talk
+ * screen collapsed to Hold to talk, the menu opened over it, or another page.
+ * Windows taller than a bare one show it all whatever the value.
+ */
+export type Chrome = "collapsed" | "menu" | "page";
