@@ -41,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.13.0"
+SERVER_VERSION = "1.13.1"
 
 # --- Configuration ---
 
@@ -678,8 +678,8 @@ def start_cleanup_server() -> bool:
     _cleanup_loaded_file = os.path.basename(model_file)
 
     def _watch_ready(proc):
-        deadline = time.time() + 180
-        while time.time() < deadline:
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
             if proc.poll() is not None:
                 add_log("error", f"Cleanup llama-server exited (code={proc.returncode})")
                 return
@@ -1053,13 +1053,13 @@ def apply_cleanup(text: str) -> str:
         return text
 
     style = _active_style()
-    t0 = time.time()
+    t0 = time.monotonic()
     try:
         cleaned = _cleanup_request(text)
     except Exception as e:
         add_log("warn", f"Cleanup failed ({e}) — using raw text")
         return text
-    ms = int((time.time() - t0) * 1000)
+    ms = int((time.monotonic() - t0) * 1000)
     global last_cleanup_ms
     last_cleanup_ms = ms
 
@@ -1287,7 +1287,7 @@ def load_parakeet() -> bool:
         add_log("info", f"Parakeet model not found in {MODEL_DIR} — run: ./update-model.sh parakeet")
         return False
 
-    t0 = time.time()
+    t0 = time.monotonic()
     try:
         _parakeet_recognizer, _parakeet_backend = _create_parakeet_recognizer(files)
     except ImportError:
@@ -1302,7 +1302,7 @@ def load_parakeet() -> bool:
         _parakeet_recognizer = None
         return False
 
-    load_ms = int((time.time() - t0) * 1000)
+    load_ms = int((time.monotonic() - t0) * 1000)
     add_log("info", f"Parakeet model loaded in {load_ms}ms (backend={_parakeet_backend}, {PARAKEET_THREADS} threads)")
     return True
 
@@ -1350,11 +1350,11 @@ def run_parakeet_raw(wav_path: str) -> tuple[str, int]:
 
     audio, sample_rate = _read_wav_float32(wav_path)
 
-    t0 = time.time()
+    t0 = time.monotonic()
     stream = _parakeet_recognizer.create_stream()
     stream.accept_waveform(sample_rate, audio)
     _parakeet_recognizer.decode_stream(stream)
-    duration_ms = int((time.time() - t0) * 1000)
+    duration_ms = int((time.monotonic() - t0) * 1000)
 
     return stream.result.text.strip(), duration_ms
 
@@ -1405,7 +1405,7 @@ def _detect_termux_api_bin() -> str | None:
         add_log("info", f"termux-api binary: {found}" if found else
                 "termux-api binary not found — mic audio source locked to the wrapper default")
     _termux_api_bin = found
-    _termux_api_probed_at = time.time()
+    _termux_api_probed_at = time.monotonic()
     return _termux_api_bin
 
 
@@ -1416,7 +1416,7 @@ def _mic_source_selectable() -> bool:
     Termux:API afterwards doesn't require a server restart.
     """
     if (_termux_api_bin is None
-            and time.time() - _termux_api_probed_at > TERMUX_API_REPROBE_SEC):
+            and time.monotonic() - _termux_api_probed_at > TERMUX_API_REPROBE_SEC):
         _detect_termux_api_bin()
     return _termux_api_bin is not None
 
@@ -2816,13 +2816,13 @@ def edit_text():
 
     text = data["text"]
     command = data["command"].strip()
-    t0 = time.time()
+    t0 = time.monotonic()
     try:
         edited = _edit_request(text, command)
     except Exception as e:
         add_log("warn", f"Voice edit failed ({e})")
         return jsonify({"error": "edit_failed", "message": str(e)}), 502
-    ms = int((time.time() - t0) * 1000)
+    ms = int((time.monotonic() - t0) * 1000)
 
     # Degenerate-reply guard: empty output or runaway growth is not an edit.
     # (Shrinkage is legitimate — "delete everything after the first line".)
