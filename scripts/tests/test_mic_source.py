@@ -140,7 +140,7 @@ class TestSelectableProbe:
     def test_no_reprobe_inside_window(self, server, monkeypatch):
         probes = []
         monkeypatch.setattr(server, "_termux_api_bin", None)
-        monkeypatch.setattr(server, "_termux_api_probed_at", server.time.time())
+        monkeypatch.setattr(server, "_termux_api_probed_at", server.time.monotonic())
         monkeypatch.setattr(server, "_detect_termux_api_bin", lambda: probes.append(1))
         for _ in range(5):
             assert server._mic_source_selectable() is False
@@ -151,7 +151,7 @@ class TestSelectableProbe:
         monkeypatch.setattr(server, "_termux_api_bin", None)
         monkeypatch.setattr(
             server, "_termux_api_probed_at",
-            server.time.time() - server.TERMUX_API_REPROBE_SEC - 1,
+            server.time.monotonic() - server.TERMUX_API_REPROBE_SEC - 1,
         )
         monkeypatch.setattr(server, "_detect_termux_api_bin", lambda: probes.append(1))
         server._mic_source_selectable()
