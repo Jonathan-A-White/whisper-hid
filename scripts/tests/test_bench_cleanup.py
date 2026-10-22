@@ -49,6 +49,43 @@ HTTPServer(("127.0.0.1", port), H).serve_forever()
 """
 
 
+# A wall clock that only ever runs backwards, as one does when NTP or the host
+# steps it mid-run: every read is one second earlier than the last. A timing
+# taken from it comes out negative; one taken from a monotonic clock does not.
+BACKWARDS_DATE = f"""#!{sys.executable}
+import os, sys
+counter = os.environ["FAKE_CLOCK_COUNTER"]
+n = int(open(counter).read()) if os.path.exists(counter) else 0
+open(counter, "w").write(str(n + 1))
+print("%d.%09d" % (100000 - n, 0))
+"""
+
+BACKWARDS_PYTHON3 = f"""#!{sys.executable}
+import itertools, sys, time
+_ticks = itertools.count()
+time.time = lambda: 100000.0 - next(_ticks)
+args = sys.argv[1:]
+assert args[:2] == ["-I", "-c"], args
+sys.argv = ["-c"] + args[3:]
+exec(compile(args[2], "<string>", "exec"), {{"__name__": "__main__"}})
+"""
+
+
+@pytest.fixture
+def backwards_clock(tmp_path):
+    """A bin dir whose `date` and python3 `time.time()` run backwards; monotonic is untouched."""
+    bindir = tmp_path / "clockbin"
+    bindir.mkdir()
+    for name, body in (("date", BACKWARDS_DATE), ("python3", BACKWARDS_PYTHON3)):
+        f = bindir / name
+        f.write_text(body)
+        f.chmod(f.stat().st_mode | stat.S_IXUSR)
+    return {
+        "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+        "FAKE_CLOCK_COUNTER": str(tmp_path / "clock.count"),
+    }
+
+
 @pytest.fixture
 def install(tmp_path):
     """A fake whisper-stt install dir with two models and a fake llama-server."""
@@ -141,6 +178,15 @@ def test_real_run_prints_one_row_per_model(install):
         cols = row.split()
         assert cols[1] in ("3", "1")
         assert all(float(c) >= 0 for c in cols[2:])
+
+
+def test_timings_never_go_negative_when_the_wall_clock_steps_back(install, backwards_clock):
+    r = _run(install, **backwards_clock)
+    assert r.returncode == 0, r.stderr
+    rows = [l for l in r.stdout.splitlines() if l.startswith("Qwen")]
+    assert len(rows) == 2
+    for row in rows:
+        assert all(float(c) >= 0 for c in row.split()[2:]), row
 
 
 def test_a_model_that_will_not_load_is_reported_and_the_rest_still_run(install):

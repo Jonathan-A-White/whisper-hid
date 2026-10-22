@@ -90,7 +90,9 @@ stop_bench_server() {
 }
 trap stop_bench_server EXIT
 
-now() { date +%s.%N; }
+# Seconds on the system-wide monotonic clock (shared by every process): a wall
+# clock can step backwards (NTP, host sync) and turn a timing negative.
+now() { python3 -I -c 'import time; print("%.6f" % time.monotonic())'; }
 
 # chat_seconds PROMPT — one cleanup request; prints seconds taken, fails on error.
 chat_seconds() {
@@ -114,10 +116,10 @@ req = urllib.request.Request(
     data=json.dumps(payload).encode(),
     headers={"Content-Type": "application/json"},
 )
-t0 = time.time()
+t0 = time.monotonic()
 with urllib.request.urlopen(req, timeout=300) as r:
     json.loads(r.read())["choices"][0]["message"]["content"]
-print("%.2f" % (time.time() - t0))
+print("%.2f" % (time.monotonic() - t0))
 ' "$PORT" "$1"
 }
 
