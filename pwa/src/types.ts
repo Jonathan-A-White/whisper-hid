@@ -28,6 +28,8 @@ export interface HidStatus {
   reconnect_max?: number | null;
   next_retry_seconds?: number;
   failure_reason?: string;
+  /** why the HID app is not registered, when the service knows: Bluetooth took registerApp and never answered; absent on older APKs */
+  registration_problem?: "no_answer";
   /** true while the service is typing (or has sends queued); absent on older APKs */
   typing?: boolean;
   keystroke_delay_ms?: number;

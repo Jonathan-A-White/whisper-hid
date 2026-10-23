@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { BtDevice } from "../types";
 import { hidDevices, hidConnect } from "../lib/api";
+import { connectErrorText } from "../lib/connectError";
 
 interface DevicePickerProps {
   onClose: () => void;
@@ -27,7 +28,7 @@ export function DevicePicker({ onClose, onConnected }: DevicePickerProps) {
       await hidConnect(address);
       onConnected();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Connection failed");
+      setError(connectErrorText(e instanceof Error ? e.message : undefined));
     } finally {
       setConnecting(null);
     }

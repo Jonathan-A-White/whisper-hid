@@ -28,6 +28,13 @@ describe("StatusBar banner", () => {
     expect(html).toContain("View Debug Log");
   });
 
+  it("idle and Android is not answering: says so in plain words, with Restart HID", () => {
+    const html = render({ service: "running", bluetooth: "idle", registration_problem: "no_answer" });
+    expect(html).toContain("Android isn&#x27;t answering. Restart the phone, then open Whisper HID.");
+    expect(html).not.toContain(BANNER_TEXT);
+    expect(html).toContain("Restart HID");
+  });
+
   it("failed: still says why it stopped, with both buttons", () => {
     const html = render({ service: "running", bluetooth: "failed", failure_reason: "Bluetooth is off" });
     expect(html).toContain("Not connected — Bluetooth is off");

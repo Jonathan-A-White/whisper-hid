@@ -443,7 +443,12 @@ export async function hidConnect(address: string) {
   if (res.status === 403) {
     throw new Error("AUTH_FAILED");
   }
-  return res.json();
+  const body = await res.json();
+  // A refused pick answers ok:false with an error code; it is not a connection.
+  if (!res.ok || body?.ok === false) {
+    throw new Error(body?.error ?? "connect_failed");
+  }
+  return body;
 }
 
 export async function hidHeadsetMic(enabled: boolean): Promise<{

@@ -140,6 +140,10 @@ export function StatusBar({
                 <div className="text-yellow-400">
                   Waiting for a computer — pair this phone from its Bluetooth settings.
                 </div>
+              ) : hidStatus?.registration_problem === "no_answer" ? (
+                <div className="text-red-400">
+                  Android isn't answering. Restart the phone, then open Whisper HID.
+                </div>
               ) : (
                 <div className="text-red-400">
                   Bluetooth keyboard not set up
