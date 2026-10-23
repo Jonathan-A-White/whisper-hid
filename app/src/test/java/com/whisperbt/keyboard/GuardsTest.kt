@@ -3,6 +3,7 @@ package com.whisperbt.keyboard
 import org.junit.Assert.*
 import org.junit.Test
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -22,8 +23,20 @@ class GuardsTest {
 
     // A worker thread like the service's hid-keystrokes thread, whose
     // uncaught exceptions are recorded instead of ending the test JVM.
-    private fun worker(): ExecutorService = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "hid-keystrokes").apply { setUncaughtExceptionHandler { _, e -> uncaught += e } }
+    // The handler runs on the dying worker thread, after the executor has
+    // already counted that worker as gone, so awaitTermination() does not
+    // wait for it: `handlerRan` is the only thing that does. `handlerDelayMs`
+    // makes that ordering certain instead of a coin toss.
+    private val handlerRan = CountDownLatch(1)
+
+    private fun worker(handlerDelayMs: Long = 0): ExecutorService = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "hid-keystrokes").apply {
+            setUncaughtExceptionHandler { _, e ->
+                Thread.sleep(handlerDelayMs)
+                uncaught += e
+                handlerRan.countDown()
+            }
+        }
     }
 
     private fun ExecutorService.drain() {
@@ -34,9 +47,10 @@ class GuardsTest {
     @Test
     fun anUnguardedTaskThatThrowsReachesTheUncaughtHandler() {
         // The crash path itself: on the phone this handler ends the process.
-        val inner = worker()
+        val inner = worker(handlerDelayMs = 100)
         inner.execute { throw IllegalArgumentException("bad report") }
         inner.drain()
+        assertTrue("the uncaught handler never ran", handlerRan.await(5, TimeUnit.SECONDS))
         assertEquals(1, uncaught.size)
     }
 

@@ -3,6 +3,7 @@ package com.whisperbt.keyboard
 import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
+import java.util.concurrent.CountDownLatch
 
 /**
  * When the headset's call link (SCO) is open: only while a dictation runs,
@@ -15,10 +16,12 @@ class HeadsetLinkControllerTest {
         var present = true
         val calls = mutableListOf<String>()
         var connectOnOpen = true
+        var onOpen: () -> Unit = {}
         lateinit var controller: HeadsetLinkController
         override fun canOpen() = present
         override fun open() {
             calls += "open"
+            onOpen()
             if (connectOnOpen) controller.onScoConnected()
         }
         override fun close() {
@@ -90,8 +93,12 @@ class HeadsetLinkControllerTest {
     fun waitedMsIsMeasuredWithTheClock() {
         driver.connectOnOpen = false
         val c = controller()
+        // beginDictation has read the clock before it opens the link, so the
+        // helper moves the clock only once open() has been called.
+        val opened = CountDownLatch(1)
+        driver.onOpen = { opened.countDown() }
         val t = Thread {
-            Thread.sleep(20)
+            opened.await()
             now += 750
             c.onScoConnected()
         }
