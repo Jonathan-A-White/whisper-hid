@@ -1,7 +1,19 @@
 /**
  * Type a file: a UTF-8 text file is typed as it is, chunk by chunk, through
- * the HID service. Pure logic here; TypeFileButton wires it to the browser.
+ * the HID service; any other file is typed as base64 between a header and a
+ * footer (typeBinary.ts), a picture compressed first (compressImage.ts).
+ * Pure logic here; TypeFileButton wires it to the browser.
  */
+import {
+  compressToBudget,
+  compressedName,
+  compressionSummary,
+  sniffImage,
+  type CompressionInfo,
+  type ImageKind,
+  type ImageSource,
+} from "./compressImage";
+import { typedBinaryText } from "./typeBinary";
 
 export type DecodedFile = { ok: true; text: string } | { ok: false };
 
@@ -213,4 +225,124 @@ export async function waitForIdle(deps: WaitIdleDeps): Promise<void> {
       return;
     }
   }
+}
+
+export interface PrepareDeps {
+  name: string;
+  bytes: Uint8Array;
+  /** the Keystroke delay setting, for the typing estimate */
+  delayMs: number;
+  /** the most typing time that goes ahead without asking */
+  budgetSeconds: number;
+  /** open a picture for compression; throws when the browser cannot read it */
+  openImage: (bytes: Uint8Array, kind: ImageKind) => Promise<ImageSource>;
+  isCancelled: () => boolean;
+}
+
+export type Prepared =
+  | { status: "empty" }
+  | { status: "cancelled" }
+  | {
+      status: "ready";
+      kind: "text" | "binary" | "picture";
+      /** the name that will be typed: a PNG that became a JPEG is renamed */
+      fileName: string;
+      /** everything that will be typed */
+      text: string;
+      /** how long typing `text` should take */
+      seconds: number;
+      /** longer than the budget: ask before typing */
+      overBudget: boolean;
+      /** set when a picture was made smaller */
+      compression?: CompressionInfo;
+    };
+
+/**
+ * Turn a picked file into the text to type and say whether it needs asking
+ * about. Text is typed as it is. Anything else is typed as base64 with its
+ * header; a picture over the budget is first compressed, step by step, until
+ * it fits (or as small as it gets, when it never does).
+ */
+export async function prepareFile(deps: PrepareDeps): Promise<Prepared> {
+  const { name, bytes } = deps;
+  if (deps.isCancelled()) return { status: "cancelled" };
+  if (bytes.length === 0) return { status: "empty" };
+  const rate = initialRate(deps.delayMs);
+  const secondsFor = (text: string) => estimateSeconds(text, rate);
+
+  const decoded = decodeTextFile(bytes);
+  if (decoded.ok) {
+    const seconds = secondsFor(decoded.text);
+    return {
+      status: "ready",
+      kind: "text",
+      fileName: name,
+      text: decoded.text,
+      seconds,
+      overBudget: seconds > deps.budgetSeconds,
+    };
+  }
+
+  const text = await typedBinaryText(name, bytes);
+  const seconds = secondsFor(text);
+  const kind = sniffImage(bytes);
+  const asIs = (): Extract<Prepared, { status: "ready" }> => ({
+    status: "ready",
+    kind: kind ? "picture" : "binary",
+    fileName: name,
+    text,
+    seconds,
+    overBudget: seconds > deps.budgetSeconds,
+  });
+  if (!kind || seconds <= deps.budgetSeconds) return asIs();
+
+  let source: ImageSource;
+  try {
+    source = await deps.openImage(bytes, kind);
+  } catch {
+    // not a picture the browser can read: type it like any other binary
+    return { ...asIs(), kind: "binary" };
+  }
+  const infoFor = (toBytes: number, format: ImageKind, maxSide: number): CompressionInfo => ({
+    fromName: name,
+    fromBytes: bytes.length,
+    toBytes,
+    format,
+    maxSide,
+  });
+  let result;
+  try {
+    result = await compressToBudget({
+      source,
+      kind,
+      budgetSeconds: deps.budgetSeconds,
+      isCancelled: deps.isCancelled,
+      estimateSeconds: async (out, step) =>
+        secondsFor(
+          await typedBinaryText(
+            compressedName(name, kind, step.format),
+            out,
+            compressionSummary(infoFor(out.length, step.format, step.maxSide))
+          )
+        ),
+    });
+  } catch {
+    return { ...asIs(), kind: "binary" };
+  }
+  if (result.status === "cancelled") return { status: "cancelled" };
+  // a "compression" that made it no smaller is not worth the change
+  if (result.bytes.length >= bytes.length) return asIs();
+  const fileName = compressedName(name, kind, result.step.format);
+  const compression = infoFor(result.bytes.length, result.step.format, result.step.maxSide);
+  const compressedText = await typedBinaryText(fileName, result.bytes, compressionSummary(compression));
+  const compressedSeconds = secondsFor(compressedText);
+  return {
+    status: "ready",
+    kind: "picture",
+    fileName,
+    text: compressedText,
+    seconds: compressedSeconds,
+    overBudget: compressedSeconds > deps.budgetSeconds,
+    compression,
+  };
 }

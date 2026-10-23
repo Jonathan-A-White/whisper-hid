@@ -50,6 +50,7 @@ const resting = {
     createElement(TypeFileButton, {
       newlineMode: "enter",
       keystrokeDelay: 10,
+      budgetMinutes: 2,
       hid: { status: null, stopTransmission: async () => {} },
     })
   ),

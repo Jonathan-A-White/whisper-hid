@@ -443,10 +443,11 @@ export function TalkView({
                 store={store}
               />
 
-              {/* Type a file: types a UTF-8 text file on the host, with progress */}
+              {/* Type a file: types a text file as it is, any other file as base64, with progress */}
               <TypeFileButton
                 newlineMode={target.newlineMode}
                 keystrokeDelay={settings.keystrokeDelay}
+                budgetMinutes={settings.typeBudgetMinutes}
                 hid={hid}
               />
             </div>

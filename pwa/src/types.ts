@@ -134,6 +134,12 @@ export interface Settings {
    * suits a terminal; raise it for a heavyweight editor. See CLAUDE.md.
    */
   keystrokeDelay: number;
+  /**
+   * The longest typing time, in minutes, a file goes ahead with without
+   * asking ("Type a file"). A picture is made smaller to fit it; anything
+   * else over it asks first. PROVISIONAL default of 2 until confirmed.
+   */
+  typeBudgetMinutes: number;
   language: string;
 }
 
@@ -144,6 +150,7 @@ export const DEFAULT_SETTINGS: Settings = {
   appendSpace: true,
   newlineAfterEnd: false,
   keystrokeDelay: 10,
+  typeBudgetMinutes: 2,
   language: "en",
 };
 
