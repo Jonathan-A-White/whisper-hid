@@ -26,6 +26,8 @@ class HostLink<T : Any>(private val port: Port<T>) {
         fun bondedDevices(): Collection<T>?
         /** An HID link to [device] is up (BluetoothHidDevice.getConnectionState). */
         fun hidLinked(device: T): Boolean
+        /** Devices with an HID link up right now (BluetoothHidDevice.getConnectedDevices). */
+        fun hidLinkedHosts(): List<T>
         /** BluetoothHidDevice.connect: true when the connection was initiated. */
         fun connect(device: T): Boolean
         fun disconnect(device: T)
@@ -42,6 +44,8 @@ class HostLink<T : Any>(private val port: Port<T>) {
         fun onLinkDown()
         /** Bluetooth is going off: nothing can be released or sent. */
         fun onBluetoothOff()
+        /** Keep [device] as the host to reconnect to after the service restarts. */
+        fun remember(device: T)
     }
 
     companion object {
@@ -49,7 +53,8 @@ class HostLink<T : Any>(private val port: Port<T>) {
         const val REASON_NO_HOST = "No paired host known"
     }
 
-    enum class Pick { SWITCHING, FAILED }
+    /** What a device pick did: already the host, switching to it, or connect() refused. */
+    enum class Pick { CONNECTED, SWITCHING, FAILED }
 
     private val hosts = HostMemory<T>()
     @Volatile var state = BtState.IDLE
@@ -58,17 +63,33 @@ class HostLink<T : Any>(private val port: Port<T>) {
     // conditions ever put us there, never elapsed time.
     @Volatile var failureReason = ""
         private set
+    // Attempts since the link was last up, and when this run of them began
+    // (0 = not counting): only a real connection resets them (linkUp), so a
+    // pick, Restart HID or the host's link appearing do not show attempt 1 again.
     @Volatile var reconnectAttempt = 0
         private set
     private var reconnectStartTime = 0L
+    // The host a pick is switching away from: its DISCONNECTED is expected.
+    private var leaving: T? = null
 
     val connected: T? get() = hosts.connected
     val lastKnown: T? get() = hosts.lastKnown
+
+    /** The service started: [device] is the host it remembered last time. */
+    @Synchronized
+    fun restore(device: T) {
+        if (hosts.lastKnown == null) hosts.lastKnown = device
+    }
 
     /** The HID app is not registered (yet): nothing is linked through it. */
     @Synchronized
     fun idle() {
         state = BtState.IDLE
+        // Unregistering drops any HID link: nothing queued may outlive it.
+        if (hosts.connected != null) {
+            hosts.connected = null
+            port.onLinkDown()
+        }
     }
 
     /** Registration landed; [plugged] is the device Android reports with it. */
@@ -78,14 +99,9 @@ class HostLink<T : Any>(private val port: Port<T>) {
         port.log("info", "HID app registered")
         // Android's plugged device can be a car's audio link: it is the
         // keyboard host only when an HID link to it exists.
-        if (hosts.onRegistered(plugged) { port.hidLinked(it) }) {
-            state = BtState.CONNECTED
-            port.cancelRetry()
-            failureReason = ""
-            port.onLinkUp()
-            val name = port.name(plugged)
-            port.log("info", "Already connected to $name")
-            port.notify("Connected to $name")
+        val up = if (hosts.onRegistered(plugged) { port.hidLinked(it) }) plugged else linkedHost()
+        if (up != null) {
+            linkUp(up, "Already connected to ${port.name(up)}")
         } else if (reconnectBlocker() == null) {
             // A host is known: connect now and keep trying (backing
             // off, never giving up) until it answers.
@@ -107,20 +123,35 @@ class HostLink<T : Any>(private val port: Port<T>) {
 
     @Synchronized
     fun onConnected(device: T?) {
-        hosts.connected = device
-        hosts.lastKnown = device
-        state = BtState.CONNECTED
-        port.onLinkUp()
-        port.cancelRetry()
-        reconnectAttempt = 0
-        failureReason = ""
-        val name = port.name(device)
-        port.log("info", "BT connected to $name")
-        port.notify("Connected to $name")
+        if (device == null) return
+        if (device == leaving) leaving = null
+        linkUp(device, "BT connected to ${port.name(device)}")
     }
 
+    /**
+     * An HID link closed, or a connection attempt to [device] did not come up
+     * (Android reports both as DISCONNECTED). Only the connected host's own
+     * link going down drops the connection.
+     */
     @Synchronized
     fun onDisconnected(device: T?) {
+        val host = hosts.connected
+        if (device != null && device == leaving) {
+            leaving = null
+            port.log("info", "HID link to ${port.name(device)} closed (switched away from it)")
+            return
+        }
+        if (host == null) {
+            port.log("info", "HID connection to ${port.name(device)} did not come up")
+            // Unregistered: registering again starts the reconnect.
+            if (state != BtState.IDLE) startReconnect()
+            return
+        }
+        if (device != null && device != host) {
+            // A stale attempt to another device: the host's link is still up.
+            port.log("info", "HID link to ${port.name(device)} closed; still connected to ${port.name(host)}")
+            return
+        }
         hosts.connected = null
         // Kill the in-progress send and anything queued behind it.
         // A held key can't be released over a dead link, and — worse —
@@ -137,19 +168,66 @@ class HostLink<T : Any>(private val port: Port<T>) {
     /** He picked [device] in the device picker (POST /connect). */
     @Synchronized
     fun pick(device: T): Pick {
-        // Disconnect current device first
-        hosts.connected?.let { port.disconnect(it) }
-        port.cancelRetry()
-
-        // Set as preferred device and connect
-        hosts.onPick(device)
         val name = port.name(device)
-        if (!port.connect(device)) {
-            port.log("error", "Failed to initiate connection to $name")
-            return Pick.FAILED
+        val host = hosts.connected
+        // Already the host: disconnecting it to connect it again only drops
+        // a working link.
+        if (state == BtState.CONNECTED && host == device) {
+            port.log("info", "Picked $name: already connected to it")
+            return Pick.CONNECTED
         }
-        port.log("info", "Switching to device: $name")
-        return Pick.SWITCHING
+        // Its HID link is up though no callback said so: take it, don't dial over it.
+        if (port.hidLinked(device)) {
+            linkUp(device, "Picked $name: its HID link is up — connected")
+            return Pick.CONNECTED
+        }
+        if (host != null) {
+            // What is queued for the old host must not reach the new one.
+            hosts.connected = null
+            leaving = host
+            port.onLinkDown()
+            port.disconnect(host)
+        }
+        hosts.onPick(device)
+        port.remember(device)
+        val initiated = port.connect(device)
+        if (initiated) {
+            port.log("info", "Switching to device: $name")
+        } else {
+            port.log("error", "Failed to initiate connection to $name")
+        }
+        // From here on it is a reconnect to the picked host with the retry
+        // timer armed, so a pick that does not come up is tried again. It
+        // used to cancel the timer and leave RECONNECTING with nothing armed:
+        // the DISCONNECTED that followed saw RECONNECTING and did nothing, and
+        // the status sat at "attempt 1" for good.
+        port.cancelRetry()
+        state = BtState.RECONNECTING
+        failureReason = ""
+        if (reconnectStartTime == 0L) reconnectStartTime = port.now()
+        scheduleReconnect()
+        return if (initiated) Pick.SWITCHING else Pick.FAILED
+    }
+
+    private fun linkUp(device: T, message: String) {
+        hosts.connected = device
+        hosts.lastKnown = device
+        port.remember(device)
+        state = BtState.CONNECTED
+        port.onLinkUp()
+        port.cancelRetry()
+        reconnectAttempt = 0
+        reconnectStartTime = 0L
+        failureReason = ""
+        port.log("info", message)
+        port.notify("Connected to ${port.name(device)}")
+    }
+
+    /** A device with an HID link up now, the last known host first. */
+    private fun linkedHost(): T? {
+        val up = port.hidLinkedHosts()
+        val last = hosts.lastKnown
+        return if (last != null && last in up) last else up.firstOrNull()
     }
 
     @Synchronized
@@ -178,8 +256,7 @@ class HostLink<T : Any>(private val port: Port<T>) {
         }
         state = BtState.RECONNECTING
         failureReason = ""
-        reconnectAttempt = 0
-        reconnectStartTime = port.now()
+        if (reconnectStartTime == 0L) reconnectStartTime = port.now()
         if (immediate) attemptReconnect() else scheduleReconnect()
     }
 
@@ -227,6 +304,12 @@ class HostLink<T : Any>(private val port: Port<T>) {
         val blocker = reconnectBlocker()
         if (blocker != null) {
             enterFailed(blocker)
+            return
+        }
+        // The host dialled in and the callback never came: take its link
+        // instead of dialling over it.
+        linkedHost()?.let {
+            linkUp(it, "HID link to ${port.name(it)} is up — connected")
             return
         }
         reconnectAttempt++

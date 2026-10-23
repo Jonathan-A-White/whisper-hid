@@ -67,6 +67,9 @@ class BluetoothHidService : Service() {
         // a held link silences every other app's audio on that headset. See
         // HeadsetLinkController.
         private const val KEY_KEEP_LINK_WARM = "keep_headset_link_warm"
+        // Address of the keyboard host it last had an HID link to (or he picked),
+        // so a restart or an update reconnects to it first (HostLink.restore).
+        private const val KEY_LAST_HOST = "last_keyboard_host"
 
         // How long a dictation waits for the link before recording starts
         // anyway (on the phone mic), and the longest the link is held for a
@@ -205,6 +208,9 @@ class BluetoothHidService : Service() {
             btAdapter?.bondedDevices ?: emptySet()
         } catch (_: SecurityException) { null }
         override fun hidLinked(device: BluetoothDevice): Boolean = hasHidLink(device)
+        override fun hidLinkedHosts(): List<BluetoothDevice> = try {
+            hidDevice?.connectedDevices ?: emptyList()
+        } catch (_: SecurityException) { emptyList() }
         override fun connect(device: BluetoothDevice): Boolean = try {
             hidDevice?.connect(device) == true
         } catch (_: SecurityException) {
@@ -233,6 +239,10 @@ class BluetoothHidService : Service() {
             hidDevice = null
             typeGeneration.incrementAndGet()
             registrar.onBluetoothOff()
+        }
+        override fun remember(device: BluetoothDevice) {
+            getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
+                .putString(KEY_LAST_HOST, device.address).apply()
         }
     })
     private val connectedDevice: BluetoothDevice? get() = link.connected
@@ -420,6 +430,7 @@ class BluetoothHidService : Service() {
 
         headsetMicEnabled = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getBoolean(KEY_HEADSET_MIC_ENABLED, true)
+        restoreLastHost()
         linkController = HeadsetLinkController(
             scoDriver,
             System::currentTimeMillis,
@@ -863,6 +874,17 @@ class BluetoothHidService : Service() {
         hidDevice?.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED
     } catch (_: SecurityException) { false }
 
+    /** The host it last had an HID link to (or he picked) is the first one tried. */
+    private fun restoreLastHost() {
+        val address = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_LAST_HOST, null) ?: return
+        val device = try {
+            btAdapter?.bondedDevices?.firstOrNull { it.address == address }
+        } catch (_: SecurityException) { null } ?: return
+        link.restore(device)
+        addLog("info", "Last keyboard host: ${deviceName(device)}")
+    }
+
     private fun deviceName(device: BluetoothDevice?): String = try {
         device?.name ?: device?.address ?: "Unknown"
     } catch (_: SecurityException) { device?.address ?: "Unknown" }
@@ -883,6 +905,11 @@ class BluetoothHidService : Service() {
             when (state) {
                 BluetoothProfile.STATE_CONNECTED -> link.onConnected(device)
                 BluetoothProfile.STATE_DISCONNECTED -> link.onDisconnected(device)
+                // Logged so a field log shows who is dialling whom.
+                BluetoothProfile.STATE_CONNECTING ->
+                    addLog("info", "HID link to ${deviceName(device)}: connecting")
+                BluetoothProfile.STATE_DISCONNECTING ->
+                    addLog("info", "HID link to ${deviceName(device)}: disconnecting")
             }
         }
 
@@ -1694,7 +1721,7 @@ class BluetoothHidService : Service() {
 
             val name = deviceName(targetDevice)
             when (link.pick(targetDevice)) {
-                HostLink.Pick.SWITCHING ->
+                HostLink.Pick.CONNECTED, HostLink.Pick.SWITCHING ->
                     sendResponse(output, 200, JSONObject().put("ok", true).put("device", name))
                 HostLink.Pick.FAILED ->
                     sendResponse(output, 500, JSONObject().put("ok", false).put("error", "connect_failed"))
