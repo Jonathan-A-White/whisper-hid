@@ -199,8 +199,13 @@ class BluetoothHidService : Service() {
     private val binder = LocalBinder()
     private var btAdapter: BluetoothAdapter? = null
     private var hidDevice: BluetoothHidDevice? = null
-    private var connectedDevice: BluetoothDevice? = null
-    private var lastKnownDevice: BluetoothDevice? = null
+    private val hosts = HostMemory<BluetoothDevice>()
+    private var connectedDevice: BluetoothDevice?
+        get() = hosts.connected
+        set(value) { hosts.connected = value }
+    private var lastKnownDevice: BluetoothDevice?
+        get() = hosts.lastKnown
+        set(value) { hosts.lastKnown = value }
     private var btState = BtState.IDLE
     // Pause after each HID report while typing. Overridable per /type request
     // via "delay_ms" (the PWA sends its Keystroke delay setting).
@@ -828,6 +833,10 @@ class BluetoothHidService : Service() {
         }
     }
 
+    private fun hasHidLink(device: BluetoothDevice): Boolean = try {
+        hidDevice?.getConnectionState(device) == BluetoothProfile.STATE_CONNECTED
+    } catch (_: SecurityException) { false }
+
     private fun unregisterHidDevice() {
         registrar.shutdown()
         hidDevice = null
@@ -840,15 +849,15 @@ class BluetoothHidService : Service() {
             if (registered) {
                 btState = BtState.REGISTERED
                 addLog("info", "HID app registered")
-                if (pluggedDevice != null) {
-                    connectedDevice = pluggedDevice
-                    lastKnownDevice = pluggedDevice
+                // Android's plugged device can be a car's audio link: it is the
+                // keyboard host only when an HID link to it exists.
+                if (hosts.onRegistered(pluggedDevice) { hasHidLink(it) }) {
                     btState = BtState.CONNECTED
                     cancelReconnect()
                     failureReason = ""
                     connectedAtMs = System.currentTimeMillis()
                     lastReportAtMs = 0L
-                    val name = try { pluggedDevice.name } catch (_: SecurityException) { "Unknown" }
+                    val name = try { pluggedDevice?.name } catch (_: SecurityException) { "Unknown" }
                     addLog("info", "Already connected to $name")
                     updateNotification("Connected to $name")
                 } else if (reconnectBlocker() == null) {
@@ -1829,7 +1838,7 @@ class BluetoothHidService : Service() {
             cancelReconnect()
 
             // Set as preferred device and connect
-            lastKnownDevice = targetDevice
+            hosts.onPick(targetDevice)
             val initiated = try {
                 hid.connect(targetDevice)
             } catch (e: SecurityException) {
