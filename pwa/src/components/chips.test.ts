@@ -6,6 +6,7 @@ import { TargetModeToggle } from "./TargetModeToggle";
 import { PhoneModeToggle } from "./PhoneModeToggle";
 import { ZoomModeToggle } from "./ZoomModeToggle";
 import { TypeClipboardButton } from "./TypeClipboardButton";
+import { TypeFileButton } from "./TypeFileButton";
 
 // The four controls under "Connected to" are one even group: every chip has
 // the same shape classes and differs from the others only in its accent.
@@ -45,6 +46,13 @@ const resting = {
   ),
   zoom: chipClasses(createElement(ZoomModeToggle, { status: zoomStatus(true), onToggle: noop })),
   clipboard: chipClasses(clipboard),
+  file: chipClasses(
+    createElement(TypeFileButton, {
+      newlineMode: "enter",
+      keystrokeDelay: 10,
+      hid: { status: null, stopTransmission: async () => {} },
+    })
+  ),
 };
 
 const on = {

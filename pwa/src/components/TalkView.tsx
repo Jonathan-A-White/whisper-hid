@@ -42,6 +42,7 @@ import {
 } from "../lib/talkPress";
 import { TargetModeToggle } from "./TargetModeToggle";
 import { TypeClipboardButton } from "./TypeClipboardButton";
+import { TypeFileButton } from "./TypeFileButton";
 import { ZoomModeToggle } from "./ZoomModeToggle";
 
 interface TalkViewProps {
@@ -440,6 +441,13 @@ export function TalkView({
                 settings={settings}
                 hid={hid}
                 store={store}
+              />
+
+              {/* Type a file: types a UTF-8 text file on the host, with progress */}
+              <TypeFileButton
+                newlineMode={target.newlineMode}
+                keystrokeDelay={settings.keystrokeDelay}
+                hid={hid}
               />
             </div>
             {/* end of chip grid */}
