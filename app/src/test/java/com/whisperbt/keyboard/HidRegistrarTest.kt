@@ -44,6 +44,7 @@ class HidRegistrarTest {
     private var clock = 0L
     private val scheduled = mutableListOf<Long>()
     private var timerArmed = false
+    private val logs = mutableListOf<Pair<String, String>>()
 
     @Before
     fun setUp() {
@@ -53,7 +54,7 @@ class HidRegistrarTest {
             schedule = { scheduled.add(it); timerArmed = true },
             cancelTimer = { timerArmed = false },
             now = { clock },
-            log = { _, _ -> }
+            log = { level, msg -> logs.add(level to msg) }
         )
     }
 
@@ -247,5 +248,99 @@ class HidRegistrarTest {
         port.answer()
         registrar.onAppStatus(true)
         assertTrue(registrar.registered)
+    }
+
+    // --- Android takes registerApp and never calls back (mw-jgcmvd) ---
+
+    @Test
+    fun `each unanswered registerApp is logged with its attempt and the wait`() {
+        registrar.ensureRegistered()
+        port.answer() // registerApp accepted, Bluetooth never calls back
+        clock += 2_000
+        fire()
+        assertTrue(
+            logs.toString(),
+            logs.contains("error" to "No answer from Bluetooth to registerApp (attempt 1, waited 2 s)")
+        )
+        port.answer()
+        clock += 4_000
+        fire()
+        assertTrue(
+            logs.toString(),
+            logs.contains("error" to "No answer from Bluetooth to registerApp (attempt 2, waited 4 s)")
+        )
+        assertTrue("still retrying", timerArmed)
+    }
+
+    @Test
+    fun `an answered registerApp logs no silence line`() {
+        registrar.ensureRegistered()
+        port.answer()
+        registrar.onAppStatus(false)
+        clock += 2_000
+        fire()
+        assertTrue(logs.toString(), logs.none { it.second.startsWith("No answer") })
+    }
+
+    @Test
+    fun `a proxy that never answers is logged too`() {
+        registrar.ensureRegistered()
+        clock += 2_000
+        fire()
+        assertTrue(
+            logs.toString(),
+            logs.contains("error" to "No answer from Bluetooth to the HID profile request (attempt 1, waited 2 s)")
+        )
+    }
+
+    @Test
+    fun `three unanswered attempts make Bluetooth not answering`() {
+        assertFalse(registrar.notAnswering)
+        registrar.ensureRegistered()
+        repeat(3) {
+            assertFalse("after $it unanswered", registrar.notAnswering)
+            port.answer()
+            clock += scheduled.last()
+            fire()
+        }
+        assertTrue(registrar.notAnswering)
+    }
+
+    @Test
+    fun `an answer clears Bluetooth not answering`() {
+        registrar.ensureRegistered()
+        repeat(3) {
+            port.answer()
+            clock += scheduled.last()
+            fire()
+        }
+        assertTrue(registrar.notAnswering)
+        port.answer()
+        registrar.onAppStatus(true)
+        assertFalse(registrar.notAnswering)
+    }
+
+    @Test
+    fun `Restart HID keeps the not answering verdict until Bluetooth answers`() {
+        registrar.ensureRegistered()
+        repeat(3) {
+            port.answer()
+            clock += scheduled.last()
+            fire()
+        }
+        registrar.restart()
+        assertTrue(registrar.notAnswering)
+    }
+
+    @Test
+    fun `every registration path logs its outcome`() {
+        registrar.ensureRegistered()
+        assertTrue(logs.toString(), logs.any { it.second.startsWith("Registering the HID app (attempt 1") })
+        port.answer()
+        assertTrue(logs.toString(), logs.any { it.second.startsWith("registerApp accepted") })
+        port.on = false
+        clock += 2_000
+        fire()
+        assertTrue(logs.toString(), logs.any { it.second.contains("Bluetooth is off") })
     }
 }

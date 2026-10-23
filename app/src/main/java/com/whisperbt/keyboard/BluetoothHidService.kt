@@ -1602,6 +1602,7 @@ class BluetoothHidService : Service() {
             }
             BtState.IDLE -> {
                 json.put("bluetooth", "idle")
+                if (registrar.notAnswering) json.put("registration_problem", "no_answer")
             }
         }
 
@@ -1808,9 +1809,12 @@ class BluetoothHidService : Service() {
                 return
             }
 
+            // hidDevice is the profile proxy: it exists before registerApp is answered.
             val hid = hidDevice
-            if (hid == null) {
-                sendResponse(output, 503, JSONObject().put("ok", false).put("error", "hid_not_registered"))
+            val blocker = ConnectGuard.blocker(registrar.registered)
+            if (hid == null || blocker != null) {
+                addLog("error", "Device pick refused: the HID app is not registered")
+                sendResponse(output, 503, JSONObject().put("ok", false).put("error", ConnectGuard.NOT_REGISTERED))
                 return
             }
 

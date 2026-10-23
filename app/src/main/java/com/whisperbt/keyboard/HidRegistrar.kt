@@ -58,6 +58,24 @@ class HidRegistrar(
     // After shutdown() a late status callback must not arm the timer again.
     private var stopped = false
 
+    // What the last attempt is waiting on, and since when: Android can take a
+    // request and never call back, which used to retry in silence.
+    private enum class Waiting { NOTHING, PROXY, REGISTER }
+    private var waiting = Waiting.NOTHING
+    private var waitingSince = 0L
+    private var unanswered = 0
+
+    /**
+     * Bluetooth took [NOT_ANSWERING_AFTER] attempts in a row without calling
+     * back: restarting HID will not help, the stack is wedged. Cleared by any
+     * answer (registered or not) and by Bluetooth going off.
+     */
+    val notAnswering: Boolean @Synchronized get() = unanswered >= NOT_ANSWERING_AFTER
+
+    companion object {
+        const val NOT_ANSWERING_AFTER = 3
+    }
+
     /** Start registering unless it is registered or already being retried. */
     @Synchronized
     fun ensureRegistered() {
@@ -87,6 +105,8 @@ class HidRegistrar(
         if (!port.bluetoothOn()) {
             // Adapter on starts it again (ensureRegistered).
             pending = false
+            waiting = Waiting.NOTHING
+            log("info", "Bluetooth is off: HID registration paused until it is turned on")
             return
         }
         begin()
@@ -96,6 +116,8 @@ class HidRegistrar(
     @Synchronized
     fun onAppStatus(isRegistered: Boolean) {
         registered = isRegistered
+        waiting = Waiting.NOTHING
+        unanswered = 0
         if (isRegistered) {
             pending = false
             cancelTimer()
@@ -108,6 +130,8 @@ class HidRegistrar(
     @Synchronized
     fun onBluetoothOff() {
         drop()
+        waiting = Waiting.NOTHING
+        unanswered = 0
         pending = false
         cancelTimer()
     }
@@ -131,13 +155,18 @@ class HidRegistrar(
     }
 
     private fun begin() {
+        noteUnanswered()
         drop()
         if (!port.bluetoothOn()) {
             pending = false
             cancelTimer()
+            log("info", "Bluetooth is off: HID registration paused until it is turned on")
             return
         }
         attempt++
+        log("info", "Registering the HID app (attempt $attempt)")
+        waiting = Waiting.PROXY
+        waitingSince = now()
         val gen = generation
         val listener = object : ProxyListener {
             override fun onConnected(proxy: Proxy) = proxyConnected(gen, proxy)
@@ -149,8 +178,24 @@ class HidRegistrar(
             log("error", "Missing Bluetooth permission for the HID profile: ${e.message}")
             false
         }
-        if (!asked) log("error", "HID profile proxy request refused (attempt $attempt)")
+        if (!asked) {
+            waiting = Waiting.NOTHING
+            log("error", "HID profile proxy request refused (attempt $attempt)")
+        }
         armRetry()
+    }
+
+    /** The attempt being abandoned asked Bluetooth something and got no word back. */
+    private fun noteUnanswered() {
+        val what = when (waiting) {
+            Waiting.PROXY -> "the HID profile request"
+            Waiting.REGISTER -> "registerApp"
+            Waiting.NOTHING -> return
+        }
+        waiting = Waiting.NOTHING
+        unanswered++
+        val waitedS = (now() - waitingSince) / 1000
+        log("error", "No answer from Bluetooth to $what (attempt $attempt, waited $waitedS s)")
     }
 
     @Synchronized
@@ -163,7 +208,14 @@ class HidRegistrar(
             log("error", "Missing Bluetooth permission for registerApp: ${e.message}")
             false
         }
-        if (!accepted) log("error", "registerApp refused (attempt $attempt)")
+        if (accepted) {
+            waiting = Waiting.REGISTER
+            waitingSince = now()
+            log("info", "registerApp accepted, waiting for Bluetooth (attempt $attempt)")
+        } else {
+            waiting = Waiting.NOTHING
+            log("error", "registerApp refused (attempt $attempt)")
+        }
         // Whatever the answer, the timer stays armed until REGISTERED.
         if (!pending) armRetry()
     }
@@ -173,6 +225,7 @@ class HidRegistrar(
         if (gen != generation) return
         proxy = null
         registered = false
+        waiting = Waiting.NOTHING
         log("error", "HID profile service disconnected")
         if (port.bluetoothOn()) armRetry() else pending = false
     }
