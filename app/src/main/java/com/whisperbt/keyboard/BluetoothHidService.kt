@@ -860,7 +860,8 @@ class BluetoothHidService : Service() {
                     updateNotification("Ready — waiting for connection...")
                 }
             } else {
-                btState = BtState.IDLE
+                // Bluetooth off is FAILED (its reason shows in the PWA), not idle
+                if (bluetoothOn()) btState = BtState.IDLE
                 addLog("error", "HID app not registered (will retry)")
                 updateNotification("Not registered — retrying...")
             }
