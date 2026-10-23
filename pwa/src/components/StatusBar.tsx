@@ -25,8 +25,9 @@ export function StatusBar({
 }: StatusBarProps) {
   const [showDevicePicker, setShowDevicePicker] = useState(false);
   const btState = hidStatus?.bluetooth;
-  const showBanner =
-    btState === "reconnecting" || btState === "failed" || !hidReachable;
+  // Every state but "connected" has a banner. Each one the service can sit
+  // in has Restart HID and View Debug Log, so the user is never stranded.
+  const showBanner = !hidReachable || (btState !== undefined && btState !== "connected");
 
   // Link deliberately closed between dictations (the default), not connecting
   const headsetIdle =
@@ -124,14 +125,29 @@ export function StatusBar({
                 Open the Whisper HID app on your phone.
               </span>
             </div>
-          ) : btState === "reconnecting" ? (
-            <div className="text-yellow-400">
-              Reconnecting… (attempt {hidStatus?.reconnect_attempt}, next try in{" "}
-              {hidStatus?.next_retry_seconds} s)
-            </div>
-          ) : btState === "failed" ? (
-            <div className="text-red-400">
-              Not connected — {hidStatus?.failure_reason || "reconnect stopped"}
+          ) : (
+            <>
+              {btState === "reconnecting" ? (
+                <div className="text-yellow-400">
+                  Reconnecting… (attempt {hidStatus?.reconnect_attempt}, next try in{" "}
+                  {hidStatus?.next_retry_seconds} s)
+                </div>
+              ) : btState === "failed" ? (
+                <div className="text-red-400">
+                  Not connected — {hidStatus?.failure_reason || "reconnect stopped"}
+                </div>
+              ) : btState === "registered" ? (
+                <div className="text-yellow-400">
+                  Waiting for a computer — pair this phone from its Bluetooth settings.
+                </div>
+              ) : (
+                <div className="text-red-400">
+                  Bluetooth keyboard not set up
+                  <span className="text-gray-500">
+                    {" "}— Restart HID registers it again.
+                  </span>
+                </div>
+              )}
               <div className="mt-1 flex gap-2">
                 <button
                   onClick={onRestart}
@@ -146,8 +162,8 @@ export function StatusBar({
                   View Debug Log
                 </button>
               </div>
-            </div>
-          ) : null}
+            </>
+          )}
         </div>
       )}
 
