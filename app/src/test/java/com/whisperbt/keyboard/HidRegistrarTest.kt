@@ -211,7 +211,7 @@ class HidRegistrarTest {
     fun `retries follow ReconnectPolicy and never stop while Bluetooth is on`() {
         port.proxyAccepted = false
         registrar.ensureRegistered()
-        repeat(12) {
+        repeat(14) {
             clock += scheduled.last()
             fire()
             assertTrue("still armed after retry ${it + 1}", timerArmed)
@@ -230,6 +230,9 @@ class HidRegistrarTest {
         assertTrue(p.closed)
         assertFalse(timerArmed)
         assertFalse(registrar.registered)
+        // Bluetooth's late "unregistered" answer must not start retrying a dead service
+        registrar.onAppStatus(false)
+        assertFalse(timerArmed)
     }
 
     @Test

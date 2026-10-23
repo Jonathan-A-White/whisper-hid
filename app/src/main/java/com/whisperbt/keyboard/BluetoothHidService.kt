@@ -284,9 +284,21 @@ class BluetoothHidService : Service() {
     @Volatile private var failureReason = ""
     // Adapter on/off and host-link broadcasts that restart the reconnect.
     private var btStateReceiver: BroadcastReceiver? = null
-    // Bumped on every getProfileProxy so a stale proxy listener (from before
-    // Bluetooth was switched off) cannot register the app a second time.
-    private var proxyToken = 0
+    // Registers the HID app and retries until it is registered (HidRegistrar).
+    // The timer is armed from main, the HID executor and proxy callbacks.
+    private val registrarTimer: OneShotTimer = OneShotTimer(
+        { r, delay -> handler.postDelayed(r, delay) }, handler::removeCallbacks
+    ) { guard("HID registration retry") { registrar.onRetryTimer() } }
+    private val registrar: HidRegistrar = HidRegistrar(
+        object : HidRegistrar.Port {
+            override fun bluetoothOn(): Boolean = this@BluetoothHidService.bluetoothOn()
+            override fun requestProxy(listener: HidRegistrar.ProxyListener): Boolean = requestHidProxy(listener)
+        },
+        schedule = { registrarTimer.schedule(it) },
+        cancelTimer = { registrarTimer.cancel() },
+        now = System::currentTimeMillis,
+        log = { level, msg -> addLog(level, msg) }
+    )
 
     // Headset mic (SCO) state
     private var audioManager: AudioManager? = null
@@ -391,6 +403,9 @@ class BluetoothHidService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Every start (the app opening, boot, a sticky restart) makes sure the
+        // HID app is registered; a no-op once it is or while it is being retried.
+        guard("Start command") { registerHidDevice() }
         return START_STICKY
     }
 
@@ -758,64 +773,69 @@ class BluetoothHidService : Service() {
 
     // --- HID Registration ---
 
-    private fun registerHidDevice() {
-        val adapter = btAdapter ?: return
+    /** Get the HID app registered, retrying until it is (HidRegistrar). */
+    private fun registerHidDevice(fresh: Boolean = false) {
+        if (btAdapter == null) return
         if (!bluetoothOn()) {
             enterFailed(REASON_BLUETOOTH_OFF)
             return
         }
         btState = BtState.IDLE
-        val token = ++proxyToken
-        try {
-            adapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
-                override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
-                    if (profile == BluetoothProfile.HID_DEVICE && token == proxyToken) {
-                        hidDevice = proxy as BluetoothHidDevice
-                        registerApp()
-                    }
-                }
-
-                override fun onServiceDisconnected(profile: Int) {
-                    if (profile == BluetoothProfile.HID_DEVICE && token == proxyToken) {
-                        hidDevice = null
-                        addLog("error", "HID profile service disconnected")
-                        if (bluetoothOn()) btState = BtState.IDLE else enterFailed(REASON_BLUETOOTH_OFF)
-                    }
-                }
-            }, BluetoothProfile.HID_DEVICE)
-        } catch (e: SecurityException) {
-            addLog("error", "Missing Bluetooth permission: ${e.message}")
-        }
+        if (fresh) registrar.restart() else registrar.ensureRegistered()
     }
 
-    private fun registerApp() {
-        val hid = hidDevice ?: return
-        val sdp = BluetoothHidDeviceAppSdpSettings(
-            "Whisper Keyboard",
-            "Speech-to-text Bluetooth keyboard",
-            "WhisperBT",
-            BluetoothHidDevice.SUBCLASS1_KEYBOARD,
-            HID_DESCRIPTOR
-        )
-        try {
-            hid.registerApp(sdp, null, null, executor, hidCallback)
-        } catch (e: SecurityException) {
-            addLog("error", "Missing Bluetooth permission for registerApp: ${e.message}")
+    private fun requestHidProxy(listener: HidRegistrar.ProxyListener): Boolean {
+        val adapter = btAdapter ?: return false
+        return adapter.getProfileProxy(this, object : BluetoothProfile.ServiceListener {
+            override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
+                if (profile != BluetoothProfile.HID_DEVICE) return
+                val hid = proxy as BluetoothHidDevice
+                hidDevice = hid
+                listener.onConnected(HidProxy(adapter, hid))
+            }
+
+            override fun onServiceDisconnected(profile: Int) {
+                if (profile != BluetoothProfile.HID_DEVICE) return
+                hidDevice = null
+                if (!bluetoothOn()) enterFailed(REASON_BLUETOOTH_OFF) else btState = BtState.IDLE
+                listener.onDisconnected()
+            }
+        }, BluetoothProfile.HID_DEVICE)
+    }
+
+    private inner class HidProxy(
+        private val adapter: BluetoothAdapter,
+        private val hid: BluetoothHidDevice
+    ) : HidRegistrar.Proxy {
+        override fun registerApp(): Boolean {
+            val sdp = BluetoothHidDeviceAppSdpSettings(
+                "Whisper Keyboard",
+                "Speech-to-text Bluetooth keyboard",
+                "WhisperBT",
+                BluetoothHidDevice.SUBCLASS1_KEYBOARD,
+                HID_DESCRIPTOR
+            )
+            return hid.registerApp(sdp, null, null, executor, hidCallback)
+        }
+
+        override fun close() {
+            try { hid.unregisterApp() } catch (e: SecurityException) {
+                Log.e(TAG, "Missing Bluetooth permission for unregisterApp", e)
+            }
+            try { adapter.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid) } catch (_: Exception) {}
+            if (hidDevice === hid) hidDevice = null
         }
     }
 
     private fun unregisterHidDevice() {
-        try {
-            hidDevice?.unregisterApp()
-        } catch (e: SecurityException) {
-            Log.e(TAG, "Missing Bluetooth permission for unregisterApp", e)
-        }
+        registrar.shutdown()
         hidDevice = null
         btState = BtState.IDLE
     }
 
     private val hidCallback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
+            registrar.onAppStatus(registered)
             if (registered) {
                 btState = BtState.REGISTERED
                 addLog("info", "HID app registered")
@@ -840,8 +860,8 @@ class BluetoothHidService : Service() {
                 }
             } else {
                 btState = BtState.IDLE
-                addLog("error", "HID app registration failed")
-                updateNotification("Registration failed")
+                addLog("error", "HID app not registered (will retry)")
+                updateNotification("Not registered — retrying...")
             }
         }
 
@@ -923,7 +943,7 @@ class BluetoothHidService : Service() {
             hidDevice = null
             connectedDevice = null
             typeGeneration.incrementAndGet()
-            proxyToken++
+            registrar.onBluetoothOff()
         }
         if (btState == BtState.FAILED && failureReason == reason) return
         btState = BtState.FAILED
@@ -1055,7 +1075,7 @@ class BluetoothHidService : Service() {
         }
 
     private fun restartReconnectNow() {
-        if (hidDevice == null) {
+        if (!registrar.registered) {
             // The HID app is not registered; registering it connects as soon
             // as the registration lands (onAppStatusChanged).
             registerHidDevice()
@@ -1313,7 +1333,7 @@ class BluetoothHidService : Service() {
         cancelReconnect()
         unregisterHidDevice()
         addLog("info", "HID service restarting")
-        registerHidDevice()
+        registerHidDevice(fresh = true)
     }
 
     // --- Logging ---
