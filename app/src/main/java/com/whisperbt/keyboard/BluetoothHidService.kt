@@ -780,6 +780,7 @@ class BluetoothHidService : Service() {
             enterFailed(REASON_BLUETOOTH_OFF)
             return
         }
+        if (!fresh && registrar.registered) return
         btState = BtState.IDLE
         if (fresh) registrar.restart() else registrar.ensureRegistered()
     }
