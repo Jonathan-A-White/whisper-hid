@@ -7,6 +7,8 @@ import {
   formatDuration,
   initialRate,
   measuredRate,
+  prepareFile,
+  type PrepareDeps,
   typeFile,
   waitForIdle,
   type TypeFileDeps,
@@ -260,5 +262,106 @@ describe("waitForIdle", () => {
     const deps = clockDeps([undefined], { expectedMs: 800 });
     await waitForIdle(deps);
     expect(deps.now()).toBe(800);
+  });
+});
+
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+function prepDeps(bytes: Uint8Array, over: Partial<PrepareDeps> = {}): PrepareDeps {
+  return {
+    name: "f.bin",
+    bytes,
+    delayMs: 10,
+    budgetSeconds: 120,
+    openImage: async () => {
+      throw new Error("not a picture");
+    },
+    isCancelled: () => false,
+    ...over,
+  };
+}
+
+describe("prepareFile", () => {
+  it("keeps a text file as it is and estimates it", async () => {
+    const prepared = await prepareFile(prepDeps(enc("héllo\r\nwörld\n"), { name: "n.txt" }));
+    expect(prepared).toMatchObject({
+      status: "ready",
+      kind: "text",
+      fileName: "n.txt",
+      text: "héllo\r\nwörld\n",
+      overBudget: false,
+    });
+  });
+
+  it("says an empty file is empty", async () => {
+    expect(await prepareFile(prepDeps(new Uint8Array()))).toEqual({ status: "empty" });
+  });
+
+  it("marks a text file over the budget so the person is asked", async () => {
+    // 6000 plain characters = 12000 reports at 11 ms = 132 s
+    const prepared = await prepareFile(prepDeps(enc("a".repeat(6000)), { name: "big.txt" }));
+    expect(prepared).toMatchObject({ status: "ready", kind: "text", overBudget: true });
+    if (prepared.status === "ready") expect(prepared.seconds).toBeCloseTo(132, 5);
+  });
+
+  it("types any other file as base64, and asks when it is over the budget", async () => {
+    const bytes = Uint8Array.from({ length: 4000 }, (_, i) => (i * 7 + 200) & 0xff);
+    const prepared = await prepareFile(prepDeps(bytes, { name: "doc.pdf" }));
+    expect(prepared).toMatchObject({ status: "ready", kind: "binary", overBudget: true });
+    if (prepared.status !== "ready") return;
+    expect(prepared.text).toContain("=== BINARY FILE, typed as base64 ===");
+    expect(prepared.text).toContain("file name: doc.pdf");
+    expect(prepared.compression).toBeUndefined();
+  });
+
+  it("leaves a picture that already fits alone", async () => {
+    const bytes = new Uint8Array([...PNG_MAGIC, 1, 2, 3, 4]);
+    let opened = false;
+    const prepared = await prepareFile(
+      prepDeps(bytes, {
+        name: "tiny.png",
+        openImage: async () => {
+          opened = true;
+          throw new Error("must not be needed");
+        },
+      })
+    );
+    expect(opened).toBe(false);
+    expect(prepared).toMatchObject({ status: "ready", kind: "picture", overBudget: false });
+    if (prepared.status === "ready") {
+      expect(prepared.compression).toBeUndefined();
+      expect(prepared.fileName).toBe("tiny.png");
+    }
+  });
+
+  it("treats a picture the browser cannot open as a plain binary", async () => {
+    const bytes = new Uint8Array([...PNG_MAGIC, ...new Array(8000).fill(200)]);
+    const prepared = await prepareFile(prepDeps(bytes, { name: "broken.png" }));
+    expect(prepared).toMatchObject({ status: "ready", kind: "binary", overBudget: true });
+  });
+
+  it("changes the name when a PNG has to become a JPEG, and says so in the header", async () => {
+    const bytes = new Uint8Array([...PNG_MAGIC, ...new Array(8000).fill(200)]);
+    const prepared = await prepareFile(
+      prepDeps(bytes, {
+        name: "shot.png",
+        openImage: async () => ({
+          width: 500,
+          height: 500,
+          render: async (step) => new Uint8Array(step.format === "png" ? 5000 : 100).fill(9),
+          close: () => {},
+        }),
+      })
+    );
+    expect(prepared).toMatchObject({ status: "ready", kind: "picture", fileName: "shot.jpg", overBudget: false });
+    if (prepared.status !== "ready") return;
+    expect(prepared.compression).toMatchObject({ format: "jpeg", fromName: "shot.png", toBytes: 100 });
+    expect(prepared.text).toContain("file name: shot.jpg");
+    expect(prepared.text).toContain("\nnote: Made smaller to type faster: shot.png ");
+  });
+
+  it("stops when cancelled, before it types or builds anything", async () => {
+    const bytes = new Uint8Array([200, 201, 202]);
+    expect(await prepareFile(prepDeps(bytes, { isCancelled: () => true }))).toEqual({ status: "cancelled" });
   });
 });
