@@ -125,6 +125,8 @@ describe("SettingsView settings are still wired", () => {
       "newlineAfterEnd:",
       "settings.keystrokeDelay",
       "keystrokeDelay:",
+      "settings.typeBudgetMinutes",
+      "typeBudgetMinutes:",
       "settings.language",
       "language:",
     ]) {

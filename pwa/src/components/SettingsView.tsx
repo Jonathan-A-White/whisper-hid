@@ -162,6 +162,23 @@ export function SettingsView({ settings, onUpdate, onShowSetup, onShowDebug, onS
             </p>
           )}
         </SettingsRow>
+        <SettingsRow
+          label={`Typing time limit: ${settings.typeBudgetMinutes} min`}
+          hint="Longest a file types without asking. Pictures are made smaller to fit."
+          info="Used by Type a file. A picture is shrunk step by step until it should type in this time. A file that is not a picture, and a picture that cannot be made small enough, asks first: Type anyway, or Cancel. The time is estimated from the Keystroke delay above."
+        >
+          <input
+            type="range"
+            min={1}
+            max={30}
+            value={settings.typeBudgetMinutes}
+            aria-label="Typing time limit"
+            onChange={(e) =>
+              onUpdate({ typeBudgetMinutes: parseInt(e.target.value) })
+            }
+            className="w-full min-h-[44px] accent-sky-500"
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title="Speech">
