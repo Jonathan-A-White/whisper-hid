@@ -56,8 +56,12 @@ class TestNewlineModes:
         server.target_settings = {"target": "codex"}
         assert server.target_profile()["newline_mode"] == "ctrl_j"
 
+    def test_chat_types_shift_enter(self, server):
+        server.target_settings = {"target": "chat"}
+        assert server.target_profile()["newline_mode"] == "shift_enter"
+
     def test_every_profile_declares_a_newline_mode(self, server):
-        valid = {"enter", "ctrl_j", "backslash_enter"}
+        valid = {"enter", "ctrl_j", "backslash_enter", "shift_enter"}
         for name, profile in server.TARGET_PROFILES.items():
             assert profile["newline_mode"] in valid, name
 
@@ -79,7 +83,7 @@ class TestSubmitNewlineModes:
     def test_no_target_submits_with_a_soft_newline(self, server):
         # A submit mode that doesn't submit would silently lose every
         # dictation, so keep the soft-newline modes out of this field.
-        soft = {"ctrl_j", "backslash_enter"}
+        soft = {"ctrl_j", "backslash_enter", "shift_enter"}
         for name, profile in server.TARGET_PROFILES.items():
             assert profile["submit_newline_mode"] not in soft, name
 
@@ -138,6 +142,23 @@ class TestTargetApi:
         assert server.active_target() == "codex"
         with open(server.TARGET_FILE) as f:
             assert json.load(f)["target"] == "codex"
+
+    def test_get_lists_chat_with_shift_enter_and_a_hard_submit(self, client):
+        body = client.get("/target").get_json()
+        chat = next(t for t in body["targets"] if t["name"] == "chat")
+        assert chat["label"] == "Chat"
+        assert chat["newline_mode"] == "shift_enter"
+        assert chat["submit_newline_mode"] == "enter"
+
+    def test_chat_follows_plain_in_the_catalog(self, client):
+        names = [t["name"] for t in client.get("/target").get_json()["targets"]]
+        assert names[:2] == ["plain", "chat"]
+
+    def test_put_accepts_chat(self, client, server):
+        res = client.put("/target", json={"target": "chat"})
+        assert res.status_code == 200
+        assert res.get_json()["newline_mode"] == "shift_enter"
+        assert server.active_target() == "chat"
 
     def test_get_lists_terminal_with_real_enters(self, client):
         body = client.get("/target").get_json()

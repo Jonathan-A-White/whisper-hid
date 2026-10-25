@@ -92,10 +92,10 @@ export interface LogEntry {
  * "end_enter" only ever appears as a *submit* newline: End (which breaks a
  * CLI composer's paste-burst state without moving the cursor) and then Enter.
  */
-export type NewlineMode = "enter" | "ctrl_j" | "backslash_enter" | "end_enter";
+export type NewlineMode = "enter" | "ctrl_j" | "shift_enter" | "backslash_enter" | "end_enter";
 
 /** Which app the keystrokes are going to (whisper server: GET/PUT /target). */
-export type TargetMode = "plain" | "claude" | "codex" | "terminal";
+export type TargetMode = "plain" | "chat" | "claude" | "codex" | "terminal";
 
 export interface TargetInfo {
   name: TargetMode;

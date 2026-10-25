@@ -1,4 +1,5 @@
 import { chipClass } from "../lib/chip";
+import { nextTarget } from "../lib/targetCycle";
 import type { TargetInfo, TargetMode } from "../types";
 
 interface TargetModeToggleProps {
@@ -13,6 +14,7 @@ interface TargetModeToggleProps {
 
 const ICONS: Record<TargetMode, string> = {
   plain: "📝",
+  chat: "💬",
   claude: "🤖",
   codex: "🧠",
   terminal: "🖥️",
@@ -21,7 +23,7 @@ const ICONS: Record<TargetMode, string> = {
 /**
  * Target app pill for the Talk screen: which app is receiving the
  * keystrokes. It decides how line breaks are typed (Claude Code's "\" +
- * Enter, Codex's Ctrl+J, or a real Enter, which a shell target also
+ * Enter, Codex's Ctrl+J, a web chat box's Shift+Enter, or a real Enter, which a shell target also
  * keeps for every pasted line) and which assistant the "prompt"
  * cleanup style writes for — a wrong setting either submits the prompt
  * halfway through or litters it with stray backslashes, so it sits next to
@@ -52,9 +54,8 @@ export function TargetModeToggle({
     );
   }
 
-  const index = targets.findIndex((t) => t.name === target);
-  const active = targets[index] ?? targets[0];
-  const next = targets[(Math.max(index, 0) + 1) % targets.length];
+  const active = targets.find((t) => t.name === target) ?? targets[0];
+  const next = nextTarget(targets, target);
 
   return (
     <button

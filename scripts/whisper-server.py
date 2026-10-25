@@ -41,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.13.1"
+SERVER_VERSION = "1.14.0"
 
 # --- Configuration ---
 
@@ -183,6 +183,8 @@ chunk_session = None       # active ChunkedSession while recording (guarded by r
 #   claude — Claude Code: a literal "\" then Enter (its documented escape)
 #   codex  — Codex CLI: Ctrl+J. Codex also binds Shift+Enter, but most
 #            terminals can't distinguish it from Enter and submit instead.
+#   chat   — a web chat box (Wicket, Postern, Slack) where Enter sends: line
+#            breaks are Shift+Enter, the deliberate submit stays a hard Enter.
 #   terminal — a shell (PowerShell, bash): every line break is a real Enter,
 #            and the PWA never flattens a pasted script, so each line runs.
 #   plain  — any normal text field: a real Enter, and the PWA flattens
@@ -213,6 +215,16 @@ TARGET_PROFILES: dict[str, dict] = {
         # Deliberately only unambiguous multi-word mishearings — a bare word
         # like "codecs" can be genuine, so that call is left to the glossary
         # (context-aware) or to a user-added entry.
+        "corrections": {},
+    },
+    "chat": {
+        "label": "Chat",
+        "description": "Web chat boxes (Wicket, Postern, Slack) — line breaks typed as Shift+Enter so they don't send",
+        "newline_mode": "shift_enter",
+        "submit_newline_mode": "enter",
+        "assistant": "a chat assistant",
+        "short": "Chat",
+        "terms": [],
         "corrections": {},
     },
     "claude": {
