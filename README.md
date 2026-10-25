@@ -184,6 +184,11 @@ All of these run on the phone and are toggled from the PWA:
   false starts, resolves spoken self-corrections, and fixes punctuation.
   Pick a *style* (plain, Claude Code prompt, commit message, Slack, email,
   bug report) next to the toggle on the Talk screen.
+- **Typing target** — the pill on the Talk screen ("Typing to …", tap to
+  cycle) says which app receives the keystrokes, so a line break is typed the
+  way that app wants it: Plain text (Enter), **Chat** (Shift+Enter, for web
+  chat boxes such as Wicket, Postern and Slack where Enter sends the message),
+  Claude Code, Codex, or Terminal.
 - **Symbol mode** — spoken phrases become symbols ("forward slash help" →
   `/help`, "foo dash bar" → `foo-bar`) for dictating to CLIs. Cleanup is
   skipped while it's on, so the text stays verbatim.

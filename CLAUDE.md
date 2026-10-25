@@ -253,12 +253,13 @@ newline-without-submit key, so the target has to be known before typing:
 | target   | line break typed as | why |
 |----------|--------------------|-----|
 | `plain`  | real Enter (and the PWA flattens pasted line breaks) | normal text fields have no soft newline |
+| `chat`   | **Shift+Enter** (submit stays a hard Enter) | web chat boxes (Wicket, Postern, Slack) where a plain Enter sends each line as its own message |
 | `claude` | `\` then Enter | Claude Code's documented escape |
 | `terminal` | real Enter (the PWA never flattens pasted line breaks) | a shell (PowerShell, bash): a pasted script must run line for line; Claude's `\` would end every line in a backslash |
 | `codex`  | **Ctrl+J** | Codex CLI's newline binding. It also binds Shift+Enter, but most terminals can't distinguish it from Enter and submit instead — Ctrl+J is the terminal-independent one. Claude Code's `\` escape in Codex types a literal backslash *and* submits, which is the bug this replaced |
 
 - **One mechanism, all sends**: the PWA passes `newline_mode`
-  (`enter`/`ctrl_j`/`backslash_enter`, plus `end_enter` for the submit
+  (`enter`/`ctrl_j`/`shift_enter`/`backslash_enter`, plus `end_enter` for the submit
   newline) in every `/type` body;
   `HidKeyMapper.buildReports()` expands a `\n` into that target's keystrokes
   (still key-down + all-up pairs — a soft newline is 1-2 pairs, never a
