@@ -33,6 +33,11 @@ object HidKeyMapper {
      *  - [CTRL_J]: Codex CLI's newline binding. Shift+Enter is *also* bound
      *    there but most terminals can't distinguish it from Enter, so they
      *    submit instead — Ctrl+J is the terminal-independent one.
+     *  - [SHIFT_ENTER]: Shift+Enter, the soft line break of web chat boxes
+     *    (Wicket, Postern, Slack) where a plain Enter sends the message. The
+     *    Shift goes down alone first, like any shifted character, and
+     *    everything is released after the Enter. Never used for the submit
+     *    newline, which stays a hard Enter.
      *  - [BACKSLASH_ENTER]: Claude Code's escape — a literal "\" then Enter.
      *    Typed as text rather than a chord; Codex would show the backslash
      *    and submit, hence the split.
@@ -49,6 +54,7 @@ object HidKeyMapper {
     enum class NewlineMode {
         ENTER,
         CTRL_J,
+        SHIFT_ENTER,
         BACKSLASH_ENTER,
         END_ENTER;
 
@@ -56,6 +62,7 @@ object HidKeyMapper {
             /** Parse the wire value from a /type body; unknown = [ENTER]. */
             fun fromWire(name: String?): NewlineMode = when (name?.lowercase()) {
                 "ctrl_j" -> CTRL_J
+                "shift_enter" -> SHIFT_ENTER
                 "backslash_enter" -> BACKSLASH_ENTER
                 "end_enter" -> END_ENTER
                 else -> ENTER
@@ -194,6 +201,7 @@ object HidKeyMapper {
     private fun newlineKeys(mode: NewlineMode): List<HidReport> = when (mode) {
         NewlineMode.ENTER -> listOf(enterReport())
         NewlineMode.CTRL_J -> listOf(ctrlJReport())
+        NewlineMode.SHIFT_ENTER -> listOf(shiftEnterReport())
         NewlineMode.BACKSLASH_ENTER -> listOf(backslashReport(), enterReport())
         NewlineMode.END_ENTER -> listOf(endReport(), enterReport())
     }
@@ -209,6 +217,9 @@ object HidKeyMapper {
 
     /** Ctrl+J — Codex CLI's "newline without submitting". */
     fun ctrlJReport() = HidReport(MOD_CTRL, KEY_J)
+
+    /** Shift+Enter — the soft line break of web chat boxes. */
+    fun shiftEnterReport() = HidReport(MOD_SHIFT, KEY_ENTER)
 
     fun backslashReport() = HidReport(MOD_NONE, KEY_BACKSLASH)
 

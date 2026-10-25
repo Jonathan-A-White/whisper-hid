@@ -407,6 +407,26 @@ class HidKeyMapperTest {
     }
 
     @Test
+    fun `shift-enter newline mode types Shift+Enter pairs, key-down then all-up`() {
+        val reports = HidKeyMapper.buildReports(
+            "a\nb\nc", HidKeyMapper.NewlineMode.SHIFT_ENTER
+        )
+        // per soft newline: shift alone, shift+enter down, all-up
+        // a(2) + nl(3) + b(2) + nl(3) + c(2)
+        assertEquals(12, reports.size)
+        assertEquals("shift must arrive alone", 0x02.toByte(), reports[2][0])
+        assertEquals(0x00.toByte(), reports[2][2])
+        assertEquals(0x02.toByte(), reports[3][0])
+        assertEquals(HidKeyMapper.KEY_ENTER, reports[3][2])
+        assertTrue("shift released with the key", isKeyUp(reports[4]))
+        assertEquals(0x05.toByte(), reports[5][2])
+        assertEquals(0x02.toByte(), reports[7][0])
+        assertEquals(HidKeyMapper.KEY_ENTER, reports[8][2])
+        assertTrue(isKeyUp(reports[9]))
+        assertTrue(isKeyUp(reports.last()))
+    }
+
+    @Test
     fun `ctrl-j newline mode types Ctrl+J instead of Enter`() {
         val reports = HidKeyMapper.buildReports(
             "a\nb", HidKeyMapper.NewlineMode.CTRL_J
@@ -490,7 +510,11 @@ class HidKeyMapperTest {
         // Older/unknown clients must still get a plain Enter, never nothing.
         assertEquals(HidKeyMapper.NewlineMode.ENTER, HidKeyMapper.NewlineMode.fromWire(null))
         assertEquals(HidKeyMapper.NewlineMode.ENTER, HidKeyMapper.NewlineMode.fromWire(""))
-        assertEquals(HidKeyMapper.NewlineMode.ENTER, HidKeyMapper.NewlineMode.fromWire("shift_enter"))
+        assertEquals(HidKeyMapper.NewlineMode.ENTER, HidKeyMapper.NewlineMode.fromWire("shift_enterr"))
+        assertEquals(
+            HidKeyMapper.NewlineMode.SHIFT_ENTER,
+            HidKeyMapper.NewlineMode.fromWire("shift_enter")
+        )
     }
 
     @Test
