@@ -4,6 +4,10 @@ import type { TargetInfo, TargetMode } from "../types";
 interface TargetModeToggleProps {
   target: TargetMode | null;
   targets: TargetInfo[];
+  /** Why /target could not be read; shown instead of hiding the chip. */
+  error?: string | null;
+  /** Tapping the "Target unknown" chip asks again. */
+  onRetry?: () => void;
   onSelect: (target: TargetMode) => void;
 }
 
@@ -23,15 +27,30 @@ const ICONS: Record<TargetMode, string> = {
  * halfway through or litters it with stray backslashes, so it sits next to
  * the other per-dictation toggles rather than in Settings.
  *
- * Tapping cycles through the modes the server offers. Hidden when the
- * Whisper server is unreachable or too old to know about targets.
+ * Tapping cycles through the modes the server offers. When /target cannot
+ * be read (server unreachable, too old, a bad reply) the chip says so:
+ * "Target unknown: <reason>", and a tap tries again. It is hidden only
+ * while the first answer is still on its way.
  */
 export function TargetModeToggle({
   target,
   targets,
+  error,
+  onRetry,
   onSelect,
 }: TargetModeToggleProps) {
-  if (!target || targets.length === 0) return null;
+  if (!target || targets.length === 0) {
+    if (!error) return null;
+    return (
+      <button
+        onClick={onRetry}
+        title="Tap to try again"
+        className={`${chipClass("amber")} min-w-0 col-span-2`}
+      >
+        ⚠️ Target unknown: {error}
+      </button>
+    );
+  }
 
   const index = targets.findIndex((t) => t.name === target);
   const active = targets[index] ?? targets[0];

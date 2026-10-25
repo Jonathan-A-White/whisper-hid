@@ -11,6 +11,7 @@ const RESTING = "bg-gray-800 text-gray-300 hover:bg-gray-700";
 const ACCENTS = {
   blue: "bg-sky-600 text-white",
   violet: "bg-violet-600 text-white",
+  amber: "bg-amber-700 text-white",
 } as const;
 
 export type ChipAccent = keyof typeof ACCENTS;

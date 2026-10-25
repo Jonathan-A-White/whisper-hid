@@ -326,8 +326,9 @@ newline-without-submit key, so the target has to be known before typing:
     bare words — "codecs" can be genuine, so that call is the glossary's.
     A user entry for the same phrase wins and drops the built-in.
 - **PWA**: `TargetModeToggle` pill on the Talk screen ("⌨️ Typing to X",
-  tap to cycle) backed by `useTargetMode`; Settings shows the active target
-  and points at the pill. A phone that had the old "Claude Code newlines
+  tap to cycle) backed by `useTargetMode`; when `GET /target` fails the pill
+  reads "Target unknown: <reason>" (tap retries) instead of vanishing; Settings
+  shows the active target and points at the pill. A phone that had the old "Claude Code newlines
   (clipboard)" checkbox on is migrated once to target `claude`.
 - Tests: `pytest scripts/tests/test_target.py`, `./gradlew test`
   (`HidKeyMapperTest` newline-mode cases)

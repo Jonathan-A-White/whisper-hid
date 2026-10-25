@@ -20,7 +20,7 @@ import type {
  * `submitNewlineMode` is the same for the deliberate Enter that submits.
  *
  * A server older than 1.9.0 has no /target: `available` stays false, the
- * pill hides, and sends fall back to a plain Enter. One older than 1.9.1
+ * pill reads "Target unknown: <reason>", and sends fall back to a plain Enter. One older than 1.9.1
  * has no submit mode, which is also a plain Enter.
  */
 export function useTargetMode(
@@ -29,6 +29,9 @@ export function useTargetMode(
 ) {
   const [target, setTargetState] = useState<TargetMode | null>(null);
   const [targets, setTargets] = useState<TargetInfo[]>([]);
+  // Why /target could not be read, or null; the pill shows it instead of vanishing.
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [newlineMode, setNewlineMode] = useState<NewlineMode>("enter");
   const [submitNewlineMode, setSubmitNewlineMode] = useState<NewlineMode>("enter");
 
@@ -37,6 +40,7 @@ export function useTargetMode(
     setNewlineMode(state.newline_mode);
     setSubmitNewlineMode(state.submit_newline_mode ?? "enter");
     setTargets(state.targets);
+    setError(null);
   }, []);
 
   useEffect(() => {
@@ -63,14 +67,21 @@ export function useTargetMode(
         }
         apply(state);
       })
-      .catch(() => {
-        if (!cancelled) setTargetState(null);
+      .catch((e) => {
+        if (cancelled) return;
+        setTargetState(null);
+        setError(e instanceof Error ? e.message : String(e));
       });
     return () => {
       cancelled = true;
     };
-    // Runs once on mount; the migration inputs are read from the first render.
+    // Runs on mount and on a retry; the migration inputs are read when it runs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt]);
+
+  const retry = useCallback(() => {
+    setError(null);
+    setAttempt((n) => n + 1);
   }, []);
 
   const setTarget = useCallback(
@@ -102,6 +113,9 @@ export function useTargetMode(
     /** how the deliberate "submit" newline is typed for this target */
     submitNewlineMode,
     available: target !== null,
+    /** why /target could not be read (shown as "Target unknown: ..."), or null */
+    error,
+    retry,
     setTarget,
   };
 }

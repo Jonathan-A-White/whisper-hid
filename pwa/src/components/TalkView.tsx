@@ -76,6 +76,9 @@ interface TalkViewProps {
     target: TargetMode | null;
     targets: TargetInfo[];
     newlineMode: NewlineMode;
+    /** why /target could not be read, or null */
+    error: string | null;
+    retry: () => void;
     setTarget: (target: TargetMode) => void;
   };
   settings: Settings;
@@ -423,6 +426,8 @@ export function TalkView({
               <TargetModeToggle
                 target={target.target}
                 targets={target.targets}
+                error={target.error}
+                onRetry={target.retry}
                 onSelect={target.setTarget}
               />
 

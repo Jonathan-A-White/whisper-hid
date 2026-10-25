@@ -138,10 +138,32 @@ export async function putCorrections(
 
 // --- Target app mode (Claude Code / Codex / plain text) ---
 
+/**
+ * GET /target. Every failure throws an Error whose message is the reason, in
+ * words fit for the Talk screen's "Target unknown: <reason>" chip.
+ */
 export async function getTarget(): Promise<TargetState> {
-  const res = await whisperFetch("/target");
-  if (!res.ok) throw new Error("Target mode unavailable");
-  return res.json();
+  let res: Response;
+  try {
+    res = await whisperFetch("/target");
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    throw new Error(`Whisper server unreachable (${why})`);
+  }
+  if (res.status === 404) {
+    throw new Error("HTTP 404, the Whisper server is older than 1.9.0");
+  }
+  if (!res.ok) throw new Error(`Whisper server answered HTTP ${res.status}`);
+  let body: Partial<TargetState> | null;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error("the reply was not JSON");
+  }
+  if (!body || !Array.isArray(body.targets) || body.targets.length === 0) {
+    throw new Error("the reply had no list of targets");
+  }
+  return body as TargetState;
 }
 
 export async function putTarget(target: TargetMode): Promise<TargetState> {
