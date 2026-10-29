@@ -1,5 +1,45 @@
 # SPEC-2 Review: Gaps, Rough Edges, and Recommendations
 
+<!-- toc -->
+
+- [Overall Assessment](#overall-assessment)
+- [1. The "Why Three Components" Argument Needs Strengthening](#1-the-why-three-components-argument-needs-strengthening)
+- [2. Features Being Lost from SPEC-1 Implementation](#2-features-being-lost-from-spec-1-implementation)
+  - [2a. Push-to-Talk (PTT) Mode — Not Addressed](#2a-push-to-talk-ptt-mode--not-addressed)
+  - [2b. Control Messages (PAUSE/RESUME/BACKSPACE:N) — Partially Lost](#2b-control-messages-pauseresumebackspacen--partially-lost)
+  - [2c. Auto-Start on Boot — Not Addressed](#2c-auto-start-on-boot--not-addressed)
+  - [2d. Audio SCO Routing — SHOWSTOPPER RISK (Researched)](#2d-audio-sco-routing--showstopper-risk-researched)
+  - [2e. Pinned Items / Quick Resend — Not Addressed](#2e-pinned-items--quick-resend--not-addressed)
+  - [2f. Append Newline/Space Settings — Not Addressed](#2f-append-newlinespace-settings--not-addressed)
+- [3. Gaps and Underspecified Areas](#3-gaps-and-underspecified-areas)
+  - [3a. Whisper Server Implementation: Bash vs. Python vs. C](#3a-whisper-server-implementation-bash-vs-python-vs-c)
+  - [3b. Whisper Server: Model Loading Lifecycle](#3b-whisper-server-model-loading-lifecycle)
+  - [3c. PWA-to-Localhost: Private Network Access is Experimental](#3c-pwa-to-localhost-private-network-access-is-experimental)
+  - [3d. Token Delivery via URL Query Parameter](#3d-token-delivery-via-url-query-parameter)
+  - [3e. Concurrent `/transcribe` Requests](#3e-concurrent-transcribe-requests)
+  - [3f. Audio Format: AudioWorklet PCM Details](#3f-audio-format-audioworklet-pcm-details)
+- [4. Organizational / Structural Issues](#4-organizational--structural-issues)
+  - [4a. Duplicated Content](#4a-duplicated-content)
+  - [4b. Spec Should Reference What It Preserves from SPEC-1](#4b-spec-should-reference-what-it-preserves-from-spec-1)
+  - [4c. The Difference Table Is Incomplete](#4c-the-difference-table-is-incomplete)
+  - [4d. Repository Structure: Missing diagnose-sigill.sh and stt-loop.sh](#4d-repository-structure-missing-diagnose-sigillsh-and-stt-loopsh)
+- [5. Potential Design Simplifications](#5-potential-design-simplifications)
+  - [5a. Do You Really Need IndexedDB?](#5a-do-you-really-need-indexeddb)
+  - [5b. WebSocket vs. Polling for Status](#5b-websocket-vs-polling-for-status)
+  - [5c. `/logs` Endpoint: Is It Worth It?](#5c-logs-endpoint-is-it-worth-it)
+  - [5d. BDD Testing Strategy: Overengineered for the Project Size](#5d-bdd-testing-strategy-overengineered-for-the-project-size)
+- [6. Consistency Issues](#6-consistency-issues)
+  - [6a. Port Numbers](#6a-port-numbers)
+  - [6b. React 19 Specificity](#6b-react-19-specificity)
+  - [6c. Tailwind CSS 4 Specificity](#6c-tailwind-css-4-specificity)
+- [7. Missing Sections](#7-missing-sections)
+  - [7a. Migration Path](#7a-migration-path)
+  - [7b. Error Handling Philosophy](#7b-error-handling-philosophy)
+  - [7c. Data Flow Diagram](#7c-data-flow-diagram)
+- [Summary of Recommendations](#summary-of-recommendations)
+
+<!-- /toc -->
+
 ## Overall Assessment
 
 SPEC-2 is a well-thought-out evolution. The separation of concerns is real and justified, the resilience design is significantly better than SPEC-1, and the API contracts are clear. But there are gaps, some lost functionality, organizational issues, and a few places where the design introduces complexity that could be simplified.

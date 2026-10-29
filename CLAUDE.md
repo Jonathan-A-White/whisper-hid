@@ -1,5 +1,53 @@
 # Whisper Bluetooth Keyboard
 
+<!-- toc -->
+
+- [What this is](#what-this-is)
+- [Architecture (SPEC-2)](#architecture-spec-2)
+- [Key technical decisions](#key-technical-decisions)
+- [Bluetooth HID typing: post-connect settle delay](#bluetooth-hid-typing-post-connect-settle-delay)
+- [Bluetooth HID typing: throughput and reliability for large text](#bluetooth-hid-typing-throughput-and-reliability-for-large-text)
+- [Target app mode (Claude Code / Codex / plain text)](#target-app-mode-claude-code--codex--plain-text)
+- [Bluetooth headset mic](#bluetooth-headset-mic)
+  - [Mic audio source (when SCO routing isn't enough)](#mic-audio-source-when-sco-routing-isnt-enough)
+  - [Zoom mode (release headset mic to another device)](#zoom-mode-release-headset-mic-to-another-device)
+- [HID service crashes](#hid-service-crashes)
+- [Build](#build)
+- [Coding conventions](#coding-conventions)
+- [Testing](#testing)
+- [Whisper server debugging](#whisper-server-debugging)
+  - [Diagnostic endpoints](#diagnostic-endpoints)
+  - [Pipeline stages (each can fail independently)](#pipeline-stages-each-can-fail-independently)
+  - [Parakeet engine](#parakeet-engine)
+  - [Chunked (streaming) transcription](#chunked-streaming-transcription)
+  - [Common "no speech" causes (ranked by likelihood)](#common-no-speech-causes-ranked-by-likelihood)
+- [New-phone setup flow](#new-phone-setup-flow)
+  - [Getting an APK onto the phone is fiddly — three things bite](#getting-an-apk-onto-the-phone-is-fiddly--three-things-bite)
+- [Word corrections (auto-correct dictionary)](#word-corrections-auto-correct-dictionary)
+  - [How it works](#how-it-works)
+  - [API endpoints](#api-endpoints)
+  - [Context-aware corrections (glossary injection)](#context-aware-corrections-glossary-injection)
+  - [PWA UI](#pwa-ui)
+  - [CORS gotcha](#cors-gotcha)
+- [Symbol replacements (spoken words → symbols)](#symbol-replacements-spoken-words--symbols)
+  - [How it works](#how-it-works-1)
+  - [API endpoints](#api-endpoints-1)
+  - [PWA UI](#pwa-ui-1)
+- [Speech cleanup (local LLM post-processing)](#speech-cleanup-local-llm-post-processing)
+  - [How it works](#how-it-works-2)
+  - [Cleanup styles (rewrite flavors)](#cleanup-styles-rewrite-flavors)
+  - [Cleanup models (1.7B, 4B, Qwen3.5 2B and 0.8B)](#cleanup-models-17b-4b-qwen35-2b-and-08b)
+  - [Cleanup timing](#cleanup-timing)
+  - [Voice editing (`POST /edit`)](#voice-editing-post-edit)
+  - [Config / API](#config--api)
+- [Component versioning](#component-versioning)
+  - [PWA](#pwa)
+  - [Kotlin app (HID service)](#kotlin-app-hid-service)
+  - [Whisper server (Termux)](#whisper-server-termux)
+- [PWA UI conventions](#pwa-ui-conventions)
+
+<!-- /toc -->
+
 ## What this is
 Three-component system that turns a Samsung phone into a speech-to-text
 Bluetooth keyboard. A PWA provides the UI, a Python+Flask server in Termux

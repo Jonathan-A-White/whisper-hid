@@ -1,5 +1,42 @@
 # Whisper Bluetooth Keyboard — Project Specification
 
+<!-- toc -->
+
+- [Overview](#overview)
+- [Problem](#problem)
+- [Architecture](#architecture)
+  - [Why two components](#why-two-components)
+  - [Communication](#communication)
+- [Component 1: Whisper Engine (Termux)](#component-1-whisper-engine-termux)
+  - [Dependencies](#dependencies)
+  - [Setup Script (`scripts/setup-termux.sh`)](#setup-script-scriptssetup-termuxsh)
+  - [Main Script (`scripts/start-stt.sh`)](#main-script-scriptsstart-sttsh)
+  - [Model Swap Script (`scripts/update-model.sh`)](#model-swap-script-scriptsupdate-modelsh)
+  - [Stream Mode Alternative](#stream-mode-alternative)
+- [Component 2: Bluetooth HID App (Kotlin)](#component-2-bluetooth-hid-app-kotlin)
+  - [Minimum SDK & Permissions](#minimum-sdk--permissions)
+  - [BluetoothHidService.kt](#bluetoothhidservicekt)
+  - [Character-to-HID Mapping](#character-to-hid-mapping)
+  - [SocketListenerService.kt](#socketlistenerservicekt)
+  - [MainActivity.kt](#mainactivitykt)
+  - [Build Configuration](#build-configuration)
+- [GitHub Actions Workflow](#github-actions-workflow)
+- [Repository Structure](#repository-structure)
+- [CLAUDE.md Content](#claudemd-content)
+- [Development Phases](#development-phases)
+  - [Phase 1: Proof of Concept (Priority: HIGH)](#phase-1-proof-of-concept-priority-high)
+  - [Phase 2: Bluetooth HID App (Priority: HIGH)](#phase-2-bluetooth-hid-app-priority-high)
+  - [Phase 3: Socket Bridge (Priority: HIGH)](#phase-3-socket-bridge-priority-high)
+  - [Phase 4: Polish (Priority: MEDIUM)](#phase-4-polish-priority-medium)
+  - [Phase 5: Optimization (Priority: LOW)](#phase-5-optimization-priority-low)
+- [Key Technical References](#key-technical-references)
+- [Constraints](#constraints)
+- [Modes of Operation](#modes-of-operation)
+  - [STT Mode (Active)](#stt-mode-active)
+  - [Bypass Mode (Inactive)](#bypass-mode-inactive)
+
+<!-- /toc -->
+
 ## Overview
 
 An on-device speech-to-text system that runs on a Samsung Galaxy S24 Ultra (later S26 Ultra), transcribes speech using Whisper, and sends the transcribed text to a paired laptop as Bluetooth keyboard input. The user cannot install software on their work laptop, so the phone acts as an external Bluetooth keyboard that types what you say.

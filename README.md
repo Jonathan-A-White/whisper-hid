@@ -2,6 +2,34 @@
 
 Turn your Android phone into a speech-to-text Bluetooth keyboard. Speech recognition runs locally on the phone (Parakeet or Whisper — no network), and the text is sent to a paired laptop as standard Bluetooth keyboard input. No software installation required on the laptop.
 
+<!-- toc -->
+
+- [How It Works](#how-it-works)
+- [Requirements](#requirements)
+- [Quick Start (new phone)](#quick-start-new-phone)
+  - [1. Install Termux and Termux:API](#1-install-termux-and-termuxapi)
+  - [2. Run the bootstrap command](#2-run-the-bootstrap-command)
+  - [3. Follow the guided setup in the PWA](#3-follow-the-guided-setup-in-the-pwa)
+  - [Manual setup (alternative)](#manual-setup-alternative)
+- [Updating](#updating)
+  - [Troubleshooting](#troubleshooting)
+- [Speech Models](#speech-models)
+  - [Adding Parakeet to an existing install](#adding-parakeet-to-an-existing-install)
+- [Dictation features](#dictation-features)
+- [Project Structure](#project-structure)
+- [CI/CD](#cicd)
+- [Credits](#credits)
+  - [Ideas and tools we build with](#ideas-and-tools-we-build-with)
+  - [This screen (the PWA)](#this-screen-the-pwa)
+  - [The Android app](#the-android-app)
+  - [The Termux server](#the-termux-server)
+  - [Speech and language models](#speech-and-language-models)
+  - [On the phone](#on-the-phone)
+  - [Services](#services)
+- [License](#license)
+
+<!-- /toc -->
+
 ## How It Works
 
 ```

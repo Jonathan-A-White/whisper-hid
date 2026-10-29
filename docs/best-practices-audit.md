@@ -27,6 +27,16 @@ How to read the tables:
 Tally: of the 32 checklist lines, 8 pass, 19 fail and 5 n/a; of the 6 rules added 2026-10-09,
 3 pass, 1 fails and 2 are n/a.
 
+<!-- toc -->
+
+- [The checklist, line by line](#the-checklist-line-by-line)
+- [The rules added 2026-10-09](#the-rules-added-2026-10-09)
+- [Shared code (library-best-practices/01)](#shared-code-library-best-practices01)
+- [Also noticed (outside the checklist)](#also-noticed-outside-the-checklist)
+- [Ranked fix stories](#ranked-fix-stories)
+
+<!-- /toc -->
+
 ## The checklist, line by line
 
 | # | Rule | Status | Evidence | Fix (smallest) | Size |
