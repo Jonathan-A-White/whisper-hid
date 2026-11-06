@@ -22,6 +22,42 @@ interface VoiceTranscriber {
 interface VoiceKeyboardUi {
     fun render(state: VoiceKeyboardController.State, status: String)
     fun commitText(text: String)
+
+    /** Press the Enter key in the focused field (see [EnterKey]). */
+    fun pressEnter()
+}
+
+/** Where [EnterKey] sends its result: the focused field's InputConnection. */
+interface EnterTarget {
+    /** A down and an up of [keyCode]. */
+    fun sendKey(keyCode: Int)
+    fun performAction(action: Int)
+}
+
+/**
+ * The Enter key. Termux reads keys, not editor actions, so a field with no IME
+ * action (TYPE_NULL, or an action of none/unspecified, or one that asks for no
+ * enter action) gets KEYCODE_ENTER; a field whose EditorInfo asks for an action
+ * (Messages: Send) gets performEditorAction.
+ */
+object EnterKey {
+    private const val KEYCODE_ENTER = 66 // KeyEvent.KEYCODE_ENTER
+    private const val IME_MASK_ACTION = 0xff
+    private const val IME_FLAG_NO_ENTER_ACTION = 0x40000000
+
+    /** The IME action to perform for these [inputType]/[imeOptions], or null for a plain Enter key. */
+    fun actionFor(inputType: Int, imeOptions: Int): Int? {
+        if (inputType == 0) return null
+        if (imeOptions and IME_FLAG_NO_ENTER_ACTION != 0) return null
+        val action = imeOptions and IME_MASK_ACTION
+        // 0 = IME_ACTION_UNSPECIFIED, 1 = IME_ACTION_NONE
+        return if (action <= 1) null else action
+    }
+
+    fun press(target: EnterTarget, inputType: Int, imeOptions: Int) {
+        val action = actionFor(inputType, imeOptions)
+        if (action == null) target.sendKey(KEYCODE_ENTER) else target.performAction(action)
+    }
 }
 
 /**
@@ -34,6 +70,8 @@ interface VoiceKeyboardUi {
 class VoiceKeyboardController(
     private val transcriber: VoiceTranscriber,
     private val ui: VoiceKeyboardUi,
+    /** Auto Enter, read at each commit so the settings switch takes effect at once. */
+    private val autoEnter: () -> Boolean = { false },
     private val runAsync: (() -> Unit) -> Unit
 ) {
     enum class State { IDLE, STARTING, RECORDING, TRANSCRIBING }
@@ -79,7 +117,12 @@ class VoiceKeyboardController(
                     if (text.isEmpty()) {
                         settle(State.IDLE, STATUS_NO_SPEECH)
                     } else {
-                        ui.commitText("$text ")
+                        if (autoEnter()) {
+                            ui.commitText(text)
+                            ui.pressEnter()
+                        } else {
+                            ui.commitText("$text ")
+                        }
                         settle(State.IDLE, STATUS_IDLE)
                     }
                 }
