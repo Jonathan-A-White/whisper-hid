@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:background="@color/background_dark">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/voice_settings_title"
+        android:textSize="24sp"
+        android:textColor="@color/on_surface"
+        android:layout_marginBottom="24dp" />
+
+    <androidx.appcompat.widget.SwitchCompat
+        android:id="@+id/autoEnterSwitch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="56dp"
+        android:text="@string/voice_auto_enter"
+        android:textSize="18sp"
+        android:textColor="@color/on_surface" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/voice_auto_enter_hint"
+        android:textSize="14sp"
+        android:textColor="@color/on_surface_secondary" />
+</LinearLayout>

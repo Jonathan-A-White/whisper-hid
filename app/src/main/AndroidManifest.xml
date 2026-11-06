@@ -29,6 +29,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".VoiceSettingsActivity"
+            android:label="@string/voice_settings_title"
+            android:exported="true" />
+
         <service
             android:name=".BluetoothHidService"
             android:exported="false"

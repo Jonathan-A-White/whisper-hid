@@ -12,4 +12,11 @@
     <string name="voice_mic_description">Dictate</string>
     <string name="voice_switch_description">Switch keyboard</string>
     <string name="voice_backspace_description">Backspace</string>
+    <string name="voice_enter_key">&#x23CE;</string>
+    <string name="voice_settings_key">&#x2699;</string>
+    <string name="voice_enter_description">Enter</string>
+    <string name="voice_settings_description">Whisper voice settings</string>
+    <string name="voice_settings_title">Whisper voice settings</string>
+    <string name="voice_auto_enter">Auto Enter</string>
+    <string name="voice_auto_enter_hint">Press Enter after each dictation.</string>
 </resources>

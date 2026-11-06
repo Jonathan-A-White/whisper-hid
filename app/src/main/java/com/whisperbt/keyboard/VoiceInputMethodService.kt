@@ -37,6 +37,10 @@ class VoiceInputMethodService : InputMethodService() {
         override fun commitText(text: String) {
             main.post { currentInputConnection?.commitText(text, 1) }
         }
+
+        override fun pressEnter() {
+            main.post { pressEnterOnMain() }
+        }
     }
 
     // The HID service, once bound (never started from here): it owns the
@@ -64,8 +68,11 @@ class VoiceInputMethodService : InputMethodService() {
         Log.e("WhisperVoiceIme", "$what failed", e)
     }
 
+    // Read at each commit: the settings screen runs in this process and writes the same file.
+    private val settings by lazy { VoiceKeyboardSettings.from(this) }
+
     private val controller = VoiceKeyboardController(
-        DictationLinkTranscriber(HttpVoiceTranscriber(), headsetLink), ui
+        DictationLinkTranscriber(HttpVoiceTranscriber(), headsetLink), ui, { settings.autoEnter }
     ) { work -> guardedWorker.execute(work) }
 
     override fun onCreate() {
@@ -80,6 +87,8 @@ class VoiceInputMethodService : InputMethodService() {
             it.setOnClickListener { controller.onMicTap() }
         }
         view.findViewById<Button>(R.id.voiceBackspace).setOnClickListener { backspace() }
+        view.findViewById<Button>(R.id.voiceEnter).setOnClickListener { pressEnterOnMain() }
+        view.findViewById<Button>(R.id.voiceSettings).setOnClickListener { openSettings() }
         view.findViewById<Button>(R.id.voiceSwitch).setOnClickListener { switchKeyboard() }
         renderOnMain(controller.state, VoiceKeyboardController.STATUS_IDLE)
         return view
@@ -113,6 +122,22 @@ class VoiceInputMethodService : InputMethodService() {
             sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
         } else {
             ic.commitText("", 1)
+        }
+    }
+
+    private fun pressEnterOnMain() {
+        val ic = currentInputConnection ?: return
+        val info = currentInputEditorInfo
+        val target = object : EnterTarget {
+            override fun sendKey(keyCode: Int) { sendDownUpKeyEvents(keyCode) }
+            override fun performAction(action: Int) { ic.performEditorAction(action) }
+        }
+        EnterKey.press(target, info?.inputType ?: 0, info?.imeOptions ?: 0)
+    }
+
+    private fun openSettings() {
+        VoiceSettingsLauncher.open { flags ->
+            startActivity(Intent(this, VoiceSettingsActivity::class.java).addFlags(flags))
         }
     }
 

@@ -27,15 +27,34 @@
             android:layout_width="0dp"
             android:layout_height="64dp"
             android:layout_weight="1"
+            android:minWidth="0dp"
+            android:minHeight="48dp"
+            android:padding="0dp"
             android:text="@string/voice_switch_key"
             android:contentDescription="@string/voice_switch_description"
+            android:textSize="22sp" />
+
+        <Button
+            android:id="@+id/voiceSettings"
+            android:layout_width="0dp"
+            android:layout_height="64dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:minHeight="48dp"
+            android:padding="0dp"
+            android:layout_marginStart="4dp"
+            android:text="@string/voice_settings_key"
+            android:contentDescription="@string/voice_settings_description"
             android:textSize="22sp" />
 
         <Button
             android:id="@+id/voiceMic"
             android:layout_width="0dp"
             android:layout_height="80dp"
-            android:layout_weight="3"
+            android:layout_weight="2"
+            android:minWidth="0dp"
+            android:minHeight="48dp"
+            android:padding="0dp"
             android:layout_marginStart="8dp"
             android:layout_marginEnd="8dp"
             android:background="@drawable/voice_mic_idle"
@@ -44,10 +63,26 @@
             android:textSize="32sp" />
 
         <Button
+            android:id="@+id/voiceEnter"
+            android:layout_width="0dp"
+            android:layout_height="64dp"
+            android:layout_weight="1"
+            android:minWidth="0dp"
+            android:minHeight="48dp"
+            android:padding="0dp"
+            android:layout_marginEnd="4dp"
+            android:text="@string/voice_enter_key"
+            android:contentDescription="@string/voice_enter_description"
+            android:textSize="22sp" />
+
+        <Button
             android:id="@+id/voiceBackspace"
             android:layout_width="0dp"
             android:layout_height="64dp"
             android:layout_weight="1"
+            android:minWidth="0dp"
+            android:minHeight="48dp"
+            android:padding="0dp"
             android:text="@string/voice_backspace_key"
             android:contentDescription="@string/voice_backspace_description"
             android:textSize="22sp" />
