@@ -17,6 +17,15 @@
     <string name="voice_enter_description">Enter</string>
     <string name="voice_settings_description">Whisper voice settings</string>
     <string name="voice_settings_title">Whisper voice settings</string>
-    <string name="voice_auto_enter">Auto Enter</string>
-    <string name="voice_auto_enter_hint">Press Enter after each dictation.</string>
+    <string name="voice_after_dictation">After each dictation</string>
+    <string name="voice_after_dictation_hint">What the keyboard presses once your words are typed. Auto picks by the app and field: Send where the field has a send button, Enter in Termux, nothing in a plain text box.</string>
+    <string name="voice_mode_auto">Auto</string>
+    <string name="voice_mode_off">Off</string>
+    <string name="voice_mode_enter">New line (Enter)</string>
+    <string name="voice_mode_send">Send</string>
+    <string name="voice_mode_default">Same as above</string>
+    <string name="voice_app_mode_title">In %1$s</string>
+    <string name="voice_app_modes_title">Apps with their own choice</string>
+    <string name="voice_app_modes_hint">Open the gear from inside an app to choose for that app. Tap an app to go back to the setting above.</string>
+    <string name="voice_app_modes_empty">None yet</string>
 </resources>

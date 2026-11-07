@@ -10,6 +10,7 @@ import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.TextView
@@ -38,8 +39,8 @@ class VoiceInputMethodService : InputMethodService() {
             main.post { currentInputConnection?.commitText(text, 1) }
         }
 
-        override fun pressEnter() {
-            main.post { pressEnterOnMain() }
+        override fun pressEnter(press: EnterPress) {
+            main.post { performOnMain(press) }
         }
     }
 
@@ -71,9 +72,17 @@ class VoiceInputMethodService : InputMethodService() {
     // Read at each commit: the settings screen runs in this process and writes the same file.
     private val settings by lazy { VoiceKeyboardSettings.from(this) }
 
+    // The focused field, taken when input starts (main thread) and read at commit (worker).
+    @Volatile private var field = FieldInfo(null, 0, 0)
+
     private val controller = VoiceKeyboardController(
-        DictationLinkTranscriber(HttpVoiceTranscriber(), headsetLink), ui, { settings.autoEnter }
+        DictationLinkTranscriber(HttpVoiceTranscriber(), headsetLink), ui, { settings.pressFor(field) }
     ) { work -> guardedWorker.execute(work) }
+
+    override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
+        super.onStartInput(attribute, restarting)
+        field = FieldInfo(attribute?.packageName, attribute?.inputType ?: 0, attribute?.imeOptions ?: 0)
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -125,19 +134,30 @@ class VoiceInputMethodService : InputMethodService() {
         }
     }
 
+    /** The user's own Enter key. */
     private fun pressEnterOnMain() {
-        val ic = currentInputConnection ?: return
         val info = currentInputEditorInfo
+        val action = EnterKey.actionFor(info?.inputType ?: 0, info?.imeOptions ?: 0)
+        performOnMain(if (action == null) EnterPress.Key else EnterPress.Action(action))
+    }
+
+    private fun performOnMain(press: EnterPress) {
+        val ic = currentInputConnection ?: return
         val target = object : EnterTarget {
             override fun sendKey(keyCode: Int) { sendDownUpKeyEvents(keyCode) }
             override fun performAction(action: Int) { ic.performEditorAction(action) }
         }
-        EnterKey.press(target, info?.inputType ?: 0, info?.imeOptions ?: 0)
+        EnterKey.perform(target, press)
     }
 
     private fun openSettings() {
         VoiceSettingsLauncher.open { flags ->
-            startActivity(Intent(this, VoiceSettingsActivity::class.java).addFlags(flags))
+            val intent = Intent(this, VoiceSettingsActivity::class.java).addFlags(flags)
+            // The app being typed into, so a mode chosen there is remembered for it.
+            field.packageName?.takeIf { it != packageName }?.let {
+                intent.putExtra(VoiceSettingsActivity.EXTRA_APP_PACKAGE, it)
+            }
+            startActivity(intent)
         }
     }
 

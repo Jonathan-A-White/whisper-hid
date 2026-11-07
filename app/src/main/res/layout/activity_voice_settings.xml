@@ -1,10 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="24dp"
+    android:fillViewport="true"
     android:background="@color/background_dark">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp">
 
     <TextView
         android:layout_width="match_parent"
@@ -13,20 +18,159 @@
         android:textSize="24sp"
         android:textColor="@color/on_surface"
         android:layout_marginBottom="24dp" />
-
-    <androidx.appcompat.widget.SwitchCompat
-        android:id="@+id/autoEnterSwitch"
+    <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:minHeight="56dp"
-        android:text="@string/voice_auto_enter"
+        android:text="@string/voice_after_dictation"
         android:textSize="18sp"
         android:textColor="@color/on_surface" />
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/voice_after_dictation_hint"
+        android:textSize="14sp"
+        android:textColor="@color/on_surface_secondary"
+        android:layout_marginBottom="8dp" />
+
+    <RadioGroup
+        android:id="@+id/modeGroup"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <RadioButton
+            android:id="@+id/modeAuto"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="56dp"
+            android:text="@string/voice_mode_auto"
+            android:textSize="18sp"
+            android:textColor="@color/on_surface" />
+
+        <RadioButton
+            android:id="@+id/modeOff"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="56dp"
+            android:text="@string/voice_mode_off"
+            android:textSize="18sp"
+            android:textColor="@color/on_surface" />
+
+        <RadioButton
+            android:id="@+id/modeEnter"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="56dp"
+            android:text="@string/voice_mode_enter"
+            android:textSize="18sp"
+            android:textColor="@color/on_surface" />
+
+        <RadioButton
+            android:id="@+id/modeSend"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="56dp"
+            android:text="@string/voice_mode_send"
+            android:textSize="18sp"
+            android:textColor="@color/on_surface" />
+    </RadioGroup>
+
+    <LinearLayout
+        android:id="@+id/appModeSection"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone"
+        android:layout_marginTop="24dp">
+
+        <TextView
+            android:id="@+id/appModeTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="18sp"
+            android:textColor="@color/on_surface" />
+
+        <RadioGroup
+            android:id="@+id/appModeGroup"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
+            <RadioButton
+                android:id="@+id/appModeDefault"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="56dp"
+                android:text="@string/voice_mode_default"
+                android:textSize="18sp"
+                android:textColor="@color/on_surface" />
+
+            <RadioButton
+                android:id="@+id/appModeAuto"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="56dp"
+                android:text="@string/voice_mode_auto"
+                android:textSize="18sp"
+                android:textColor="@color/on_surface" />
+
+            <RadioButton
+                android:id="@+id/appModeOff"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="56dp"
+                android:text="@string/voice_mode_off"
+                android:textSize="18sp"
+                android:textColor="@color/on_surface" />
+
+            <RadioButton
+                android:id="@+id/appModeEnter"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="56dp"
+                android:text="@string/voice_mode_enter"
+                android:textSize="18sp"
+                android:textColor="@color/on_surface" />
+
+            <RadioButton
+                android:id="@+id/appModeSend"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="56dp"
+                android:text="@string/voice_mode_send"
+                android:textSize="18sp"
+                android:textColor="@color/on_surface" />
+        </RadioGroup>
+    </LinearLayout>
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="@string/voice_auto_enter_hint"
+        android:text="@string/voice_app_modes_title"
+        android:textSize="18sp"
+        android:textColor="@color/on_surface"
+        android:layout_marginTop="24dp" />
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/voice_app_modes_hint"
+        android:textSize="14sp"
+        android:textColor="@color/on_surface_secondary" />
+
+    <LinearLayout
+        android:id="@+id/appModeList"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical" />
+
+    <TextView
+        android:id="@+id/appModeEmpty"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="48dp"
+        android:gravity="center_vertical"
+        android:text="@string/voice_app_modes_empty"
         android:textSize="14sp"
         android:textColor="@color/on_surface_secondary" />
 </LinearLayout>
+</ScrollView>
