@@ -23,8 +23,8 @@ interface VoiceKeyboardUi {
     fun render(state: VoiceKeyboardController.State, status: String)
     fun commitText(text: String)
 
-    /** Press the Enter key in the focused field (see [EnterKey]). */
-    fun pressEnter()
+    /** Do [press] in the focused field (see [EnterKey.perform]); never called with [EnterPress.None]. */
+    fun pressEnter(press: EnterPress)
 }
 
 /** Where [EnterKey] sends its result: the focused field's InputConnection. */
@@ -32,6 +32,17 @@ interface EnterTarget {
     /** A down and an up of [keyCode]. */
     fun sendKey(keyCode: Int)
     fun performAction(action: Int)
+}
+
+/** What the focused field is: enough to decide what to press after a dictation. */
+data class FieldInfo(val packageName: String?, val inputType: Int, val imeOptions: Int)
+
+/** What to press after a dictation: nothing, the Enter key, or the field's own editor action. */
+sealed class EnterPress {
+    object None : EnterPress()
+    /** KEYCODE_ENTER, down and up. */
+    object Key : EnterPress()
+    data class Action(val action: Int) : EnterPress()
 }
 
 /**
@@ -54,9 +65,61 @@ object EnterKey {
         return if (action <= 1) null else action
     }
 
+    /** The Enter key on the keyboard itself, pressed by the user. */
     fun press(target: EnterTarget, inputType: Int, imeOptions: Int) {
         val action = actionFor(inputType, imeOptions)
-        if (action == null) target.sendKey(KEYCODE_ENTER) else target.performAction(action)
+        perform(target, if (action == null) EnterPress.Key else EnterPress.Action(action))
+    }
+
+    fun perform(target: EnterTarget, press: EnterPress) {
+        when (press) {
+            is EnterPress.None -> Unit
+            is EnterPress.Key -> target.sendKey(KEYCODE_ENTER)
+            is EnterPress.Action -> target.performAction(press.action)
+        }
+    }
+}
+
+/**
+ * The one function that decides what the keyboard presses on its own after a
+ * dictation: [decide]. Everything that auto-presses goes through it.
+ */
+object AutoEnter {
+    private const val IME_MASK_ACTION = 0xff
+    private const val ACTION_GO = 2
+    private const val ACTION_SEND = 4
+    private const val ACTION_DONE = 6
+
+    private fun declaredAction(field: FieldInfo): Int = field.imeOptions and IME_MASK_ACTION
+
+    /** Termux (and its add-ons), or any field with no input type, which only reads keys. */
+    fun isTerminal(field: FieldInfo): Boolean {
+        val pkg = field.packageName
+        return field.inputType == 0 || pkg == "com.termux" || (pkg != null && pkg.startsWith("com.termux."))
+    }
+
+    /**
+     * The field's own send. A multi-line EditText also sets IME_FLAG_NO_ENTER_ACTION
+     * (its Enter key is a new line), but the action it declares is still what
+     * the app wants for "send", so that flag is deliberately not consulted.
+     */
+    private fun sendAction(field: FieldInfo, accepted: Set<Int>): EnterPress.Action? {
+        if (field.inputType == 0) return null
+        val action = declaredAction(field)
+        return if (action in accepted) EnterPress.Action(action) else null
+    }
+
+    fun decide(mode: AfterDictation, field: FieldInfo, overrides: Map<String, AfterDictation>): EnterPress {
+        val effective = field.packageName?.let { overrides[it] } ?: mode
+        return when (effective) {
+            AfterDictation.OFF -> EnterPress.None
+            AfterDictation.ENTER -> EnterPress.Key
+            AfterDictation.SEND -> sendAction(field, setOf(ACTION_SEND, ACTION_GO, ACTION_DONE)) ?: EnterPress.Key
+            AfterDictation.AUTO -> when {
+                isTerminal(field) -> EnterPress.Key
+                else -> sendAction(field, setOf(ACTION_SEND, ACTION_GO)) ?: EnterPress.None
+            }
+        }
     }
 }
 
@@ -70,8 +133,8 @@ object EnterKey {
 class VoiceKeyboardController(
     private val transcriber: VoiceTranscriber,
     private val ui: VoiceKeyboardUi,
-    /** Auto Enter, read at each commit so the settings switch takes effect at once. */
-    private val autoEnter: () -> Boolean = { false },
+    /** What to press after a dictation, decided at each commit so a mode or app change takes effect at once. */
+    private val afterDictation: () -> EnterPress = { EnterPress.None },
     private val runAsync: (() -> Unit) -> Unit
 ) {
     enum class State { IDLE, STARTING, RECORDING, TRANSCRIBING }
@@ -117,11 +180,12 @@ class VoiceKeyboardController(
                     if (text.isEmpty()) {
                         settle(State.IDLE, STATUS_NO_SPEECH)
                     } else {
-                        if (autoEnter()) {
-                            ui.commitText(text)
-                            ui.pressEnter()
-                        } else {
+                        val press = afterDictation()
+                        if (press is EnterPress.None) {
                             ui.commitText("$text ")
+                        } else {
+                            ui.commitText(text)
+                            ui.pressEnter(press)
                         }
                         settle(State.IDLE, STATUS_IDLE)
                     }

@@ -24,19 +24,20 @@ class VoiceKeyboardControllerTest {
         val committed = mutableListOf<String>()
         /** Commits and Enter presses in the order they happened. */
         val events = mutableListOf<String>()
+        val presses = mutableListOf<EnterPress>()
         val renders = mutableListOf<Pair<VoiceKeyboardController.State, String>>()
         override fun render(state: VoiceKeyboardController.State, status: String) {
             renders += state to status
         }
         override fun commitText(text: String) { committed += text; events += "text:$text" }
-        override fun pressEnter() { events += "enter" }
+        override fun pressEnter(press: EnterPress) { presses += press; events += "enter" }
     }
 
     private val queued = ArrayDeque<() -> Unit>()
     private lateinit var transcriber: FakeTranscriber
     private lateinit var ui: FakeUi
     private lateinit var controller: VoiceKeyboardController
-    private var autoEnter = false
+    private var afterDictation: EnterPress = EnterPress.None
 
     private fun runQueued() {
         while (queued.isNotEmpty()) queued.removeFirst().invoke()
@@ -46,7 +47,7 @@ class VoiceKeyboardControllerTest {
     fun setUp() {
         transcriber = FakeTranscriber()
         ui = FakeUi()
-        controller = VoiceKeyboardController(transcriber, ui, { autoEnter }) { queued.addLast(it) }
+        controller = VoiceKeyboardController(transcriber, ui, { afterDictation }) { queued.addLast(it) }
     }
 
     @Test
@@ -177,40 +178,49 @@ class VoiceKeyboardControllerTest {
     }
 
     @Test
-    fun `auto enter off commits the text with its space and presses no Enter`() {
+    fun `nothing to press commits the text with its space and presses no Enter`() {
         dictate()
         assertEquals(listOf("text:test one two "), ui.events)
     }
 
     @Test
-    fun `auto enter on commits the text without the trailing space then exactly one Enter`() {
-        autoEnter = true
+    fun `an Enter press commits the text without the trailing space then exactly that press`() {
+        afterDictation = EnterPress.Key
         dictate()
         assertEquals(listOf("text:test one two", "enter"), ui.events)
+        assertEquals(listOf<EnterPress>(EnterPress.Key), ui.presses)
     }
 
     @Test
-    fun `auto enter on presses no Enter when nothing was heard`() {
-        autoEnter = true
+    fun `a Send action is passed through as it was decided`() {
+        afterDictation = EnterPress.Action(4)
+        dictate()
+        assertEquals(listOf("text:test one two", "enter"), ui.events)
+        assertEquals(listOf<EnterPress>(EnterPress.Action(4)), ui.presses)
+    }
+
+    @Test
+    fun `nothing is pressed when nothing was heard`() {
+        afterDictation = EnterPress.Key
         transcriber.stopResult = VoiceTranscriber.Outcome.Ok("  ")
         dictate()
         assertTrue(ui.events.isEmpty())
     }
 
     @Test
-    fun `auto enter on presses no Enter when the server fails`() {
-        autoEnter = true
+    fun `nothing is pressed when the server fails`() {
+        afterDictation = EnterPress.Key
         transcriber.stopResult = VoiceTranscriber.Outcome.Failed("boom")
         dictate()
         assertTrue(ui.events.isEmpty())
     }
 
     @Test
-    fun `auto enter is read at each commit so the settings switch takes effect at once`() {
+    fun `the decision is read at each commit so a mode or app change takes effect at once`() {
         dictate()
-        autoEnter = true
+        afterDictation = EnterPress.Key
         dictate()
-        autoEnter = false
+        afterDictation = EnterPress.None
         dictate()
         assertEquals(
             listOf("text:test one two ", "text:test one two", "enter", "text:test one two "),
