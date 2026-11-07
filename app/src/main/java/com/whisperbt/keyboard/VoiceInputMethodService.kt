@@ -37,7 +37,14 @@ class VoiceInputMethodService : InputMethodService() {
         }
 
         override fun commitText(text: String) {
-            main.post { currentInputConnection?.commitText(text, 1) }
+            main.post {
+                currentInputConnection?.let { ic ->
+                    DictationInserter(object : InsertTarget {
+                        override fun commitText(text: String, newCursorPosition: Int) { ic.commitText(text, newCursorPosition) }
+                        override fun finishComposingText() { ic.finishComposingText() }
+                    }).insert(text)
+                }
+            }
         }
 
         override fun pressEnter(press: EnterPress) {
