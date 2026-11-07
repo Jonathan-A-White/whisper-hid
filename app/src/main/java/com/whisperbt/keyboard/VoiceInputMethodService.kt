@@ -9,6 +9,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
@@ -95,7 +96,7 @@ class VoiceInputMethodService : InputMethodService() {
         micButton = view.findViewById<Button>(R.id.voiceMic).also {
             it.setOnClickListener { controller.onMicTap() }
         }
-        view.findViewById<Button>(R.id.voiceBackspace).setOnClickListener { backspace() }
+        wireBackspace(view.findViewById(R.id.voiceBackspace), view)
         view.findViewById<Button>(R.id.voiceEnter).setOnClickListener { pressEnterOnMain() }
         view.findViewById<Button>(R.id.voiceSettings).setOnClickListener { openSettings() }
         view.findViewById<Button>(R.id.voiceSwitch).setOnClickListener { switchKeyboard() }
@@ -103,7 +104,18 @@ class VoiceInputMethodService : InputMethodService() {
         return view
     }
 
+    override fun onFinishInputView(finishingInput: Boolean) {
+        backspaceRepeat.cancel()
+        super.onFinishInputView(finishingInput)
+    }
+
+    override fun onWindowHidden() {
+        backspaceRepeat.cancel()
+        super.onWindowHidden()
+    }
+
     override fun onDestroy() {
+        backspaceRepeat.cancel()
         try { unbindService(hidConnection) } catch (_: IllegalArgumentException) {}
         worker.shutdown()
         super.onDestroy()
@@ -122,6 +134,47 @@ class VoiceInputMethodService : InputMethodService() {
                 if (state == VoiceKeyboardController.State.RECORDING) R.drawable.voice_mic_recording
                 else R.drawable.voice_mic_idle
             )
+        }
+    }
+
+    // Holding backspace repeats; see BackspaceRepeat. Main thread only.
+    private val backspaceRepeat = BackspaceRepeat(
+        { r, delayMs -> main.postDelayed(r, delayMs) },
+        { r -> main.removeCallbacks(r) }
+    ) { backspace() }
+
+    /**
+     * A touch on the key presses (one delete at once, then the repeat) and
+     * every way it can end stops the repeat: up, cancel, the finger leaving
+     * the key, the window losing focus or going away. The click listener is
+     * only for accessibility services, which click without touching.
+     */
+    @android.annotation.SuppressLint("ClickableViewAccessibility")
+    private fun wireBackspace(key: Button, root: View) {
+        key.setOnClickListener { backspace() }
+        key.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.isPressed = true
+                    backspaceRepeat.press()
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val inside = event.x >= 0 && event.x <= v.width && event.y >= 0 && event.y <= v.height
+                    if (!inside) { v.isPressed = false; backspaceRepeat.cancel() }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.isPressed = false
+                    backspaceRepeat.release()
+                }
+            }
+            true
+        }
+        root.addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+            override fun onViewAttachedToWindow(v: View) {}
+            override fun onViewDetachedFromWindow(v: View) { backspaceRepeat.cancel() }
+        })
+        root.viewTreeObserver.addOnWindowFocusChangeListener { hasFocus ->
+            if (!hasFocus) backspaceRepeat.cancel()
         }
     }
 
