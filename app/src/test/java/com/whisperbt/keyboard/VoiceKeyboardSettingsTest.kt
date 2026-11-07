@@ -1,6 +1,7 @@
 package com.whisperbt.keyboard
 
 import android.content.Intent
+import android.view.inputmethod.EditorInfo
 import java.io.File
 import javax.xml.parsers.DocumentBuilderFactory
 import org.junit.Assert.*
@@ -10,41 +11,98 @@ import org.w3c.dom.Element
 /** Auto Enter's persistence, the gear key's launch, the picker's gear, and the layouts' key sizes. */
 class VoiceKeyboardSettingsTest {
 
-    private class FakeStore : BooleanStore {
-        val map = mutableMapOf<String, Boolean>()
-        override fun getBoolean(key: String, default: Boolean) = map[key] ?: default
+    private class FakeStore : SettingsStore {
+        val map = mutableMapOf<String, Any>()
+        override fun contains(key: String) = map.containsKey(key)
+        override fun getBoolean(key: String, default: Boolean) = map[key] as? Boolean ?: default
         override fun putBoolean(key: String, value: Boolean) { map[key] = value }
+        override fun getString(key: String, default: String?) = map[key] as? String ?: default
+        override fun putString(key: String, value: String) { map[key] = value }
     }
 
-    // --- persistence -------------------------------------------------------
+    // --- persistence and defaults -----------------------------------------
 
     @Test
-    fun `auto enter is off until switched on`() {
-        assertFalse(VoiceKeyboardSettings(FakeStore()).autoEnter)
+    fun `a new install defaults to Auto`() {
+        assertEquals(AfterDictation.AUTO, VoiceKeyboardSettings(FakeStore()).mode)
     }
 
     @Test
-    fun `auto enter persists across a restart`() {
+    fun `the 1_0_18 switch migrates - On becomes Auto and Off stays Off`() {
+        val on = FakeStore().apply { putBoolean("auto_enter", true) }
+        assertEquals(AfterDictation.AUTO, VoiceKeyboardSettings(on).mode)
+        val off = FakeStore().apply { putBoolean("auto_enter", false) }
+        assertEquals(AfterDictation.OFF, VoiceKeyboardSettings(off).mode)
+    }
+
+    @Test
+    fun `a chosen mode wins over the old switch and persists across a restart`() {
+        val store = FakeStore().apply { putBoolean("auto_enter", true) }
+        for (m in AfterDictation.values()) {
+            VoiceKeyboardSettings(store).mode = m
+            assertEquals(m, VoiceKeyboardSettings(store).mode)
+        }
+        VoiceKeyboardSettings(store).mode = AfterDictation.OFF
+        assertEquals(AfterDictation.OFF, VoiceKeyboardSettings(store).mode)
+    }
+
+    @Test
+    fun `an unreadable stored mode falls back to Auto`() {
+        val store = FakeStore().apply { putString("after_dictation", "banana") }
+        assertEquals(AfterDictation.AUTO, VoiceKeyboardSettings(store).mode)
+    }
+
+    @Test
+    fun `a mode changed in an app is remembered for that app only`() {
         val store = FakeStore()
-        VoiceKeyboardSettings(store).autoEnter = true
-        assertTrue(VoiceKeyboardSettings(store).autoEnter)
-        VoiceKeyboardSettings(store).autoEnter = false
-        assertFalse(VoiceKeyboardSettings(store).autoEnter)
+        val settings = VoiceKeyboardSettings(store)
+        settings.setAppMode("com.termux", AfterDictation.ENTER)
+        settings.setAppMode("org.example.chat", AfterDictation.OFF)
+        val again = VoiceKeyboardSettings(store)
+        assertEquals(mapOf("com.termux" to AfterDictation.ENTER, "org.example.chat" to AfterDictation.OFF), again.appModes())
+        assertEquals(AfterDictation.AUTO, again.mode)
+
+        again.setAppMode("com.termux", AfterDictation.SEND) // changing it again replaces
+        assertEquals(AfterDictation.SEND, VoiceKeyboardSettings(store).appModes()["com.termux"])
+        again.setAppMode("com.termux", null) // back to the default
+        assertEquals(setOf("org.example.chat"), VoiceKeyboardSettings(store).appModes().keys)
     }
 
     @Test
-    fun `the settings screen and the keyboard share one preferences file and key`() {
+    fun `the decision for a field reads the global mode and the app list together`() {
+        val settings = VoiceKeyboardSettings(FakeStore())
+        val chat = FieldInfo("org.example.chat", 0x20001, EditorInfo.IME_ACTION_SEND)
+        assertEquals(EnterPress.Action(EditorInfo.IME_ACTION_SEND), settings.pressFor(chat))
+        settings.setAppMode("org.example.chat", AfterDictation.OFF)
+        assertEquals(EnterPress.None, settings.pressFor(chat))
+        settings.mode = AfterDictation.ENTER
+        assertEquals(EnterPress.Key, settings.pressFor(FieldInfo("org.example.notes", 1, 0)))
+    }
+
+    @Test
+    fun `a new install is Auto and works in Termux, Postern and Google Voice without any pick`() {
+        val settings = VoiceKeyboardSettings(FakeStore())
+        assertEquals(EnterPress.Key, settings.pressFor(FieldInfo("com.termux", 0, 0)))
+        val sendBox = FieldInfo("org.example.postern", 0x20001, EditorInfo.IME_ACTION_SEND or EditorInfo.IME_FLAG_NO_ENTER_ACTION)
+        assertEquals(EnterPress.Action(EditorInfo.IME_ACTION_SEND), settings.pressFor(sendBox))
+        val voice = FieldInfo("com.google.android.apps.googlevoice", 0x20001, EditorInfo.IME_ACTION_SEND)
+        assertEquals(EnterPress.Action(EditorInfo.IME_ACTION_SEND), settings.pressFor(voice))
+    }
+
+    @Test
+    fun `the settings screen and the keyboard share one preferences file and keys`() {
         val store = FakeStore()
-        VoiceKeyboardSettings(store).autoEnter = true // what the settings screen does
-        assertEquals(mapOf(VoiceKeyboardSettings.KEY_AUTO_ENTER to true), store.map)
+        VoiceKeyboardSettings(store).mode = AfterDictation.SEND // what the settings screen does
+        assertEquals(mapOf<String, Any>(VoiceKeyboardSettings.KEY_MODE to "send"), store.map)
         assertEquals("voice_keyboard", VoiceKeyboardSettings.PREFS_NAME)
+        assertEquals("after_dictation", VoiceKeyboardSettings.KEY_MODE)
         assertEquals("auto_enter", VoiceKeyboardSettings.KEY_AUTO_ENTER)
 
         // Both ends reach the setting only through VoiceKeyboardSettings, never a literal key.
         for (name in listOf("VoiceInputMethodService.kt", "VoiceSettingsActivity.kt")) {
             val src = File("src/main/java/com/whisperbt/keyboard/$name").readText()
             assertTrue("$name uses VoiceKeyboardSettings", src.contains("VoiceKeyboardSettings"))
-            assertFalse("$name hard-codes the key", src.contains("\"auto_enter\""))
+            assertFalse("$name hard-codes a key", src.contains("\"auto_enter\"") || src.contains("\"after_dictation\""))
             assertFalse("$name opens its own prefs", src.contains("getSharedPreferences"))
         }
     }
@@ -139,14 +197,29 @@ class VoiceKeyboardSettingsTest {
     }
 
     @Test
-    fun `the settings screen has the Auto Enter switch, at least 48dp tall`() {
+    fun `the settings screen offers the four modes, each at least 48dp tall`() {
         val root = parse("src/main/res/layout/activity_voice_settings.xml")
-        val sw = byId(root, "autoEnterSwitch")
-        assertTrue(dp(sw.getAttribute("android:minHeight")) >= 48.0)
-        assertTrue(sw.tagName.endsWith("Switch") || sw.tagName.endsWith("SwitchCompat"))
-        val text = sw.getAttribute("android:text")
-        assertEquals("@string/voice_auto_enter", text)
         val strings = File("src/main/res/values/strings.xml").readText()
-        assertTrue(strings.contains(">Auto Enter<"))
+        val expected = mapOf(
+            "modeOff" to "voice_mode_off", "modeEnter" to "voice_mode_enter",
+            "modeSend" to "voice_mode_send", "modeAuto" to "voice_mode_auto"
+        )
+        for ((id, str) in expected) {
+            val b = byId(root, id)
+            assertTrue("$id is a radio button", b.tagName.endsWith("RadioButton"))
+            assertTrue("$id tall enough", dp(b.getAttribute("android:minHeight")) >= 48.0)
+            assertEquals("@string/$str", b.getAttribute("android:text"))
+            assertTrue("$str is defined", strings.contains("name=\"$str\""))
+            // the same four are offered for an app
+            val appId = id.replace("mode", "appMode")
+            assertTrue("$appId tall enough", dp(byId(root, appId).getAttribute("android:minHeight")) >= 48.0)
+        }
+        assertTrue(strings.contains(">Off<"))
+        assertTrue(strings.contains(">New line (Enter)<"))
+        assertTrue(strings.contains(">Send<"))
+        assertTrue(strings.contains(">Auto<"))
+        assertTrue(strings.contains(">After each dictation<"))
+        byId(root, "appModeSection")
+        byId(root, "appModeList")
     }
 }
