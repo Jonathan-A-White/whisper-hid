@@ -227,4 +227,85 @@ class VoiceKeyboardControllerTest {
             ui.events
         )
     }
+
+    /**
+     * A text field that behaves as Android documents InputConnection.commitText:
+     * the text replaces the composing region if the editor holds one, else the
+     * selection. [markInsertedAsComposing] models an editor that, after a
+     * commit, marks that text composing again (an editor re-composing the
+     * word at the cursor); it stays until something finishes it.
+     */
+    private class FakeField(private val markInsertedAsComposing: Boolean) : InsertTarget {
+        var text = StringBuilder()
+        var cursor = 0
+        var composing: IntRange? = null
+        var finishCalls = 0
+
+        override fun commitText(text: String, newCursorPosition: Int) {
+            val range = composing ?: (cursor until cursor)
+            this.text.replace(range.first, range.last + 1, text)
+            cursor = range.first + text.length
+            composing = if (markInsertedAsComposing && text.isNotEmpty()) range.first until cursor else null
+        }
+
+        override fun finishComposingText() { finishCalls++; composing = null }
+
+        /** The user's Backspace key, [n] times. */
+        fun backspace(n: Int) = repeat(n) {
+            if (cursor > 0) {
+                text.deleteCharAt(cursor - 1); cursor--
+                composing = composing?.let { c -> if (c.last >= cursor) c.first until maxOf(c.first, c.last) else c }
+                    ?.takeIf { !it.isEmpty() }
+            }
+        }
+    }
+
+    /** The controller wired to [field] the way the service wires it. */
+    private fun wireTo(field: FakeField) {
+        val inserter = DictationInserter(field)
+        val fieldUi = object : VoiceKeyboardUi {
+            override fun render(state: VoiceKeyboardController.State, status: String) {}
+            override fun commitText(text: String) { inserter.insert(text) }
+            override fun pressEnter(press: EnterPress) { field.text.append("<enter>") ; field.cursor = field.text.length }
+        }
+        controller = VoiceKeyboardController(transcriber, fieldUi, { afterDictation }) { queued.addLast(it) }
+    }
+
+    @Test
+    fun `his report - dictate, delete some, dictate two sentences - both sentences land after the remaining text`() {
+        val field = FakeField(markInsertedAsComposing = true)
+        wireTo(field)
+        transcriber.stopResult = VoiceTranscriber.Outcome.Ok("First sentence here.")
+        dictate()
+        field.backspace(6) // "here. "
+        assertEquals("First sentence ", field.text.toString())
+
+        transcriber.stopResult = VoiceTranscriber.Outcome.Ok("Second sentence. Third sentence.")
+        dictate()
+        assertEquals("First sentence Second sentence. Third sentence. ", field.text.toString())
+    }
+
+    @Test
+    fun `his report as he said it - second and third sentence as separate dictations - none replaces the one before`() {
+        val field = FakeField(markInsertedAsComposing = true)
+        wireTo(field)
+        for (said in listOf("First sentence here.", "Second sentence.", "Third sentence.")) {
+            transcriber.stopResult = VoiceTranscriber.Outcome.Ok(said)
+            dictate()
+        }
+        assertEquals("First sentence here. Second sentence. Third sentence. ", field.text.toString())
+    }
+
+    @Test
+    fun `the Auto Enter path also lands after the remaining text`() {
+        val field = FakeField(markInsertedAsComposing = true)
+        wireTo(field)
+        transcriber.stopResult = VoiceTranscriber.Outcome.Ok("First sentence here.")
+        dictate()
+        field.backspace(6)
+        afterDictation = EnterPress.Key
+        transcriber.stopResult = VoiceTranscriber.Outcome.Ok("Second sentence. Third sentence.")
+        dictate()
+        assertEquals("First sentence Second sentence. Third sentence.<enter>", field.text.toString())
+    }
 }
