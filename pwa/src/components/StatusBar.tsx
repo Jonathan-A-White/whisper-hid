@@ -35,9 +35,12 @@ export function StatusBar({
     hidStatus.headset_mic.dictating !== true;
 
   return (
+    // A page (Settings, History) keeps this header, which holds the Bluetooth
+    // device button, down to a 120px window; only below that does it give the
+    // room to the page.
     <div
       data-chrome={chrome}
-      className="bg-gray-950 border-b border-gray-800 px-4 py-2 short:py-1 tiny:py-0.5 bare:data-[chrome=collapsed]:hidden bare:data-[chrome=page]:hidden"
+      className="bg-gray-950 border-b border-gray-800 px-4 py-2 short:py-1 tiny:py-0.5 bare:data-[chrome=collapsed]:hidden [@media(max-height:120px)]:data-[chrome=page]:hidden"
     >
       <div className="flex items-center justify-between text-sm">
         <span className="font-semibold text-white">Whisper Keyboard</span>
