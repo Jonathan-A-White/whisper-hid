@@ -44,7 +44,8 @@ async function openApp(
   page: Page,
   width: number,
   height: number,
-  extra: Record<string, unknown> = {}
+  extra: Record<string, unknown> = {},
+  hidStatus: Record<string, unknown> = HID_STATUS
 ) {
   await page.setViewportSize({ width, height });
   const errors: string[] = [];
@@ -55,7 +56,7 @@ async function openApp(
   });
   for (const [port, status] of [
     [9876, WHISPER_STATUS],
-    [9877, HID_STATUS],
+    [9877, hidStatus],
   ] as const) {
     await page.route(`http://localhost:${port}/**`, (route) => {
       const req = route.request();
@@ -452,5 +453,40 @@ for (const [width, height] of [[360, 844], [390, 844], [412, 844], [390, 175], [
     await btn.click();
     await expect(page.getByText("Switch Bluetooth Device")).toBeVisible();
     await expect(page.getByText("DESKTOP-QSB9R72")).toBeVisible();
+  });
+}
+
+// His finding (mw-2bf8ur.6): the banner's Restart HID and View Debug Log were
+// hidden below 300px tall, so a service that is up but not set up could not be
+// restarted from the phone in a short window.
+for (const bluetooth of ["idle", "failed"]) {
+  test(`Talk, ${WIDTH}x240: with Bluetooth "${bluetooth}" the banner shows Restart HID and View Debug Log`, async ({
+    page,
+  }) => {
+    await openApp(page, WIDTH, 240, {}, {
+      ...HID_STATUS,
+      bluetooth,
+      failure_reason: "no host answered",
+    });
+    const restart = page.getByRole("button", { name: "Restart HID" });
+    const debug = page.getByRole("button", { name: "View Debug Log" });
+    await expect(restart).toBeVisible();
+    await expect(debug).toBeVisible();
+    await page.screenshot({ path: `${SHOTS}/banner-${bluetooth}-${WIDTH}x240.png` });
+    // the banner must not squeeze Hold to talk out of the window
+    const bar = await box(holdToTalk(page));
+    expect(bar.y + bar.height, "Hold to talk bottom").toBeLessThanOrEqual(240);
+    expect(bar.height, "Hold to talk height").toBeGreaterThanOrEqual(BAR_MIN_HEIGHT);
+    // both are whole on screen and the topmost thing at their centres
+    for (const [name, btn] of [["Restart HID", restart], ["View Debug Log", debug]] as const) {
+      const b = await box(btn);
+      expect(b.y, `${name} top`).toBeGreaterThanOrEqual(0);
+      expect(b.y + b.height, `${name} bottom`).toBeLessThanOrEqual(240);
+      expect(b.x + b.width, `${name} right`).toBeLessThanOrEqual(WIDTH);
+      expect(
+        await topmostIsInside(page, btn, b.x + b.width / 2, b.y + b.height / 2),
+        `${name} is covered`
+      ).toBe(true);
+    }
   });
 }
