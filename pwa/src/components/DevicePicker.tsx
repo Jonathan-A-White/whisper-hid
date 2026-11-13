@@ -37,10 +37,10 @@ export function DevicePicker({ onClose, onConnected }: DevicePickerProps) {
   return (
     <div className="fixed inset-0 bg-black/70 z-50 flex items-end justify-center" onClick={onClose}>
       <div
-        className="w-full max-w-md bg-gray-900 rounded-t-2xl p-4 pb-8"
+        className="flex max-h-full w-full max-w-md flex-col bg-gray-900 rounded-t-2xl p-4 pb-8"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex shrink-0 items-center justify-between mb-4">
           <h3 className="text-white font-semibold">Switch Bluetooth Device</h3>
           <button onClick={onClose} className="text-gray-400 text-sm px-2 py-1">
             Close
@@ -52,7 +52,7 @@ export function DevicePicker({ onClose, onConnected }: DevicePickerProps) {
         ) : devices.length === 0 ? (
           <p className="text-gray-400 text-sm py-4 text-center">No bonded devices found</p>
         ) : (
-          <div className="space-y-2">
+          <div className="min-h-0 space-y-2 overflow-y-auto">
             {devices.map((device) => {
               const isCurrent = device.connected;
               const isConnecting = connecting === device.address;
