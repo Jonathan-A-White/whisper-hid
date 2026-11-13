@@ -421,3 +421,36 @@ test("Settings, 412x90: the first row is reachable", async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/settings-${WIDTH}x90.png` });
   await expectReachable(page, firstRow, "Settings first row at 90");
 });
+
+// His report (2026-11-13): at phone width the control that opens "Switch
+// Bluetooth Device" could not be reached; he turned on Chrome's desktop site.
+// The control is the Bluetooth status button in the header; from Settings one
+// tap must open the dialog.
+for (const [width, height] of [[360, 844], [390, 844], [412, 844], [390, 175], [390, 380]]) {
+  test(`Settings, ${width}x${height}: one tap on the Bluetooth status opens Switch Bluetooth Device`, async ({
+    page,
+  }) => {
+    await openApp(page, width, height, {
+      "/devices": {
+        devices: [
+          { address: "AA:BB:CC:DD:EE:01", name: "PF46SGM4", connected: true },
+          { address: "AA:BB:CC:DD:EE:02", name: "DESKTOP-QSB9R72", connected: false },
+        ],
+      },
+    });
+    // a bare window has no tab bar until the handle opens the menu
+    if (height <= 200) await handle(page).click();
+    await page.getByRole("button", { name: "settings", exact: true }).click();
+    const btn = page.getByRole("button", { name: /PF46SGM4/ });
+    await expect(btn).toBeVisible();
+    const b = await box(btn);
+    await page.screenshot({ path: `${SHOTS}/settings-bt-${width}x${height}.png` });
+    // wholly on screen, and the topmost thing at its centre
+    expect(b.x, "left edge").toBeGreaterThanOrEqual(0);
+    expect(b.x + b.width, "right edge").toBeLessThanOrEqual(width);
+    expect(await topmostIsInside(page, btn, b.x + b.width / 2, b.y + b.height / 2)).toBe(true);
+    await btn.click();
+    await expect(page.getByText("Switch Bluetooth Device")).toBeVisible();
+    await expect(page.getByText("DESKTOP-QSB9R72")).toBeVisible();
+  });
+}
