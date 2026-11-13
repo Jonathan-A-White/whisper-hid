@@ -28,7 +28,7 @@ export function EntryMenu({ open, onClose, sendDisabled, ...handlers }: EntryMen
       <div
         role="dialog"
         aria-label="Entry options"
-        className="w-full rounded-t-xl border-t border-gray-700 bg-gray-900 px-4 pt-4"
+        className="max-h-full w-full overflow-y-auto rounded-t-xl border-t border-gray-700 bg-gray-900 px-4 pt-4"
         style={{ paddingBottom: "calc(var(--bar-inset) + 1rem)" }}
         onClick={(e) => e.stopPropagation()}
       >
