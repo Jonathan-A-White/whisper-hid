@@ -120,7 +120,9 @@ export function StatusBar({
       </div>
 
       {showBanner && (
-        <div className="mt-2 p-2 rounded bg-gray-900 text-sm tiny:hidden">
+        // Never hidden, however short the window: this is the only place to
+        // restart a service that is up but not set up. It tightens instead.
+        <div className="mt-2 p-2 rounded bg-gray-900 text-sm tiny:mt-1 tiny:p-1 tiny:text-xs">
           {!hidReachable ? (
             <div className="text-red-400">
               HID Service not running.{" "}
@@ -155,7 +157,7 @@ export function StatusBar({
                   </span>
                 </div>
               )}
-              <div className="mt-1 flex gap-2">
+              <div className="mt-1 flex gap-2 tiny:mt-0.5">
                 <button
                   onClick={onRestart}
                   className="px-3 py-1 bg-sky-600 text-white rounded text-xs"

@@ -181,9 +181,10 @@ describe("TalkView layout", () => {
       );
     });
 
-    it("shrinks the header (and its status banner) and the tab bar", () => {
+    it("shrinks the header (and its status banner, which stays) and the tab bar", () => {
       expect(statusBar).toMatch(/tiny:py-/);
-      expect(statusBar).toMatch(/tiny:hidden/);
+      // the banner holds Restart HID and View Debug Log: tighten it, never hide it
+      expect(statusBar).not.toMatch(/tiny:hidden|bare:hidden/);
       expect(app).toMatch(/tiny:py-/);
     });
 
