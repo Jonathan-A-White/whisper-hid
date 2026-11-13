@@ -490,3 +490,106 @@ for (const bluetooth of ["idle", "failed"]) {
     }
   });
 }
+
+// His report (mw-2bf8ur.8): the Switch Bluetooth Device dialog grew taller than
+// the phone window and pushed its title and Close out of the top of it. The
+// dialog must fit the window, with the device list scrolling inside it.
+function deviceList(count: number) {
+  return Array.from({ length: count }, (_, i) => ({
+    address: `AA:BB:CC:DD:EE:${String(i + 1).padStart(2, "0")}`,
+    name: i === 0 ? "PF46SGM4" : `DEVICE-${String(i + 1).padStart(2, "0")}`,
+    connected: i === 0,
+  }));
+}
+
+for (const [width, height] of [[360, 740], [412, 915]]) {
+  for (const count of [2, 12]) {
+    test(`Switch Bluetooth Device, ${width}x${height}, ${count} devices: the title and Close are inside the window and the list scrolls`, async ({
+      page,
+    }) => {
+      const devices = deviceList(count);
+      await openApp(page, width, height, { "/devices": { devices } });
+      await page.getByRole("button", { name: "settings", exact: true }).click();
+      await page.getByRole("button", { name: /PF46SGM4/ }).click();
+      const title = page.getByRole("heading", { name: "Switch Bluetooth Device" });
+      const close = page.getByRole("button", { name: "Close", exact: true });
+      await expect(title).toBeVisible();
+      await page.screenshot({ path: `${SHOTS}/device-picker-${width}x${height}-${count}.png` });
+      for (const [name, el] of [["title", title], ["Close", close]] as const) {
+        const b = await box(el);
+        expect(b.y, `${name} top`).toBeGreaterThanOrEqual(0);
+        expect(b.y + b.height, `${name} bottom`).toBeLessThanOrEqual(height);
+        expect(b.x, `${name} left`).toBeGreaterThanOrEqual(0);
+        expect(b.x + b.width, `${name} right`).toBeLessThanOrEqual(width);
+      }
+      // the last device can be scrolled into view and tapped
+      const last = page.getByRole("button", { name: devices[count - 1].name });
+      await last.scrollIntoViewIfNeeded();
+      const lb = await box(last);
+      expect(lb.y, "last device top").toBeGreaterThanOrEqual(0);
+      expect(lb.y + lb.height, "last device bottom").toBeLessThanOrEqual(height);
+      expect(
+        await topmostIsInside(page, last, lb.x + lb.width / 2, lb.y + lb.height / 2),
+        "last device is covered"
+      ).toBe(true);
+      // scrolling the list must not have moved the title out of the window
+      const tb = await box(title);
+      expect(tb.y, "title top after scroll").toBeGreaterThanOrEqual(0);
+      if (count > 2) {
+        // tapping it starts a connect (the fake server refuses, so the dialog stays)
+        await last.click();
+        await expect(title).toBeVisible();
+      }
+    });
+  }
+}
+
+// Sweep of mw-2bf8ur.8: EntryMenu (the options sheet a long press opens on a
+// History entry) is the other bottom sheet; Send and Cancel must stay inside
+// the window, also in the short one.
+for (const [width, height] of [[360, 740], [412, 915], [412, 240]]) {
+  test(`Entry options, ${width}x${height}: the sheet is inside the window and its buttons can be scrolled to`, async ({
+    page,
+  }) => {
+    await openApp(page, width, height);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve, reject) => {
+          const open = indexedDB.open("whisper-keyboard", 1);
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const tx = open.result.transaction("transcripts", "readwrite");
+            tx.objectStore("transcripts").add({
+              id: "layout-menu",
+              text: "An entry to open the options on.",
+              timestamp: Date.now(),
+              pinned: false,
+            });
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => reject(tx.error);
+          };
+        })
+    );
+    await page.reload();
+    if (height <= 200) await page.getByTestId("menu-handle").click();
+    await page.getByRole("button", { name: "history", exact: true }).click();
+    // the browser's context menu (a long press on text) opens the sheet
+    await page.getByText("An entry to open the options on.").click({ button: "right" });
+    const sheet = page.getByRole("dialog", { name: "Entry options" });
+    await expect(sheet).toBeVisible();
+    await page.screenshot({ path: `${SHOTS}/entry-menu-${width}x${height}.png` });
+    // the sheet itself is inside the window; its buttons are reachable by scrolling it
+    const sb = await box(sheet);
+    expect(sb.y, "sheet top").toBeGreaterThanOrEqual(0);
+    expect(sb.y + sb.height, "sheet bottom").toBeLessThanOrEqual(height);
+    for (const [name, el] of [
+      ["first button", sheet.getByRole("button").first()],
+      ["Cancel", page.getByRole("button", { name: "Cancel", exact: true })],
+    ] as const) {
+      await el.scrollIntoViewIfNeeded();
+      const b = await box(el);
+      expect(b.y, `${name} top`).toBeGreaterThanOrEqual(0);
+      expect(b.y + b.height, `${name} bottom`).toBeLessThanOrEqual(height);
+    }
+  });
+}
