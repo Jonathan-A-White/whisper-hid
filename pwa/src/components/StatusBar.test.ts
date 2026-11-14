@@ -18,6 +18,7 @@ function render(hidStatus: Partial<HidStatus> | null, hidReachable = true): stri
   );
 }
 
+const CHECK_COMPUTER = "Still no link. Check that Bluetooth is on and in range on the computer.";
 const BANNER_TEXT = "Bluetooth keyboard not set up";
 
 describe("StatusBar banner", () => {
@@ -58,6 +59,30 @@ describe("StatusBar banner", () => {
     });
     expect(html).toContain("Reconnecting…");
     expect(html).toContain("Restart HID");
+  });
+
+  it("reconnecting, down about four minutes (attempt 11): no check-the-computer line yet", () => {
+    const html = render({
+      service: "running",
+      bluetooth: "reconnecting",
+      reconnect_attempt: 11,
+      next_retry_seconds: 30,
+    });
+    expect(html).toContain("Reconnecting…");
+    expect(html).not.toContain(CHECK_COMPUTER);
+  });
+
+  it("reconnecting, down over ten minutes (attempt 109): says to check the computer's Bluetooth", () => {
+    const html = render({
+      service: "running",
+      bluetooth: "reconnecting",
+      reconnect_attempt: 109,
+      next_retry_seconds: 60,
+    });
+    expect(html).toContain("Reconnecting… (attempt 109, next try in 60 s)");
+    expect(html).toContain(CHECK_COMPUTER);
+    expect(html).toContain("Restart HID");
+    expect(html).toContain("View Debug Log");
   });
 
   it("connected: no banner", () => {

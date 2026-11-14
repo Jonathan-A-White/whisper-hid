@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { HidStatus, WhisperStatus } from "../types";
 import { DevicePicker } from "./DevicePicker";
 import type { Chrome } from "../types";
+import { downLongEnoughToCheckComputer } from "../lib/reconnectWait";
 
 interface StatusBarProps {
   hidStatus: HidStatus | null;
@@ -136,6 +137,13 @@ export function StatusBar({
                 <div className="text-yellow-400">
                   Reconnecting… (attempt {hidStatus?.reconnect_attempt}, next try in{" "}
                   {hidStatus?.next_retry_seconds} s)
+                  {/* Retrying has no end by design; after ten minutes down the
+                      likelier cause is the far side, so say where to look. */}
+                  {downLongEnoughToCheckComputer(hidStatus?.reconnect_attempt) && (
+                    <div className="text-gray-400 text-xs mt-1">
+                      Still no link. Check that Bluetooth is on and in range on the computer.
+                    </div>
+                  )}
                 </div>
               ) : btState === "failed" ? (
                 <div className="text-red-400">
