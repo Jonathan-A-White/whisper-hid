@@ -221,6 +221,25 @@ class TestRunTranscription:
         assert text == "Hello from Parakeet."
         assert duration_ms >= 0
 
+    def test_log_line_says_took_and_the_clips_audio_length(self, server, tmp_path):
+        """A rise in took is only worth chasing if the audio did not grow too."""
+        write_parakeet_model(tmp_path / "models")
+        sys.modules["sherpa_onnx"] = make_fake_sherpa("hello")
+        server.load_parakeet()
+        server.active_engine = "parakeet"
+        server.word_corrections = {}
+        server.log_buffer.clear()
+
+        wav = tmp_path / "three.wav"
+        write_wav(wav, num_samples=16000 * 3)
+        _, duration_ms = server.run_transcription(str(wav))
+
+        msgs = [e["msg"] for e in server.log_buffer if e["msg"].startswith("Parakeet: took=")]
+        assert msgs == [f"Parakeet: took={duration_ms}ms audio=3.0s"]
+
+    def test_unreadable_audio_length_does_not_break_the_log_line(self, server, tmp_path):
+        assert server._wav_seconds(str(tmp_path / "missing.wav")) is None
+
     def test_applies_corrections(self, server, tmp_path):
         write_parakeet_model(tmp_path / "models")
         sys.modules["sherpa_onnx"] = make_fake_sherpa(" ask quad about it ")

@@ -41,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.14.0"
+SERVER_VERSION = "1.14.1"
 
 # --- Configuration ---
 
@@ -1765,6 +1765,19 @@ def _sentence_case_chunk(text: str) -> str:
     return text
 
 
+def _wav_seconds(wav_path: str) -> float | None:
+    """Length of a WAV in seconds from its header, None when it cannot be read
+    (a log line must never fail a transcription)."""
+    import wave
+
+    try:
+        with wave.open(wav_path, "rb") as w:
+            rate = w.getframerate()
+            return w.getnframes() / rate if rate else None
+    except Exception:
+        return None
+
+
 def run_transcription(wav_path: str, postprocess: bool = True) -> tuple[str, int]:
     """Transcribe a WAV file with Parakeet. Returns (text, duration_ms).
 
@@ -1780,7 +1793,11 @@ def run_transcription(wav_path: str, postprocess: bool = True) -> tuple[str, int
         text, duration_ms = run_parakeet_raw(wav_path)
     except Exception as e:
         raise RuntimeError(f"Parakeet failed: {e}") from e
-    add_log("info", f"Parakeet: took={duration_ms}ms")
+    # took beside the clip's audio length: a rise in took that tracks the audio
+    # is just a longer clip; one that does not is the phone (heat, load).
+    audio_sec = _wav_seconds(wav_path)
+    audio_note = f" audio={audio_sec:.1f}s" if audio_sec is not None else ""
+    add_log("info", f"Parakeet: took={duration_ms}ms{audio_note}")
     if not postprocess:
         return _clean_raw_text(text), duration_ms
     return _postprocess_text(text, "Parakeet"), duration_ms
