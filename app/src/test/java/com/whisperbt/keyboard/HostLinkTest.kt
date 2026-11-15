@@ -151,6 +151,40 @@ class HostLinkTest {
     }
 
     @Test
+    fun `his log - the reconnect text after ten minutes down also says to check the computer`() {
+        val hid = FakeHid(pc)
+        val link = HostLink(hid)
+        link.onRegistered(headset)
+        hid.connectFails(link, pc)
+
+        // Early on there is no such line, on the notification or the app screen.
+        assertFalse(hid.notes.last().contains(ReconnectPolicy.CHECK_COMPUTER_TEXT))
+        assertFalse(link.reconnectStatusText().contains(ReconnectPolicy.CHECK_COMPUTER_TEXT))
+
+        // Ten minutes and a bit later, attempt after attempt has failed.
+        hid.clock += 11 * 60_000L
+        hid.fire(link)
+        hid.connectFails(link, pc)
+
+        assertTrue(hid.notes.last().startsWith("Reconnecting… (attempt "))
+        assertTrue(hid.notes.last(), hid.notes.last().endsWith(ReconnectPolicy.CHECK_COMPUTER_TEXT))
+        assertEquals(hid.notes.last(), link.reconnectStatusText())
+        assertTrue(link.reconnectDownSeconds() > 600)
+    }
+
+    @Test
+    fun `the seconds down count from the drop and go back to zero when the link is up`() {
+        val hid = FakeHid(pc)
+        val link = HostLink(hid)
+        assertEquals(0L, link.reconnectDownSeconds())
+        link.onRegistered(headset)
+        hid.clock += 90_000L
+        assertEquals(90L, link.reconnectDownSeconds())
+        hid.linkUp(link, pc)
+        assertEquals(0L, link.reconnectDownSeconds())
+    }
+
+    @Test
     fun `a stale connect to another device closing does not drop the connected host`() {
         val hid = FakeHid(home, pc)
         val link = HostLink(hid)

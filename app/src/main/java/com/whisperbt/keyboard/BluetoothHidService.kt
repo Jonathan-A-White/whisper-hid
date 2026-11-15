@@ -1231,6 +1231,9 @@ class BluetoothHidService : Service() {
 
     fun getBtState(): BtState = link.state
 
+    /** "Reconnecting… (attempt N, ...)" for the app's own screen. */
+    fun getReconnectText(): String = link.reconnectStatusText()
+
     /** Soft restart: unregister + re-register HID */
     private fun restart() {
         cancelReconnect()
@@ -1492,6 +1495,8 @@ class BluetoothHidService : Service() {
                 json.put("bluetooth", "reconnecting")
                 json.put("device", deviceName ?: "Unknown")
                 json.put("reconnect_attempt", link.reconnectAttempt)
+                // Seconds since the link dropped: the PWA reads it instead of guessing from the attempt
+                json.put("reconnect_down_seconds", link.reconnectDownSeconds())
                 // Retries never run out; kept (null) for older PWA builds
                 json.put("reconnect_max", JSONObject.NULL)
                 json.put("next_retry_seconds", link.nextRetrySeconds())

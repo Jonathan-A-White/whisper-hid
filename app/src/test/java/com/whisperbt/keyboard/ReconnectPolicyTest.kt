@@ -43,4 +43,18 @@ class ReconnectPolicyTest {
             }
         }
     }
+
+    @Test
+    fun `the check-the-computer line comes only after more than ten minutes down`() {
+        assertEquals(false, ReconnectPolicy.checkComputer(10 * minute))
+        assertEquals(true, ReconnectPolicy.checkComputer(10 * minute + 1_000L))
+        assertEquals(
+            "Reconnecting… (attempt 3, next try in 8 s)",
+            ReconnectPolicy.reconnectingText(3, 8_000L, minute)
+        )
+        assertEquals(
+            "Reconnecting… (attempt 109, next try in 60 s) " + ReconnectPolicy.CHECK_COMPUTER_TEXT,
+            ReconnectPolicy.reconnectingText(109, 60_000L, 11 * minute)
+        )
+    }
 }

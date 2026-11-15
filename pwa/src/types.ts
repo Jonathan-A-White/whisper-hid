@@ -24,6 +24,8 @@ export interface HidStatus {
   device?: string;
   uptime_seconds?: number;
   reconnect_attempt?: number;
+  /** seconds since the link dropped, while reconnecting; absent on older APKs */
+  reconnect_down_seconds?: number;
   /** always null now: reconnect has no attempt limit; absent/number on older APKs */
   reconnect_max?: number | null;
   next_retry_seconds?: number;

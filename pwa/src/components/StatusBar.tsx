@@ -139,7 +139,10 @@ export function StatusBar({
                   {hidStatus?.next_retry_seconds} s)
                   {/* Retrying has no end by design; after ten minutes down the
                       likelier cause is the far side, so say where to look. */}
-                  {downLongEnoughToCheckComputer(hidStatus?.reconnect_attempt) && (
+                  {downLongEnoughToCheckComputer(
+                    hidStatus?.reconnect_attempt,
+                    hidStatus?.reconnect_down_seconds,
+                  ) && (
                     <div className="text-gray-400 text-xs mt-1">
                       Still no link. Check that Bluetooth is on and in range on the computer.
                     </div>

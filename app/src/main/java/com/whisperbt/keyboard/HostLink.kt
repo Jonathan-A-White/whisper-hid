@@ -292,10 +292,22 @@ class HostLink<T : Any>(private val port: Port<T>) {
         reconnectAttempt + 1, port.now() - reconnectStartTime
     )
 
+    /** Seconds the link has been down (since the first reconnect try), 0 when it is not. */
+    @Synchronized
+    fun reconnectDownSeconds(): Long =
+        if (reconnectStartTime == 0L) 0L else (port.now() - reconnectStartTime) / 1000
+
+    /** The reconnecting sentence, as the notification and the app screen show it. */
+    @Synchronized
+    fun reconnectStatusText(): String {
+        val down = if (reconnectStartTime == 0L) 0L else port.now() - reconnectStartTime
+        return ReconnectPolicy.reconnectingText(reconnectAttempt + 1, nextRetryDelayMs(), down)
+    }
+
     private fun scheduleReconnect() {
         if (state != BtState.RECONNECTING) return
         val delay = nextRetryDelayMs()
-        port.notify("Reconnecting… (attempt ${reconnectAttempt + 1}, next try in ${delay / 1000} s)")
+        port.notify(reconnectStatusText())
         port.scheduleRetry(delay)
     }
 

@@ -85,6 +85,17 @@ describe("StatusBar banner", () => {
     expect(html).toContain("View Debug Log");
   });
 
+  it("reconnecting, the service reports 700 s down: says to check the computer even at a low attempt", () => {
+    const html = render({
+      service: "running",
+      bluetooth: "reconnecting",
+      reconnect_attempt: 3,
+      reconnect_down_seconds: 700,
+      next_retry_seconds: 60,
+    });
+    expect(html).toContain(CHECK_COMPUTER);
+  });
+
   it("connected: no banner", () => {
     const html = render({ service: "running", bluetooth: "connected", device: "Laptop" });
     expect(html).not.toContain("Restart HID");

@@ -118,7 +118,7 @@ class MainActivity : AppCompatActivity() {
             BluetoothHidService.BtState.REGISTERED ->
                 statusBluetooth.text = "Bluetooth: Waiting for connection..."
             BluetoothHidService.BtState.RECONNECTING ->
-                statusBluetooth.text = "Bluetooth: Reconnecting..."
+                statusBluetooth.text = "Bluetooth: ${service.getReconnectText()}"
             BluetoothHidService.BtState.FAILED ->
                 statusBluetooth.text = "Bluetooth: Connection failed"
             BluetoothHidService.BtState.IDLE ->

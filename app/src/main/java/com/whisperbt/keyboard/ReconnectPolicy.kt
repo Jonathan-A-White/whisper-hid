@@ -20,4 +20,18 @@ object ReconnectPolicy {
         attempt in 1..EARLY_DELAYS_MS.size -> EARLY_DELAYS_MS[attempt - 1]
         else -> STEADY_DELAY_MS
     }
+
+    /** After this long down the likelier cause is the far side. */
+    const val CHECK_COMPUTER_AFTER_MS = 10 * 60 * 1000L
+
+    /** Same words as the PWA banner (StatusBar.tsx); keep the two in step. */
+    const val CHECK_COMPUTER_TEXT = "Still no link. Check that Bluetooth is on and in range on the computer."
+
+    fun checkComputer(downMs: Long): Boolean = downMs > CHECK_COMPUTER_AFTER_MS
+
+    /** The one reconnecting sentence the notification and the app screen share. */
+    fun reconnectingText(attempt: Int, nextDelayMs: Long, downMs: Long): String {
+        val base = "Reconnecting… (attempt $attempt, next try in ${nextDelayMs / 1000} s)"
+        return if (checkComputer(downMs)) "$base $CHECK_COMPUTER_TEXT" else base
+    }
 }

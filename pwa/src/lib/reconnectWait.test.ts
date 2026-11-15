@@ -22,4 +22,10 @@ describe("reconnectWait", () => {
   it("an older APK that reports no attempt gets no extra line", () => {
     expect(downLongEnoughToCheckComputer(undefined)).toBe(false);
   });
+
+  it("the seconds the service reports win over the attempt estimate", () => {
+    expect(downLongEnoughToCheckComputer(109, 120)).toBe(false);
+    expect(downLongEnoughToCheckComputer(3, 601)).toBe(true);
+    expect(downLongEnoughToCheckComputer(undefined, 700)).toBe(true);
+  });
 });

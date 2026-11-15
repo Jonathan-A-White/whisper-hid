@@ -1,6 +1,6 @@
 // How long the phone's Bluetooth link has probably been down, worked out from
-// the reconnect attempt number the HID service reports (it reports no clock).
-// Mirrors the schedule in app/.../ReconnectPolicy.kt: 2, 4, 8, 16, 30 s for the
+// the reconnect attempt number, for an older APK that does not report the
+// seconds down itself (reconnect_down_seconds). Mirrors the schedule in app/.../ReconnectPolicy.kt: 2, 4, 8, 16, 30 s for the
 // first five attempts, 30 s until five minutes have passed, then 60 s. Keep the
 // two in step; an estimate is enough here, the banner only needs "a long time".
 
@@ -26,6 +26,15 @@ export function estimatedDownSeconds(attempt: number): number {
   return elapsed;
 }
 
-export function downLongEnoughToCheckComputer(attempt: number | undefined): boolean {
+/**
+ * Whether the banner should point at the computer. The service reports the
+ * seconds the link has been down (reconnect_down_seconds); an older APK does
+ * not, so then the attempt number is turned into an estimate.
+ */
+export function downLongEnoughToCheckComputer(
+  attempt: number | undefined,
+  downSeconds?: number,
+): boolean {
+  if (downSeconds !== undefined) return downSeconds > CHECK_COMPUTER_AFTER_S;
   return attempt !== undefined && estimatedDownSeconds(attempt) > CHECK_COMPUTER_AFTER_S;
 }
