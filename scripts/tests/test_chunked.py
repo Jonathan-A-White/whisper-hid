@@ -393,3 +393,42 @@ class TestChunkedKeepsSentenceShape:
     def test_lowercase_sentence_start_inside_a_chunk(self, server):
         assert server._sentence_case_chunk("it works. now try i'd say so") == \
             "It works. Now try I'd say so."
+
+
+class TestLiveTailLogging:
+    """The live tail re-runs Parakeet on the uncommitted audio every poll; a
+    long dictation must not fill the Debug Log with one Parakeet line each."""
+
+    def _engine(self, server, tmp_path, monkeypatch):
+        monkeypatch.setattr(server, "active_engine", "parakeet")
+        monkeypatch.setattr(server, "_parakeet_recognizer", object())
+        monkeypatch.setattr(server, "run_parakeet_raw", lambda wav: ("hello", 300))
+        server.log_buffer.clear()
+
+    def _tail(self, server, tmp_path, name):
+        wav = str(tmp_path / name)
+        write_wav(wav, (3000, 1.0))
+        session = server.ChunkedSession(str(tmp_path / "rec.aac"))
+        session._tail_job(wav, 0.0, 0)
+
+    def test_tail_job_logs_at_most_one_line_per_second(self, server, tmp_path, monkeypatch):
+        self._engine(server, tmp_path, monkeypatch)
+        for i in range(10):  # ten polls inside one second
+            self._tail(server, tmp_path, f"t{i}.wav")
+        lines = [e["msg"] for e in server.log_buffer if "took=" in e["msg"]]
+        assert len(lines) <= 1
+
+    def test_tail_job_does_not_use_the_final_parakeet_tag(self, server, tmp_path, monkeypatch):
+        self._engine(server, tmp_path, monkeypatch)
+        self._tail(server, tmp_path, "t.wav")
+        assert not [e for e in server.log_buffer if e["msg"].startswith("Parakeet: took=")]
+
+    def test_a_final_transcription_still_logs_every_time(self, server, tmp_path, monkeypatch):
+        self._engine(server, tmp_path, monkeypatch)
+        self._tail(server, tmp_path, "t.wav")  # a tail job first must not mute it
+        wav = str(tmp_path / "final.wav")
+        write_wav(wav, (3000, 1.0))
+        for _ in range(3):
+            server.run_transcription(wav, postprocess=False)
+        lines = [e["msg"] for e in server.log_buffer if e["msg"].startswith("Parakeet: took=")]
+        assert len(lines) == 3

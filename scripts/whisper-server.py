@@ -41,7 +41,7 @@ from flask import Flask, Response, jsonify, request
 
 app = Flask(__name__)
 
-SERVER_VERSION = "1.14.1"
+SERVER_VERSION = "1.14.2"
 
 # --- Configuration ---
 
@@ -1778,6 +1778,24 @@ def _wav_seconds(wav_path: str) -> float | None:
         return None
 
 
+# The live tail re-runs Parakeet on the whole uncommitted audio every poll
+# while he talks. Those runs are tentative and many: one log line each would
+# bury the Debug Log, so they log under their own tag, at most once per
+# LIVE_TAIL_LOG_SEC. The final and chunk runs keep "Parakeet: took=" every time.
+LIVE_TAIL_LOG_SEC = 10.0
+_live_tail_ctx = threading.local()
+_live_tail_last_log = -LIVE_TAIL_LOG_SEC  # time.monotonic() of the last line
+
+
+def _log_live_tail_took(duration_ms: int, audio_note: str):
+    global _live_tail_last_log
+    now = time.monotonic()
+    if now - _live_tail_last_log < LIVE_TAIL_LOG_SEC:
+        return
+    _live_tail_last_log = now
+    add_log("info", f"Parakeet live tail: took={duration_ms}ms{audio_note}")
+
+
 def run_transcription(wav_path: str, postprocess: bool = True) -> tuple[str, int]:
     """Transcribe a WAV file with Parakeet. Returns (text, duration_ms).
 
@@ -1797,7 +1815,10 @@ def run_transcription(wav_path: str, postprocess: bool = True) -> tuple[str, int
     # is just a longer clip; one that does not is the phone (heat, load).
     audio_sec = _wav_seconds(wav_path)
     audio_note = f" audio={audio_sec:.1f}s" if audio_sec is not None else ""
-    add_log("info", f"Parakeet: took={duration_ms}ms{audio_note}")
+    if getattr(_live_tail_ctx, "active", False):
+        _log_live_tail_took(duration_ms, audio_note)
+    else:
+        add_log("info", f"Parakeet: took={duration_ms}ms{audio_note}")
     if not postprocess:
         return _clean_raw_text(text), duration_ms
     return _postprocess_text(text, "Parakeet"), duration_ms
@@ -2083,12 +2104,14 @@ class ChunkedSession:
         self._tail_thread.start()
 
     def _tail_job(self, tail_wav: str, committed_at: float, n_texts: int):
+        _live_tail_ctx.active = True
         try:
             text, _ms = run_transcription(tail_wav, postprocess=False)
         except Exception as e:
             add_log("warn", f"Live tail failed: {e}")
             return
         finally:
+            _live_tail_ctx.active = False
             try:
                 os.unlink(tail_wav)
             except OSError:
